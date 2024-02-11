@@ -160,7 +160,7 @@ declare global {
 }
 ```
 
-By editing this file, you may run into the problem noted with [Eslint](/zamm/resources/tutorials/setup/tools/svelte/eslint.md).
+By editing this file, you may run into the problem noted with [Eslint](/general-notes/setup/tools/svelte/eslint.md).
 
 We also rename the accompanying stories file to `src-svelte/src/routes/SidebarUI.stories.ts`. Now in this file, we can test out the effect of highlighting different routes:
 
@@ -661,7 +661,7 @@ Error: Cannot find package '__sveltekit' imported from /root/zamm/node_modules/@
 Serialized Error: { code: 'ERR_MODULE_NOT_FOUND' }
 ```
 
-This appears to be a problem that has been mentioned [here](https://github.com/sveltejs/kit/issues/9162) and [here](https://github.com/vitest-dev/vitest/issues/3483) and fixed already. However, in our attempt to create a working minimal repro, we run into the store subscription issue mentioned [here](/zamm/resources/tutorials/setup/tauri/vitest.md). We try to use a modified version of the [workaround](https://github.com/sveltejs/kit/issues/5525#issuecomment-1186390654) mentioned there by creating `src-svelte/src/vitest-mocks/stores.ts`:
+This appears to be a problem that has been mentioned [here](https://github.com/sveltejs/kit/issues/9162) and [here](https://github.com/vitest-dev/vitest/issues/3483) and fixed already. However, in our attempt to create a working minimal repro, we run into the store subscription issue mentioned [here](/general-notes/setup/tauri/vitest.md). We try to use a modified version of the [workaround](https://github.com/sveltejs/kit/issues/5525#issuecomment-1186390654) mentioned there by creating `src-svelte/src/vitest-mocks/stores.ts`:
 
 ```ts
 import { readable, writable } from 'svelte/store';

@@ -4,7 +4,7 @@
 
 > Set up a Makefile for the current Python project
 
-then you can do so by following the below steps. Note that this tutorial assumes you've set up your project according to [ZAMM's default Python tooling](/zamm/resources/tutorials/setup/tools/default.md).
+then you can do so by following the below steps. Note that this tutorial assumes you've set up your project according to [ZAMM's default Python tooling](/general-notes/setup/tools/default.md).
 
 The very first thing we do is to create a `Makefile` **in the current directory** (so edit `./Makefile`) that looks like this:
 

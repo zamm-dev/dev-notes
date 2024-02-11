@@ -4489,7 +4489,7 @@ response: >
 
 and now get the tests to pass properly.
 
-Ideally, we encode the `should_fail` flag as part of the test itself. However, that will require a more extensive refactor to the sample call infrastructure, and as such will be tackled in the `Allowing failed responses` section of [`api-boundary-type-safety.md`](/zamm/resources/tutorials/setup/tauri/api-boundary-type-safety.md).
+Ideally, we encode the `should_fail` flag as part of the test itself. However, that will require a more extensive refactor to the sample call infrastructure, and as such will be tackled in the `Allowing failed responses` section of [`api-boundary-type-safety.md`](/general-notes/setup/tauri/api-boundary-type-safety.md).
 
 #### Unsetting the API key
 

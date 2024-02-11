@@ -417,7 +417,7 @@ error: none of the selected packages contains these features: custom-protocol
 
 Note also that the `custom-protocol` defined in `[features]` refers to the `custom-protocol` feature of the app we're building (which we are likely never going to refer to), whereas the `custom-protocol` in the `features` array of the `tauri` dependency refers to the `custom-protocol` feature of the Tauri library itself.
 
-In addition to all the setup required for pre-commit hooks as described in [`pre-commit.md`](/zamm/resources/tutorials/setup/repo/workflows/pre-commit.md), you will likely need these additional setup steps as well:
+In addition to all the setup required for pre-commit hooks as described in [`pre-commit.md`](/general-notes/setup/repo/workflows/pre-commit.md), you will likely need these additional setup steps as well:
 
 ```yaml
       - name: Install webdriver dependencies

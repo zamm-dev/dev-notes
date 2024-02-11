@@ -439,7 +439,7 @@ There is [Svelte Dnd](https://github.com/isaacHagoel/svelte-dnd-action), similar
 
 We come across [Neodrag](https://www.neodrag.dev/docs/svelte), which according to [this list](https://www.reddit.com/r/sveltejs/comments/1181gte/drag_drop_in_svelte_hunting_for_libs/) is by far the smallest library, and also offers axis snapping. Let's try it out.
 
-Upon trying it out, we find that it is not quite flexible enough for our needs, so we [fork it](/zamm/resources/tutorials/setup/repo/yarn-fork.md). We create [this pull request](https://github.com/PuruVJ/neodrag/pull/135) with the changes we need:
+Upon trying it out, we find that it is not quite flexible enough for our needs, so we [fork it](/general-notes/setup/repo/yarn-fork.md). We create [this pull request](https://github.com/PuruVJ/neodrag/pull/135) with the changes we need:
 
 - We need to use the groove layer as the bounds, but use the toggle as the element to be dragged within those bounds. Of the documented options, there is only the choice to specify the parent element as the bounds. It turns out there is an undocumented option to specify any element, but due to how such references [will be undefined](https://learn.svelte.dev/tutorial/bind-this) until the component mounts, we need to either update the configuration in an `onMount` (we see from Neodrag's code that it does support [updates](https://svelte.dev/docs/svelte-action) in the `draggable` action), or else add an option to return a function, which is what we go for in the fork.
 - We are using the `left` property to simultaneously position both the toggle and the groove contents, whereas Neodrag always uses the `transform` property to position only one element at a time. We add a custom `render` function to get full control over how we display the transformation during the drag.
@@ -455,7 +455,7 @@ The only problem is that we want the label to be explicitly tied to the button. 
 
 So, we will label it explicitly. But this requires referring to the ID of the label. Since we may have multiple switches on the same page, we can't hardcode this. We see that there are [already](https://github.com/sveltejs/svelte/issues/6932) [issues](https://github.com/sveltejs/svelte/issues/7517) opened about supporting this natively in Svelte. But since Svelte does not want to support it natively, we'll have to try other methods. We could try to use a package such as `locally-unique-id-generator`, which guarantees uniqueness at the cost of potentially encountering hydration issues across client/server contexts, or use a package such as `nanoid`, which makes uniqueness super probable.
 
-For [cross-compilation purposes](/zamm/resources/tutorials/setup/dev/cross.md), we may want to use nanoid version 3. Version 5 requires NodeJS 18, which in turn requires GLIBC 2.28 when you try to install it:
+For [cross-compilation purposes](/general-notes/setup/dev/cross.md), we may want to use nanoid version 3. Version 5 requires NodeJS 18, which in turn requires GLIBC 2.28 when you try to install it:
 
 ```
 2.618 node: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.28' not found (required by node)

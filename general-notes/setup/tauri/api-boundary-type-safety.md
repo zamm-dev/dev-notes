@@ -2,7 +2,7 @@
 
 ## TypeScript-Rust
 
-Follow the instructions at [`specta.md`](/zamm/resources/tutorials/libraries/specta.md).
+Follow the instructions at [`specta.md`](/general-notes/libraries/specta.md).
 
 Note, however, that this does not ensure equivalent, synced API calls as the Rust-Python sample calls do. To implement those sample calls for TypeScript as well, add a TypeScript target for `quicktype` in the `Makefile`:
 
@@ -259,7 +259,7 @@ response: >
 
 ## Rust-Python
 
-First follow the instructions at [`quicktype.md`](/zamm/resources/tutorials/setup/dev/quicktype.md) to set up `quicktype`. Now refactor `src-python/zamm/main.py`:
+First follow the instructions at [`quicktype.md`](/general-notes/setup/dev/quicktype.md) to set up `quicktype`. Now refactor `src-python/zamm/main.py`:
 
 ```python
 """Entry-point for ZAMM Python functionality."""
@@ -1098,7 +1098,7 @@ However, doing this unilaterally on the Python side would break the application 
 ["greet", {"name": "Test"}]
 ```
 
-However, that confuses `quicktype`, which assumes it is a list where every element is a union of a string or an object. As such, we'll have to explicitly tell quicktype about our expected types as JSON schema instead of letting it infer it on its own based on example inputs. Once again, see [`quicktype.md`](/zamm/resources/tutorials/setup/dev/quicktype.md) for instructions on how to set this up.
+However, that confuses `quicktype`, which assumes it is a list where every element is a union of a string or an object. As such, we'll have to explicitly tell quicktype about our expected types as JSON schema instead of letting it infer it on its own based on example inputs. Once again, see [`quicktype.md`](/general-notes/setup/dev/quicktype.md) for instructions on how to set this up.
 
 We move everything from `src-python/sample-calls/alt` and `src-python/sample-calls/canonical` into `src-python/api/sample-calls`:
 

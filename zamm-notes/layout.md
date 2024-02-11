@@ -193,7 +193,7 @@ Edit `src-svelte/src/routes/AppLayout.svelte` to constrain the maximum width of 
 
 ## Updating base animation speed with standard duration
 
-We had previously introduced `--base-animation-speed` to the layout in [`settings.md`](/ui/settings.md). Now we introduce the standard duration to the layout as well, because it is in practice used more often.
+We had previously introduced `--base-animation-speed` to the layout in [`settings.md`](/zamm-notes/settings.md). Now we introduce the standard duration to the layout as well, because it is in practice used more often.
 
 We first create `src-svelte/src/routes/AnimationControl.svelte` to consolidate the animation control logic out of `AppLayout.svelte` so that it can be reused across "prod" and testing:
 

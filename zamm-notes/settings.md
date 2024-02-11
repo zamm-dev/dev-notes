@@ -865,7 +865,7 @@ import { soundOn, volume } from "$lib/preferences";
 ...
 ```
 
-Now we notice that we get the old error `TypeError: this.customTesters is not iterable` (mentioned [here](/zamm/resources/tutorials/setup/dev/playwright-test-components.md)) from `src-svelte/src/lib/Switch.playwright.test.ts`. It turns out that the error message is a red herring, and just an indication that the test is failing but the matcher is also failing to produce output in the way that Vitest expects.
+Now we notice that we get the old error `TypeError: this.customTesters is not iterable` (mentioned [here](/general-notes/setup/dev/playwright-test-components.md)) from `src-svelte/src/lib/Switch.playwright.test.ts`. It turns out that the error message is a red herring, and just an indication that the test is failing but the matcher is also failing to produce output in the way that Vitest expects.
 
 We want to try print debugging, but we find that no console output is being shown. We see [this answer](https://stackoverflow.com/a/75823426) for a solution, and edit the test file accordingly:
 
@@ -1722,7 +1722,7 @@ and now we edit `src-svelte/src/routes/storybook.test.ts` to take this into acco
 
 #### CI
 
-Now our tests are failing on CI because a bit of the "Storybook update" [popup](/ui/screenshots/c72b7ff.png) ("Click to learn what's new in Storybook") sneaks into our screenshots. Even the `--no-version-updates` [option](https://stackoverflow.com/a/67279259) does anything to hide this. We try upgrading Storybook:
+Now our tests are failing on CI because a bit of the "Storybook update" [popup](/zamm-notes/screenshots/c72b7ff.png) ("Click to learn what's new in Storybook") sneaks into our screenshots. Even the `--no-version-updates` [option](https://stackoverflow.com/a/67279259) does anything to hide this. We try upgrading Storybook:
 
 ```ts
 $ npx storybook@latest upgrade
@@ -2247,7 +2247,7 @@ export const standardDuration = derived(
 );
 ```
 
-To do this properly, we should define a CSS variable based on this value as well, and propagate this change throughout the app. However, that is a more extensive refactor that will be described in the "Updating base animation speed with standard duration" section of [`layout.md`](/ui/layout.md) instead.
+To do this properly, we should define a CSS variable based on this value as well, and propagate this change throughout the app. However, that is a more extensive refactor that will be described in the "Updating base animation speed with standard duration" section of [`layout.md`](/zamm-notes/layout.md) instead.
 
 ## Sidebar mock navigation
 

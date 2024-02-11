@@ -977,7 +977,7 @@ describe("AppLayout", () => {
 
 ```
 
-This also requires the changes mentioned in [`vitest.md`](/zamm/resources/tutorials/setup/tauri/vitest.md) for getting `onMount` to execute.
+This also requires the changes mentioned in [`vitest.md`](/general-notes/setup/tauri/vitest.md) for getting `onMount` to execute.
 
 We want the preferences to be read when the user hits the switch, not when the store gets updated, because the store appears to get updated even on app startup. As such, we edit `src-svelte/src/lib/Switch.svelte`:
 

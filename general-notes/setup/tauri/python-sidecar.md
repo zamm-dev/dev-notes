@@ -1,6 +1,6 @@
 # Adding a Python sidecar
 
-To add a Python sidecar to an existing Tauri project, first follow the steps for [setting up a new Python project](/zamm/resources/tutorials/setup/new-python-project.md), but skip the Git repo init part because we're already using Git.
+To add a Python sidecar to an existing Tauri project, first follow the steps for [setting up a new Python project](/general-notes/setup/new-python-project.md), but skip the Git repo init part because we're already using Git.
 
 Start the Python project as a subfolder inside the current directory, with the same name as the current project. For example, if the current project name is `Hello World`, you should have now created a `hello-world` folder inside the current directory. Rename it to `src-python` in keeping with the existing Tauri naming scheme, so that it's clear this is the Python component of our Hello World project.
 
@@ -532,7 +532,7 @@ failures:
     tests::test_greet_name
 ```
 
-Alternatively, to keep it as a unit-test rather than an integration test, you can mock the sidecar call as shown [here](/zamm/resources/tutorials/libraries/mockall.md)
+Alternatively, to keep it as a unit-test rather than an integration test, you can mock the sidecar call as shown [here](/general-notes/libraries/mockall.md)
 
 ## Invoking the sidecar from JS
 
@@ -660,7 +660,7 @@ Note that if you invoke it from the frontend, the binary will be located at `src
 
 ### Testing
 
-Follow the instructinos at [`vitest.md`](/zamm/resources/tutorials/setup/tauri/vitest.md).
+Follow the instructinos at [`vitest.md`](/general-notes/setup/tauri/vitest.md).
 
 ## VS Code integration
 

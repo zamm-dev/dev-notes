@@ -1108,4 +1108,4 @@ We then edit `src-svelte/src/lib/Slider.svelte` to make use of this new class:
 </div>
 ```
 
-We also find that the `--leeway` variable gets overwritten during the info box reveal animation. We address this in the "Preserving original styles" part of [`infobox.md`](/ui/infobox.md).
+We also find that the `--leeway` variable gets overwritten during the info box reveal animation. We address this in the "Preserving original styles" part of [`infobox.md`](/zamm-notes/infobox.md).

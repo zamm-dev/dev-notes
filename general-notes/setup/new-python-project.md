@@ -25,11 +25,11 @@ Bumping version from 0.1.0 to 0.0.0
 
 ## Development tooling
 
-- Follow [these instructions](/zamm/resources/tutorials/setup/tools/default.md) to set up default Python dev tooling
-- Follow the instructions at [`makefile/python.md`](/zamm/resources/tutorials/setup/makefile/python.md) to set up a Makefile. This Makefile will make use of all the dev tooling set up in the previous step.
+- Follow [these instructions](/general-notes/setup/tools/default.md) to set up default Python dev tooling
+- Follow the instructions at [`makefile/python.md`](/general-notes/setup/makefile/python.md) to set up a Makefile. This Makefile will make use of all the dev tooling set up in the previous step.
 
 ## Repository setup
 
-Follow [these instructions](/zamm/resources/tutorials/setup/repo/default.md) to set up a default Git repo hosted on Github.
+Follow [these instructions](/general-notes/setup/repo/default.md) to set up a default Git repo hosted on Github.
 
 That's all! **Don't take any more steps** because the task is now done!

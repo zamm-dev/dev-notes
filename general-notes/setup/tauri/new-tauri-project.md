@@ -4,9 +4,9 @@
 
 Set up NodeJS, Rust, and Tauri as described in:
 
-- [`nodejs.md`](/zamm/resources/tutorials/setup/dev/nodejs.md)
-- [`rust.md`](/zamm/resources/tutorials/setup/dev/rust.md)
-- [`tauri.md`](/zamm/resources/tutorials/setup/dev/tauri.md)
+- [`nodejs.md`](/general-notes/setup/dev/nodejs.md)
+- [`rust.md`](/general-notes/setup/dev/rust.md)
+- [`tauri.md`](/general-notes/setup/dev/tauri.md)
 
 
 Then set up Tauri app creation:
@@ -361,7 +361,7 @@ Only the last line repeats when we try to press a switch, so the others are like
 
 We find that this is likely due to an existing issue around loading video or audio as assets. We leave [a comment](https://github.com/tauri-apps/tauri/issues/3725#issuecomment-1747970925) on the issue to describe the data we have on this. It is clear now that we must work around this issue instead.
 
-We do so by first setting up Rodio as described in [`rodio.md`](/zamm/resources/tutorials/libraries/rust/rodio.md). We move the sound file to `src-tauri/sounds/switch.ogg`. Since this is our first time using the rodio crate, we define new errors in `src-tauri/src/commands/errors.rs`. We keep to one top-level error per external crate, so we define a new error type `RodioError`:
+We do so by first setting up Rodio as described in [`rodio.md`](/general-notes/libraries/rust/rodio.md). We move the sound file to `src-tauri/sounds/switch.ogg`. Since this is our first time using the rodio crate, we define new errors in `src-tauri/src/commands/errors.rs`. We keep to one top-level error per external crate, so we define a new error type `RodioError`:
 
 ```rust
 #[derive(thiserror::Error, Debug)]
@@ -756,14 +756,14 @@ Svelte setup:
 
 Follow the instructions at:
 
-- [`eslint.md`](/zamm/resources/tutorials/setup/tools/svelte/eslint.md)
-- [`prettier.md`](/zamm/resources/tutorials/setup/tools/svelte/prettier.md)
+- [`eslint.md`](/general-notes/setup/tools/svelte/eslint.md)
+- [`prettier.md`](/general-notes/setup/tools/svelte/prettier.md)
 
 Then for pre-commit, follow the instructions at
 
-- [`pre-commit.md`](/zamm/resources/tutorials/setup/repo/pre-commit/pre-commit.md)
-- [`cargo.md`](/zamm/resources/tutorials/setup/repo/pre-commit/cargo.md)
-- [`svelte.md`](/zamm/resources/tutorials/setup/repo/pre-commit/svelte.md)
+- [`pre-commit.md`](/general-notes/setup/repo/pre-commit/pre-commit.md)
+- [`cargo.md`](/general-notes/setup/repo/pre-commit/cargo.md)
+- [`svelte.md`](/general-notes/setup/repo/pre-commit/svelte.md)
 
 ### Debugging
 

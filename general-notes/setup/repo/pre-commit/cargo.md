@@ -17,7 +17,7 @@
         pass_filenames: false
 ```
 
-If there are some warnings emitted by libraries that don't cause clippy to return a nonzero exit code (for an example, see [`diesel.md`](/zamm/resources/tutorials/libraries/rust/diesel.md)), you can simulate that manually by creating `clippy.sh`:
+If there are some warnings emitted by libraries that don't cause clippy to return a nonzero exit code (for an example, see [`diesel.md`](/general-notes/libraries/rust/diesel.md)), you can simulate that manually by creating `clippy.sh`:
 
 ```sh
 #!/usr/bin/bash
@@ -50,7 +50,7 @@ if [[ $clippy_output == *"warning"* ]]; then
 fi
 ```
 
-To check for warnings specific to your project and not any forks (as was needed in [`chat.md`](/ui/chat.md)), do:
+To check for warnings specific to your project and not any forks (as was needed in [`chat.md`](/zamm-notes/chat.md)), do:
 
 ```bash
 ...

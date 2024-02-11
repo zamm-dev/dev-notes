@@ -22,7 +22,7 @@ Then you can edit the `package.json` in your main project to point to this new l
 
 Run `yarn` again to update the install location for the dependency.
 
-Follow the instructions [here](/zamm/resources/tutorials/libraries/svelte/neodrag.md) to install the dependencies and compile the project.
+Follow the instructions [here](/general-notes/libraries/svelte/neodrag.md) to install the dependencies and compile the project.
 
 If you get an error such as this:
 

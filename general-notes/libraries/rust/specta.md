@@ -116,7 +116,7 @@ to
 
 renaming `greet` to `trigger_greet` to avoid name collision.
 
-If you had set up [a Python sidecar](/zamm/resources/tutorials/setup/tauri/python-sidecar.md) before, now when you go to press the "Greet" button, you should be welcomed with
+If you had set up [a Python sidecar](/general-notes/setup/tauri/python-sidecar.md) before, now when you go to press the "Greet" button, you should be welcomed with
 
 > Hello, dude! You have been greeted from Python via Rust via TypeScript!
 
@@ -183,7 +183,7 @@ during the release build phase but not the debug build phase.
 
 ## Frontend tests
 
-If you have previously set up frontend tests [here](/zamm/resources/tutorials/setup/tauri/vitest.md) in addition with [mocked sidecar invocation](/zamm/resources/tutorials/setup/tauri/python-sidecar.md), you may now get an error such as
+If you have previously set up frontend tests [here](/general-notes/setup/tauri/vitest.md) in addition with [mocked sidecar invocation](/general-notes/setup/tauri/python-sidecar.md), you may now get an error such as
 
 ```
  FAIL  src/routes/greet/Greet.test.ts [ src/routes/greet/Greet.test.ts ]

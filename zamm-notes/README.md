@@ -229,15 +229,15 @@ Unfortunately, other failing tests on Windows require further work.
 
 ## Developing the project from scratch
 
-Follow the instructions in [`tauri.md`](/zamm/resources/tutorials/setup/dev/tauri.md) to set up Tauri.
+Follow the instructions in [`tauri.md`](/general-notes/setup/dev/tauri.md) to set up Tauri.
 
-Then, to avoid the issue mentioned in [`indradb.md`](/zamm/resources/tutorials/libraries/indradb.md), install this:
+Then, to avoid the issue mentioned in [`indradb.md`](/general-notes/libraries/indradb.md), install this:
 
 ```bash
 $ sudo apt install libclang-dev
 ```
 
-And to avoid the issue mentioned in [new Tauri project setup](/zamm/resources/tutorials/setup/tauri/new-tauri-project.md), install this:
+And to avoid the issue mentioned in [new Tauri project setup](/general-notes/setup/tauri/new-tauri-project.md), install this:
 
 ```bash
 $ sudo apt install fuse
@@ -247,8 +247,8 @@ $ sudo apt install fuse
 
 Follow these instructions to set the project up:
 
-- [Setting up a new Tauri project](/zamm/resources/tutorials/setup/tauri/new-tauri-project.md)
-- [Setting up a Python sidecar](/zamm/resources/tutorials/setup/tauri/python-sidecar.md)
+- [Setting up a new Tauri project](/general-notes/setup/tauri/new-tauri-project.md)
+- [Setting up a Python sidecar](/general-notes/setup/tauri/python-sidecar.md)
 
 ### For existing repos
 
@@ -297,7 +297,7 @@ Check that you have gotten this to compile.
 
 ### Saving the DB to the user's data dir
 
-Instead of leaving a mess in the arbitrary current directory where the command is run, or preventing the user from accessing the same database again, use [`directories`](/zamm/resources/tutorials/libraries/directories.md) to pick the user's data folder for app data storage.
+Instead of leaving a mess in the arbitrary current directory where the command is run, or preventing the user from accessing the same database again, use [`directories`](/general-notes/libraries/directories.md) to pick the user's data folder for app data storage.
 
 Requirements:
 
@@ -360,7 +360,7 @@ fn get_db() -> Option<SqliteConnection> {
 
 ### Frontend styling
 
-Install fonts as described [here](/zamm/resources/tutorials/coding/frameworks/sveltekit.md). Then add CSS for the fonts, editing `src-svelte/src/routes/styles.css`:
+Install fonts as described [here](/general-notes/coding/frameworks/sveltekit.md). Then add CSS for the fonts, editing `src-svelte/src/routes/styles.css`:
 
 ```css
 :root {
@@ -390,7 +390,7 @@ If you do this, make sure to edit the font-family for `src-svelte/src/routes/Hea
 
 ### Exposing API keys to the frontend
 
-First [refactor](/zamm/resources/tutorials/coding/refactoring_rust_module.md), then instructions at [`environment_variables.md`](/zamm/resources/tutorials/systems/environment_variables.md) to read them from the environment.
+First [refactor](/general-notes/coding/refactoring_rust_module.md), then instructions at [`environment_variables.md`](/general-notes/systems/environment_variables.md) to read them from the environment.
 
 Then add a command for exposing API keys, as described below. Pipe that data through to the frontend. The keys should be displayed in a table with a single header spanning all columns, named "API Keys". The service name should be displayed on the left column of the table, and the key should be displayed on the right. The key should be marked as "not set" if it's undefined.
 
@@ -903,7 +903,7 @@ which makes the `nav` a positioned element and makes the calculation of `--icons
 
 ### Embossing icons
 
-To use icons, follow the instructions for [unplugin-icons](/zamm/resources/tutorials/setup/dev/unplugin.md). Then we follow the instructions [here](https://css-tricks.com/adding-shadows-to-svg-icons-with-css-and-svg-filters/) to define a filter that will emboss our icons:
+To use icons, follow the instructions for [unplugin-icons](/general-notes/setup/dev/unplugin.md). Then we follow the instructions [here](https://css-tricks.com/adding-shadows-to-svg-icons-with-css-and-svg-filters/) to define a filter that will emboss our icons:
 
 ```svelte
 ...
@@ -1308,7 +1308,7 @@ Finally, we give the logo this size:
   }
 ```
 
-This is just for the elements specific to this page. To complete the styling, we'll make use of the [rounded cut-corner CSS trick](/zamm/resources/tutorials/coding/css.md).
+This is just for the elements specific to this page. To complete the styling, we'll make use of the [rounded cut-corner CSS trick](/general-notes/coding/css.md).
 
 Afterwards, we notice that because the last line of the table, "Release    Ubuntu 18.04", contains no descenders in any of its characters, it looks as if there's extra padding at the bottom of the div, between the text baseline and the div border. To fix this, we add the class `.less-space` to the last table, and define the CSS for this class as:
 

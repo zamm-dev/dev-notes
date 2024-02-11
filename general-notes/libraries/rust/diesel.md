@@ -400,7 +400,7 @@ warning: #[table_name] attribute form is deprecated
     Finished dev [unoptimized + debuginfo] target(s) in 1.74s
 ```
 
-Therefore, you should follow the instructions at [`cargo.md`](/zamm/resources/tutorials/setup/repo/pre-commit/cargo.md) to manually error out when "warning" is written to stdout.
+Therefore, you should follow the instructions at [`cargo.md`](/general-notes/setup/repo/pre-commit/cargo.md) to manually error out when "warning" is written to stdout.
 
 To trigger the above warning for a test, do
 

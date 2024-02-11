@@ -74,6 +74,6 @@ jobs:
 
 Follow the above steps a second time to edit `.github/workflows/test.yml`.
 
-Finally, we follow the steps at [`branch-protection.md`](/zamm/resources/tutorials/setup/repo/branch-protection.md) to protect the `main` branch. It needs updated protection after we added the new version.
+Finally, we follow the steps at [`branch-protection.md`](/general-notes/setup/repo/branch-protection.md) to protect the `main` branch. It needs updated protection after we added the new version.
 
 That's all! **Don't take any more steps** because the task is now done!

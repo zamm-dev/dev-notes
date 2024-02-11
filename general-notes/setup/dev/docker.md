@@ -249,7 +249,7 @@ You may want the `-n` option as shown [here](https://unix.stackexchange.com/a/24
 
 ### GitHub
 
-Create a classic PAT as mentioned [here](/zamm/resources/tutorials/coding/frameworks/sveltekit.md) that has permissions to read, write, and delete packages. Put the key in an environmental variable such as `GHCR_PAT`. Now suppose your GitHub username is `amosjyng` and you have a local image `zamm-build` that you want to push to the repo at `github.com/amosjyng/zamm`. Then do
+Create a classic PAT as mentioned [here](/general-notes/coding/frameworks/sveltekit.md) that has permissions to read, write, and delete packages. Put the key in an environmental variable such as `GHCR_PAT`. Now suppose your GitHub username is `amosjyng` and you have a local image `zamm-build` that you want to push to the repo at `github.com/amosjyng/zamm`. Then do
 
 ```bash
 $ docker login ghcr.io -u amosjyng -p $GHCR_PAT

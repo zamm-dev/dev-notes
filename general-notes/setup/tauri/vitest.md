@@ -500,7 +500,7 @@ interface Window {
 
 ### Specta
 
-If instead you [set up Specta](/zamm/resources/tutorials/libraries/specta.md), you should follow the mocking instructions in that file.
+If instead you [set up Specta](/general-notes/libraries/specta.md), you should follow the mocking instructions in that file.
 
 ## Tips
 

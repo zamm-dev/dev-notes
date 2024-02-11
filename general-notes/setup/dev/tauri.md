@@ -6,7 +6,7 @@ First, install Tauri dependencies:
 $ sudo apt install libwebkit2gtk-4.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
-Set up Rust using the instructions at [`rust.md`](/zamm/resources/tutorials/setup/dev/rust.md)
+Set up Rust using the instructions at [`rust.md`](/general-notes/setup/dev/rust.md)
 
 Then, install the Tauri CLI:
 
@@ -46,7 +46,7 @@ error Command failed with exit code 1.
 info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
 ```
 
-then you may need to follow [these instructions](/zamm/resources/tutorials/setup/dev/remote.md) to set up a VNC session, and then either run it from inside the VNC session, or see what the display is on the VNC session:
+then you may need to follow [these instructions](/general-notes/setup/dev/remote.md) to set up a VNC session, and then either run it from inside the VNC session, or see what the display is on the VNC session:
 
 ```bash
 $ echo $DISPLAY

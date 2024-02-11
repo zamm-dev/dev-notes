@@ -26,7 +26,7 @@ We find that this is a comfortable maximum width except for the settings screen.
 </InfoBox>
 ```
 
-However, upon visiting the homepage when the window is maximized, we realize that the info boxes are no longer aligned. We therefore constrain the max width as indicated in [`layout.md`](/ui/layout.md), and then edit `src-svelte/src/lib/InfoBox.svelte` to make the max width constraint optional:
+However, upon visiting the homepage when the window is maximized, we realize that the info boxes are no longer aligned. We therefore constrain the max width as indicated in [`layout.md`](/zamm-notes/layout.md), and then edit `src-svelte/src/lib/InfoBox.svelte` to make the max width constraint optional:
 
 ```svelte
 <script lang="ts">
@@ -197,7 +197,7 @@ const components: ComponentTestConfig[] = [
 
 ## Sub-information
 
-After implementing the `SubInfoBox` as described in [`settings.md`](/ui/settings.md), we tweak it to center the h3 subheadings:
+After implementing the `SubInfoBox` as described in [`settings.md`](/zamm-notes/settings.md), we tweak it to center the h3 subheadings:
 
 ```svelte
 <section ...>
@@ -2344,7 +2344,7 @@ in order to avoid the error
 Property 'style' does not exist on type 'Element'.
 ```
 
-However, as discovered in [`slider.md`](/ui/slider.md), this problematically overwrites all other styles. We can fix this by casting to `HTMLElement`:
+However, as discovered in [`slider.md`](/zamm-notes/slider.md), this problematically overwrites all other styles. We can fix this by casting to `HTMLElement`:
 
 ```ts
   class RevealContent extends SubAnimation<void> {
@@ -2605,7 +2605,7 @@ Now, we actually use this newly computed timing:
 
 ### Composite and atomic markers
 
-We initially implemented atomic animation markers in [`slider.md`](/ui/slider.md). However, when implementing [`chat.md`](/ui/chat.md), we find that we also want a composite animation marker for when we want the node's children to fade-in separately.
+We initially implemented atomic animation markers in [`slider.md`](/zamm-notes/slider.md). However, when implementing [`chat.md`](/zamm-notes/chat.md), we find that we also want a composite animation marker for when we want the node's children to fade-in separately.
 
 We start off by adding support for this new marker in `src-svelte/src/lib/InfoBox.svelte`:
 

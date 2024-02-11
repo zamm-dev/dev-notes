@@ -445,7 +445,7 @@ def from_union(fs, x):
     ...
 ```
 
-We change it again as we did in [`api-boundary-type-safety.md`](/zamm/resources/tutorials/setup/tauri/api-boundary-type-safety.md):
+We change it again as we did in [`api-boundary-type-safety.md`](/general-notes/setup/tauri/api-boundary-type-safety.md):
 
 ```py
 def from_union(fs: List[Callable], x: Any) -> Any:
@@ -2120,7 +2120,7 @@ where
 }
 ```
 
-As shown in [`diesel.md`](/zamm/resources/tutorials/libraries/rust/diesel.md), we use `EntityId` as a wrapper around UUID, except that we name the `uuid` field `id` for JSON serialization and implement `Deref` for it because we want to pretend as if the wrapper didn't actually exist:
+As shown in [`diesel.md`](/general-notes/libraries/rust/diesel.md), we use `EntityId` as a wrapper around UUID, except that we name the `uuid` field `id` for JSON serialization and implement `Deref` for it because we want to pretend as if the wrapper didn't actually exist:
 
 ```rs
 #[derive(
@@ -4480,7 +4480,7 @@ However, this doesn't work as well as listening for a window resize, because the
   });
 ```
 
-Now we finally have screenshots that are mostly acceptable, except that in Webkit (and only in Webkit) the rendered messages [overlap](/ui/screenshots/02b77e5.png) with the `h2` element. We commit our progress so far before proceeding any further with the fix.
+Now we finally have screenshots that are mostly acceptable, except that in Webkit (and only in Webkit) the rendered messages [overlap](/zamm-notes/screenshots/02b77e5.png) with the `h2` element. We commit our progress so far before proceeding any further with the fix.
 
 To fix this, we first try editing `src-svelte/src/lib/InfoBox.svelte` to insert a div whose only purpose is to provide the h2 element with a background:
 
@@ -5961,7 +5961,7 @@ Finally, we edit `src-svelte/src/routes/chat/+page.svelte` to point to this new 
 
 #### Conversation reveal
 
-We make the info box reveal animation smoother for the empty new conversation view. The steps are recorded at [`infobox.md`](/ui/infobox.md).
+We make the info box reveal animation smoother for the empty new conversation view. The steps are recorded at [`infobox.md`](/zamm-notes/infobox.md).
 
 ### CI run
 

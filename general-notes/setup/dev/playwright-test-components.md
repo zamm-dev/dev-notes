@@ -158,7 +158,7 @@ Error: Property 'toMatchImageSnapshot' does not exist on type 'MakeMatchers<void
 
 Unlike the example app [here](https://github.com/vitest-dev/vitest/blob/0c13c39/examples/image-snapshot/test/basic.test.ts), copying the module declaration here does not seem to get rid of the TypeScript error. The error is a spurious one because the test itself clearly executes successfully.
 
-Make sure to add a `src-svelte/screenshots/.gitignore` to ignore the new output files. Because we've customized the output directories to be consistent with [WebdriverIO](/zamm/resources/tutorials/setup/tauri/e2e-testing.md), we do
+Make sure to add a `src-svelte/screenshots/.gitignore` to ignore the new output files. Because we've customized the output directories to be consistent with [WebdriverIO](/general-notes/setup/tauri/e2e-testing.md), we do
 
 ```
 testing/
@@ -571,7 +571,7 @@ const components: ComponentTestConfig[] = [
 ...
 ```
 
-You may find some of these full-body tests to be flaky. In that case, specify a certain number of retries as explained [here](/zamm/resources/tutorials/setup/tauri/vitest.md).
+You may find some of these full-body tests to be flaky. In that case, specify a certain number of retries as explained [here](/general-notes/setup/tauri/vitest.md).
 
 ## Parallelization
 
@@ -738,7 +738,7 @@ and you are in the specific context of trying to take a Storybook screenshot, th
 
 This has the added benefit of making the screenshot more compact, since it will only be the size of the child element and not the entire Storybook root element.
 
-Note that we do this again in [settings.md](/ui/settings.md), making it
+Note that we do this again in [settings.md](/zamm-notes/settings.md), making it
 
 ```ts
   const takeScreenshot = async (page: Page, screenshotEntireBody?: boolean) => {

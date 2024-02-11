@@ -30,6 +30,6 @@ Clearly we need some way for the two tools to play together nicely. As such, if 
 
 You can do so by following these steps:
 
-Follow the instructions at [`isort.md`](/zamm/resources/tutorials/setup/tools/isort.md) to only configure `pyproject.toml` for `isort` usage. There is no need to install `isort` because in this scenario, it is already installed.
+Follow the instructions at [`isort.md`](/general-notes/setup/tools/isort.md) to only configure `pyproject.toml` for `isort` usage. There is no need to install `isort` because in this scenario, it is already installed.
 
 That's all! **Don't take any more steps** because the task is now done!
