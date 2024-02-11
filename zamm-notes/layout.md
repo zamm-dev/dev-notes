@@ -768,3 +768,67 @@ On Windows, we notice that the scrollbar appears in the y direction even when it
 ```
 
 We confirm that curiously enough, the Webkit install on Linux Mint does not have this problem.
+
+## Off-white background
+
+We find that the pure white background provides no contrast between the background and the title bar on the Mac and on Windows. We edit `src-svelte/src/routes/styles.css`:
+
+```css
+  ...
+
+  :root {
+    ...
+    --color-offwhite: #FAF9F6;
+    ...
+  }
+
+  ...
+
+  body {
+    background-color: var(--color-offwhite);
+  }
+
+  ...
+```
+
+We notice that nothing changes just yet. That's because the app layout itself has a background color. We therefore edit `src-svelte/src/routes/AppLayout.svelte` as well:
+
+```css
+  .main-container {
+    ...
+    background-color: var(--color-offwhite);
+    ...
+  }
+```
+
+Now we edit the sidebar as well to match:
+
+```css
+  ...
+
+  .indicator {
+    ...
+    background-color: var(--color-offwhite);
+    ...
+  }
+
+  ...
+
+  .indicator::before {
+    ...
+    box-shadow: ... var(--color-offwhite);
+  }
+
+  .indicator::after {
+    ...
+    box-shadow: ... var(--color-offwhite);
+  }
+```
+
+We find that almost all of our screenshot tests now fail due to the body background color change. To make the diffs manageable, we revert the body background color in `src-svelte/src/routes/styles.css`:
+
+```css
+  body {
+    background-color: white;
+  }
+```

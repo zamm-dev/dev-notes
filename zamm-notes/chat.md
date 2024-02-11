@@ -4476,7 +4476,7 @@ However, this doesn't work as well as listening for a window resize, because the
 
     return () => {
       window.removeEventListener("resize", resizeConversationView);
-    };  
+    };
   });
 ```
 
@@ -6673,6 +6673,159 @@ jobs:
 ```
 
 The CI tests finally pass, and we inform the `tauri-driver` maintainers by creating a [new issue](https://github.com/tauri-apps/tauri/issues/8828) on their repo. (Incidentally, Cargo itself [does not](https://github.com/rust-lang/cargo/issues/7169#issuecomment-539226733) make use of the dependency lock by default. This does not appear to affect us for now, but we should still specify `--locked` to prevent such a problem from ever occuring.)
+
+### Sending only one message at a time
+
+In the future, we'll want to emulate a "natural" conversation style where AIs will wait to allow you to send multiple messages at once, and perhaps only show the latest AI response if the user sends another one while the AI is "typing". However, for now we'll simply edit the send functionality to do nothing while the AI is "typing".
+
+To do that, we first edit `src-svelte/src/lib/sample-call-testing.ts` to allow us to mock latency in promise resolution:
+
+```ts
+export class TauriInvokePlayback {
+  ...
+  callPauseMs?: number;
+
+  ...
+
+  mockCall(
+    ...
+  ): Promise<Record<string, string>> {
+    ...
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        if (matchingCall.succeeded) {
+          resolve(matchingCall.response);
+        } else {
+          reject(matchingCall.response);
+        }
+      }, this.callPauseMs || 0);
+    });
+  }
+
+  ...
+}
+```
+
+This causes several existing tests to fail. We fix them by editing how they wait for the response. For example, we edit `src-svelte/src/routes/components/Metadata.test.ts` from:
+
+```ts
+  test("linux system info returned", async () => {
+    ...
+    render(Metadata, {});
+    await tickFor(3);
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+
+    const shellRow = screen.getByRole("row", { name: /Shell/ });
+    const shellValueCell = within(shellRow).getAllByRole("cell")[1];
+    await waitFor(() => expect(shellValueCell).toHaveTextContent("Zsh"));
+    expect(get(systemInfo)?.shell_init_file).toEqual("/root/.zshrc");
+    ...
+  });
+```
+
+to:
+
+```ts
+  test("linux system info returned", async () => {
+    ...
+    render(Metadata, {});
+    await waitFor(() => {
+      const shellRow = screen.getByRole("row", { name: /Shell/ });
+      const shellValueCell = within(shellRow).getAllByRole("cell")[1];
+      expect(shellValueCell).toHaveTextContent("Zsh");
+      expect(get(systemInfo)?.shell_init_file).toEqual("/root/.zshrc");
+    });
+
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    ...
+  });
+```
+
+We do the same thing in `src-svelte/src/routes/AppLayout.test.ts`:
+
+```ts
+describe("AppLayout", () => {
+  ...
+
+  test("will set sound if sound preference overridden", async () => {
+    ...
+    render(AppLayout, { currentRoute: "/" });
+    await waitFor(() => {
+      expect(get(soundOn)).toBe(false);
+    });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+  });
+
+  test("will set volume if volume preference overridden", async () => {
+    ...
+    await waitFor(() => {
+      expect(get(volume)).toBe(0.8);
+    });
+    ...
+  });
+
+  test("will set animation if animation preference overridden", async () => {
+    ...
+    await waitFor(() => {
+      expect(get(animationsOn)).toBe(false);
+    });
+    ...
+  });
+
+  test("will set animation speed if speed preference overridden", async () => {
+    ...
+    await waitFor(() => {
+      expect(get(animationSpeed)).toBe(0.9);
+    });
+    ...
+  });
+});
+```
+
+Now we edit `src-svelte/src/routes/chat/Chat.svelte` to implement this:
+
+```ts
+  async function sendChatMessage(message: string) {
+    if (expectingResponse) {
+      return;
+    }
+
+    ...
+  }
+```
+
+and we add a new test to `src-svelte/src/routes/chat/Chat.test.ts` where we make use of the new waiting functionality, making note of which parts we copied from `sendChatMessage` and which parts are different:
+
+```ts
+  test("won't send multiple messages at once", async () => {
+    render(Chat, {});
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+    playback.callPauseMs = 1_000; // this line differs from sendChatMessage
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/chat-start-conversation.yaml",
+    );
+    const nextExpectedApiCall: ParsedCall = playback.unmatchedCalls.slice(-1)[0];
+    const nextExpectedCallArgs = nextExpectedApiCall.request[1] as Record<
+      string,
+      any
+    >;
+    const nextExpectedMessage = nextExpectedCallArgs["prompt"].slice(-1)[0] as ChatMessage;
+    const nextExpectedHumanPrompt = nextExpectedMessage.text;
+
+    const chatInput = screen.getByLabelText("Chat with the AI:");
+    expect(chatInput).toHaveValue("");
+    await userEvent.type(chatInput, "Hello, does this work?");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(nextExpectedHumanPrompt)).toBeInTheDocument();
+
+    // this part differs from sendChatMessage
+    await userEvent.type(chatInput, "Tell me something funny.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(nextExpectedHumanPrompt)).toBeInTheDocument();
+  });
+```
 
 ## Persisting and resuming conversations
 
