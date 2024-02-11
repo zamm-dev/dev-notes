@@ -6430,6 +6430,14 @@ Note that:
 1. This requires us to rename the `text` div to `text-container`, and insert another `text` div inside that will have `box-sizing: content-box;` so that we can set the width directly on that.
 2. The `requestAnimationFrame` trick does not work here, so we have to wait a bit for the browser to render the content properly before resizing it with JS.
 
+We realize that `.text-element` does not actually affect anything, but that it works anyway because we haven't overridden `content-box` as the default box-sizing for divs. We fix this and keep it anyways to be explicit about our intentions:
+
+```css
+  .text {
+    ...
+  }
+```
+
 We now get this test error:
 
 ```

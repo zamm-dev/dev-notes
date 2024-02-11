@@ -528,3 +528,52 @@ It does not appear that there is a way to include CSS inside of the `.mdx` blog 
   ...
 </html>
 ```
+
+## Code blocks inside HTML
+
+While writing up a blog post, we find that
+
+```mdx
+<ol>
+  <li>Now the tests fail with
+		\`\`\`
+		TypeError: range.getBoundingClientRect is not a function
+		\`\`\`
+  </li>
+</ol>
+```
+
+fails with the error
+
+```
+MDXError: Expected a closing tag for `<li>` (69:3-69:7) before the end of `paragraph`
+    at TransformContext.transform (file:///C:/Users/Amos%20Ng/Documents/projects/zamm-dev/website/node_modules/.pnpm/@astrojs+mdx@2.1.1_astro@4.3.5/node_modules/@astrojs/mdx/dist/index.js:92:27)
+    at async Object.transform (file:///C:/Users/Amos%20Ng/Documents/projects/zamm-dev/website/node_modules/.pnpm/vite@5.1.0/node_modules/vite/dist/node/chunks/dep-nGG-_oRu.js:50818:30)
+		...
+```
+
+It appears that this may be a [known problem](https://github.com/orgs/mdx-js/discussions/2241). Upon further experimentation, we discover that starting on a newline gets the MDX parser working correctly:
+
+```mdx
+<ol>
+  <li>
+    Now the tests fail with
+    \`\`\`
+    TypeError: range.getBoundingClientRect is not a function
+    \`\`\`
+  </li>
+</ol>
+```
+
+### Styling
+
+We style these code blocks with this code in `src\styles\global.css`, so that it is easier to read large stack traces:
+
+```css
+pre {
+	white-space: pre-wrap;
+	text-align: left;
+	font-size: 1rem;
+	...
+}
+```
