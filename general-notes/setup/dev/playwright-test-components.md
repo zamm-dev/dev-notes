@@ -1348,3 +1348,25 @@ shows as false. This is weird because `Buffer` extends `Uint8Array` in NodeJS. W
 ```
 
 Oddly enough, now the test passes.
+
+### Failed to initialize launcher service
+
+If you get
+
+```
+Error: Error: Failed to initilialise launcher service unknown: Error: Couldn't initialize "wdio-image-comparison-service".
+Error: Cannot find module '../build/Release/canvas.node'
+Require stack:
+- /root/zamm/node_modules/canvas/lib/bindings.js
+- /root/zamm/node_modules/canvas/lib/canvas.js
+- /root/zamm/node_modules/canvas/index.js
+- /root/zamm/node_modules/webdriver-image-comparison/build/methods/images.js
+- /root/zamm/node_modules/webdriver-image-comparison/build/commands/saveScreen.js
+- /root/zamm/node_modules/wdio-image-comparison-service/build/service.js
+- /root/zamm/node_modules/wdio-image-comparison-service/build/index.js
+    at Function.Module._resolveFilename (node:internal/modules/cjs/loader:1048:15)
+    at Function.Module._resolveFilename.sharedData.moduleResolveFilenameHook.installedValue [as _resolveFilename] (/root/zamm/node_modules/@cspotcode/source-map-support/source-map-support.js:811:30)
+    ...
+```
+
+this appears to be due to [a problem](https://stackoverflow.com/a/63175855) with the canvas installation script. Nuking the `node_modules` folder and reinstalling it with `yarn` appears to fix the problem.

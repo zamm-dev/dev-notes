@@ -771,7 +771,7 @@ We confirm that curiously enough, the Webkit install on Linux Mint does not have
 
 ## Off-white background
 
-We find that the pure white background provides no contrast between the background and the title bar on the Mac and on Windows. We edit `src-svelte/src/routes/styles.css`:
+We find that the pure white background provides no contrast between the background and the title bar on the Mac and on Windows. We edit `src-svelte/src/routes/styles.css` to provide a new [offwhite](https://create.vista.com/colors/color-names/off-white/) color:
 
 ```css
   ...
@@ -832,3 +832,5 @@ We find that almost all of our screenshot tests now fail due to the body backgro
     background-color: white;
   }
 ```
+
+Unfortunately, it seems Webdriver does not do a diff unless the difference in color is drastic enough, as our tests on CI pass despite the change. We update the gold screenshots anyway.

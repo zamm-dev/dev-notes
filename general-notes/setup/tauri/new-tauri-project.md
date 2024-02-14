@@ -996,6 +996,13 @@ mac: svelte rust
 	cargo tauri build --target universal-apple-darwin
 ```
 
+After a few times where it fails with a nondescript error message, we make sure to run the command with `--verbose`:
+
+```Makefile
+mac: svelte rust
+	cargo tauri build --target universal-apple-darwin --verbose
+```
+
 #### Customizing the bundle
 
 We follow the rest of the instructions [here](https://tauri.app/v1/guides/building/macos) and edit `src-tauri/tauri.conf.json`:

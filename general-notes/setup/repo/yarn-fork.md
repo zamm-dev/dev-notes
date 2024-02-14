@@ -117,6 +117,13 @@ then you should also add the corresponding clean command:
        rm -rf build node_modules ../node_modules forks/neodrag/packages/svelte/dist/dist
 ```
 
+Once we edit the CSS without it being reflected in the build, we realize that we didn't include `css` in the list of dependent files. We can add it to the list of dependencies:
+
+```Makefile
+build: forks/neodrag/packages/svelte/dist $(shell find src -type f \( ... -name "*.css" ... \) -not -path "*/node_modules/*")
+	...
+```
+
 ## yarn linking
 
 To automatically update the installed version of the package whenever you edit it for development purposes, you can try using `yarn link` as described [here](https://stackoverflow.com/a/41879331). Enter the directory for the dependency:

@@ -6680,7 +6680,45 @@ jobs:
     ...
 ```
 
-The CI tests finally pass, and we inform the `tauri-driver` maintainers by creating a [new issue](https://github.com/tauri-apps/tauri/issues/8828) on their repo. (Incidentally, Cargo itself [does not](https://github.com/rust-lang/cargo/issues/7169#issuecomment-539226733) make use of the dependency lock by default. This does not appear to affect us for now, but we should still specify `--locked` to prevent such a problem from ever occuring.)
+The CI tests finally pass, and we inform the `tauri-driver` maintainers by creating a [new issue](https://github.com/tauri-apps/tauri/issues/8828) on their repo.
+
+Incidentally, Cargo itself [does not](https://github.com/rust-lang/cargo/issues/7169#issuecomment-539226733) make use of the dependency lock by default. This does not appear to affect us at first, but eventually our CI builds fail with
+
+```
+Error: failed to compile `tauri-cli v1.5.9`, intermediate artifacts can be found at `/tmp/cargo-install82bABj`
+Caused by:
+  package `clap_complete v4.5.0` cannot be built because it requires rustc 1.74 or newer, while the currently active rustc version is 1.71.1
+  Try re-running cargo install with `--locked`
+```
+
+We edit `.github/workflows/tests.yaml` yet again:
+
+```yaml
+...
+
+env:
+  ...
+  TAURI_CLI_VERSION: "1.5.9"
+  ...
+
+jobs:
+  ...
+  e2e:
+    ...
+    steps:
+    ...
+      - name: Install tauri-cli
+        ...
+        with:
+          ...
+          args: --locked tauri-cli@${{ env.TAURI_CLI_VERSION }}
+      - name: Install tauri-driver
+        uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: --locked tauri-driver@${{ env.TAURI_DRIVER_VERSION }}
+    ...
+```
 
 ### Sending only one message at a time
 
@@ -6833,6 +6871,268 @@ and we add a new test to `src-svelte/src/routes/chat/Chat.test.ts` where we make
     expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText(nextExpectedHumanPrompt)).toBeInTheDocument();
   });
+```
+
+## Adding a type field for variant API calls
+
+In case we ever add incompatible LLM calls (for example, to non-chat models), we'll make use of Serde's [enum representations](https://serde.rs/enum-representations.html) in order to add a `type` field to our API calls. We first edit the models in `src-tauri/src/models/llm_calls.rs`:
+
+```rs
+...
+
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    specta::Type,
+)]
+pub struct ChatPrompt {
+    pub prompt: Vec<ChatMessage>,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    AsExpression,
+    FromSqlRow,
+    specta::Type,
+)]
+#[diesel(sql_type = Text)]
+#[serde(tag = "type")]
+pub enum Prompt {
+    Chat(ChatPrompt),
+}
+
+...
+
+impl ToSql<Text, Sqlite> for Prompt
+...
+
+impl<DB> FromSql<Text, DB> for Prompt
+...
+
+pub struct Request {
+    #[serde(flatten)]
+    pub prompt: Prompt,
+    ...
+}
+
+...
+
+pub struct LlmCallRow {
+    ...,
+    pub prompt: Prompt,
+    ...
+}
+
+pub struct NewLlmCallRow<'a> {
+    ...,
+    pub prompt: &'a Prompt,
+    ...
+}
+```
+
+We realize after seeing the compilation error
+
+```
+error[E0599]: no method named `len` found for enum `models::llm_calls::Prompt` in the current scope
+    --> src/commands/llms/chat.rs:281:42
+     |
+281  |         assert!(ok_result.request.prompt.len() > 0);
+     |                                          ^^^ method not found in `Prompt`
+     |
+    ::: src/models/llm_calls.rs:211:1
+     |
+211  | pub enum Prompt {
+     | --------------- method `len` not found for this enum
+     |
+```
+
+that it might be easier after all right now to just keep `ChatPrompt` in the request and only convert it when we need an `LlmCallRow`. Unfortunately, if we do that and change
+
+```rs
+impl LlmCall {
+    pub fn as_sql_row(&self) -> NewLlmCallRow {
+        let prompt = Prompt::Chat(self.request.prompt.clone());
+        NewLlmCallRow {
+            ...,
+            prompt,
+            ...
+        }
+    }
+}
+```
+
+we get
+
+```
+error[E0308]: mismatched types
+   --> src/models/llm_calls.rs:351:13
+    |
+351 |             prompt,
+    |             ^^^^^^ expected `&Prompt`, found `Prompt`
+    |
+```
+
+We have to construct a `Prompt::Chat`, but then we can't return a reference to it. We go back to the other way.
+
+We edit `src-tauri/src/commands/llms/chat.rs`:
+
+```rs
+    async fn test_llm_api_call(recording_path: &str, sample_path: &str) {
+        ...
+        // check that it made it into the database
+        let stored_llm_call = ...
+        ...
+
+        // do a sanity check that everything is non-empty
+        let prompt = match ok_result.request.prompt {
+            Prompt::Chat(ChatPrompt { prompt }) => prompt,
+        };
+        assert!(prompt.len() > 0);
+        match &ok_result.response.completion {
+            ChatMessage::AI { text } => assert!(!text.is_empty()),
+            _ => panic!("Unexpected response type"),
+        }
+    }
+```
+
+Now we get
+
+```
+error[E0277]: the trait bound `models::llm_calls::Prompt: specta::Flatten` is not satisfied
+   --> src/models/llm_calls.rs:279:17
+    |
+279 |     pub prompt: Prompt,
+    |                 ^^^^^^ the trait `specta::Flatten` is not implemented for `models::llm_calls::Prompt`
+    |
+    = help: the following other types implement trait `specta::Flatten`:
+              BTreeMap<K, V>
+              ChatMessage
+              HashMap<K, V>
+              Llm
+              SystemTime
+              TokenMetadata
+              models::llm_calls::ChatPrompt
+              models::llm_calls::EntityId
+            and 8 others
+note: required by a bound in `models::llm_calls::_::<impl NamedType for models::llm_calls::Request>::named_data_type::validate_flatten`
+   --> src/models/llm_calls.rs:276:48
+    |
+276 | #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+    |                                                ^^^^^^^^^^^^ required by this bound in `validate_flatten`
+    = note: this error originates in the derive macro `specta::Type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+```
+
+No Google results come up, but we realize this is because of `#[serde(flatten)]` on the field. We remove that.
+
+It compiles, but tests fail. We now get
+
+```
+---- commands::llms::chat::tests::test_continue_conversation stdout ----
+thread 'commands::llms::chat::tests::test_continue_conversation' panicked at 'called `Result::unwrap()` on an `Err` value: Error("invalid type: map, expected variant identifier", line: 12, column: 6)', src/commands/llms/chat.rs:204:44
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- commands::llms::chat::tests::test_start_conversation stdout ----
+thread 'commands::llms::chat::tests::test_start_conversation' panicked at 'called `Result::unwrap()` on an `Err` value: Error("invalid type: map, expected variant identifier", line: 11, column: 6)', src/commands/llms/chat.rs:204:44
+```
+
+After inspecting `src-svelte/src/lib/bindings.ts`, we rename the field
+
+```rs
+pub struct ChatPrompt {
+    pub messages: Vec<ChatMessage>,
+}
+```
+
+because that field is no longer being flattened. We edit the transcripts like `src-tauri/api/sample-calls/chat-continue-conversation.yaml` to conform:
+
+```yaml
+...
+response:
+  ...
+      "request": {
+        "prompt": {
+          "type": "Chat",
+          "messages": [
+            {
+              "role": "System",
+              "text": "You are ZAMM, a chat program. Respond in first person."
+            },
+            {
+              "role": "Human",
+              "text": "Hello, does this work?"
+            },
+            {
+              "role": "AI",
+              "text": "Yes, it works. How can I assist you today?"
+            },
+            {
+              "role": "Human",
+              "text": "Tell me something funny."
+            }
+          ]
+        },
+        ...
+      }
+```
+
+Nothing should change on the frontend because the frontend only makes use of completions. We do a manual test and check the database:
+
+```bash
+$ sqlite3 /root/.local/share/zamm/zamm.sqlite3
+SQLite version 3.37.2 2022-01-06 13:25:41
+Enter ".help" for usage hints.
+sqlite> select * from llm_calls;
+41ce000b-2095-43bf-857c-423cbeda24d4|2024-02-14 09:38:24.046338350|open_ai|gpt-4|gpt-4-0613|1.0|27|9|36|{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"hi"}]}|{"role":"AI","text":"Hello! How can I assist you today?"}
+```
+
+Sure enough, our new `"type": "Chat"` field is present. We try to commit, but we get hit with a surprising new message from pre-commit that has never appeared before and that we certainly didn't affect just now:
+
+```
+warning: variant name ends with the enum's name
+ --> src/commands/system.rs:9:5
+  |
+9 |     MacOS,
+  |     ^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#enum_variant_names
+  = note: `-D clippy::enum-variant-names` implied by `-D warnings`
+```
+
+We change it as requested, and realize for the first time that it was displayed as "MacOS" without a space in the first place. We change the frontend at `src-svelte/src/routes/components/Metadata.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import { getSystemInfo, type OS } from "$lib/bindings";
+  ...
+  
+  function formatOsString(os: OS | null | undefined) {
+    if (os === "Mac") {
+      return "Mac OS"
+    }
+    return os ?? "Unknown";
+  }
+
+  $: os = formatOsString($systemInfo?.os);
+</script>
+
+<div class="container">
+  ...
+        <tr>
+          <td>OS</td>
+          <td>{os}</td>
+        </tr>
+  ...
+</div>
 ```
 
 ## Persisting and resuming conversations
