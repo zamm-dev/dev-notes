@@ -94,7 +94,7 @@ Asset `index.html` not found; fallback to index.html
 AssetNotFound("index.html")
 ```
 
-that means it is truly not connecting to the Vite server. [This issue](https://github.com/tauri-apps/tauri/issues/3082) explains why: [our fix](./e2e-testing.md) aroudn enabling the "custom-protocol" feature for end-to-end tests is interfering with the dev environment. Now that we have a better understanding of how this works, let's fix it properly by moving the custom protocol back:
+that means it is truly not connecting to the Vite server. [This issue](https://github.com/tauri-apps/tauri/issues/3082) explains why: [our fix](./e2e-testing.md) around enabling the "custom-protocol" feature for end-to-end tests is interfering with the dev environment. Now that we have a better understanding of how this works, let's fix it properly by moving the custom protocol back:
 
 ```toml
 [dependencies]

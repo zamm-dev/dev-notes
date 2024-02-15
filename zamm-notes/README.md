@@ -91,6 +91,11 @@ Now, we should be able to launch the whole project using
 $ yarn tauri dev
 ```
 
+To build the actual release, run
+
+```bash
+$ cargo tauri build
+
 ### Additional dev setup
 
 #### Pre-commit hooks

@@ -529,6 +529,48 @@ It does not appear that there is a way to include CSS inside of the `.mdx` blog 
 </html>
 ```
 
+### OpenGraph image
+
+We find that the `og:image` is showing the default image despite us specifying a hero image for the blog post. We discover that this is because the default template in `src\layouts\BlogPost.astro` is missing this in `BaseHead`:
+
+```astro
+<html lang="en">
+	<head>
+		<BaseHead ... image={heroImage} />
+		...
+```
+
+We also remove `public\blog-placeholder-1.jpg` because it says "Build the web you want", which is not what we want to display by default for our blog for any pages that we don't set a custom image for. After deleting that file, we search for all instances of it, and only find one in `src\components\BaseHead.astro`:
+
+```ts
+const { title, description, image = '/blog-placeholder-1.jpg' } = Astro.props;
+```
+
+We place a custom default image in `public\default-blog-image.png` and edit the above to
+
+```ts
+const { title, description, image = '/default-blog-image.jpg' } = Astro.props;
+```
+
+## Sitemaps
+
+We see from [this documentation](https://docs.astro.build/en/guides/integrations-guide/sitemap/) that we are supposed to add references to the sitemaps ourselves. We see that the built sitemap does exist at `/sitemap-index.xml`, which points to a `/sitemap-0.xml` that also exists.
+
+As suggested on the documentation site, we edit `src\components\BaseHead.astro` to include
+
+```html
+<link rel="sitemap" href="/sitemap-index.xml" />
+```
+
+We add it to `public\robots.txt` as well, creating the file itself because it doesn't exist yet:
+
+```
+User-agent: *
+Allow: /
+
+Sitemap: https://zamm.dev/sitemap-index.xml
+```
+
 ## Code blocks inside HTML
 
 While writing up a blog post, we find that
@@ -577,3 +619,20 @@ pre {
 	...
 }
 ```
+
+## Dev mode on Windows
+
+We edit `package.json` to get the dev script working by default on Windows:
+
+```json
+{
+  ...,
+  "scripts": {
+    "dev": "astro dev --host",
+    ...
+  },
+	...
+}
+```
+
+Since we're not allowing external connections to NodeJS, this should be relatively safe.
