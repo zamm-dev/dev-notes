@@ -310,6 +310,165 @@ Make sure you now update `.github/workflows/tests.yaml` as well. Screenshots sho
           retention-days: 1
 ```
 
+#### Using Storybook across multiple tests
+
+If we use Storybook across multiple tests, we may not want to stop it after it's started. This might be a potential cause of CI failures. Even locally, we can see
+
+```
+Error: browserContext.newPage: Target page, context or browser has been closed
+ ❯ src/routes/storybook.test.ts:200:43
+    198|   beforeEach<StorybookTestContext>(
+    199|     async (context: TestContext & StorybookTestContext) => {
+    200|       context.page = await browserContext.newPage();
+       |                                           ^
+    201|       context.expect.extend({ toMatchImageSnapshot });
+    202|     },
+```
+
+What we want is some setup code that acts across test suites. We create `src-svelte/src/testSetup.ts` while looking at the documentation and example [here](https://vitest.dev/config/#globalsetup):
+
+```ts
+import { ensureStorybookRunning, killStorybook } from "$lib/test-helpers";
+
+export default async function setup() {
+  let storybookProcess = await ensureStorybookRunning();
+
+  return () => killStorybook(storybookProcess);
+}
+
+```
+
+We then refer to this in `src-svelte/vitest.config.ts`:
+
+```ts
+export default defineConfig({
+  ...,
+  test: {
+    ...,
+    globalSetup: "src/testSetup.ts",
+  },
+});
+
+```
+
+We then remove all references to Storybook process starting and killing from `src-svelte/src/lib/Slider.playwright.test.ts`, `src-svelte/src/lib/Switch.playwright.test.ts`, and `src-svelte/src/lib/Switch.playwright.test.ts`.
+
+We get
+
+```
+Error: [birpc] timeout on calling "onTaskUpdate"
+ ❯ Timeout._onTimeout ../node_modules/vitest/dist/vendor-index.b271ebe4.js:39:22
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+
+This error originated in "src/lib/Switch.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "calls onToggle when toggled". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- This was the last recorded test before the error was thrown, if error originated after test finished its execution.
+```
+
+This appears to be a fluke that doesn't happen again, or else we would've tried [this workaround](https://github.com/vitest-dev/vitest/issues/1154#issuecomment-1138717832). After several more tries, we find that we're still getting the old error. We try to see if running the tests sequentially rather than in parallel would help. We find that there's `poolOptions`, but these don't appear to be available for the old version of Vitest we're using. We try to upgrade `vitest` to 1.2.2, but that also requires an upgrade for `vite` to 5.1.2. We edit `src-svelte/package.json`:
+
+```json
+{
+  ...,
+  "devDependencies": {
+    ...
+    "vite": "^5.1.3",
+    "vitest": "^1.2.2"
+  },
+  ...
+}
+```
+
+We remove the corresponding `resolutions` override for `vite` from `package.json`. We do a final
+
+```bash
+$ yarn install
+```
+
+Now we can finally edit `src-svelte/vitest.config.ts`:
+
+```ts
+
+export default defineConfig({
+  ...,
+  test: {
+    ...,
+    poolOptions: {
+      threads: {
+        singleThread: true,
+      },
+    },
+  },
+});
+
+```
+
+This seems to work locally, but when we commit, Svelte type-checking gives us:
+
+```
+/root/zamm/src-svelte/src/routes/storybook.test.ts:202:19
+Error: Property 'task' does not exist on type 'TestContext & StorybookTestContext'.
+    async (context: TestContext & StorybookTestContext) => {
+      if (context.task.result?.state === "pass") {
+        await context.page.close();
+```
+
+It actually just works in `src-svelte/src/routes/storybook.test.ts` if we avoid specifying the types ourselves:
+
+```ts
+  beforeEach<StorybookTestContext>(
+    async (context) => {
+      context.page = await browserContext.newPage();
+      context.expect.extend({ toMatchImageSnapshot });
+    },
+  );
+
+  afterEach<StorybookTestContext>(
+    async (context) => {
+      if (context.task.result?.state === "pass") {
+        await context.page.close();
+      }
+    },
+  );
+```
+
+We get the error
+
+```
+/root/zamm/src-svelte/src/routes/storybook.test.ts:240:26
+Error: Property 'page' does not exist on type 'TaskContext<Test<{}>> & TestContext'. 
+        `${testName} should render the same`,
+        async ({ expect, page }) => {
+          const variantPrefix = `--${variantConfig.name}`;
+```
+
+further down, so we do the same thing again:
+
+```ts
+      test<StorybookTestContext>(
+        `${testName} should render the same`,
+        async ({ expect, page }) => {
+          ...
+        }
+        ...
+      );
+```
+
+Of course, we'll need to update our Docker image base too, because otherwise we get the error:
+
+```
+yarn install --frozen-lockfile && yarn svelte-kit sync && yarn build
+yarn install v1.22.21
+[1/4] Resolving packages...
+[2/4] Fetching packages...
+warning svelte-preprocess@5.1.3: The engine "pnpm" appears to be invalid.
+error vite@5.1.3: The engine "node" is incompatible with this module. Expected version "^18.0.0 || >=20.0.0". Got "16.20.2"
+```
+
+We could just build the frontend in a newer version of Ubuntu, and then build the backend (which will get linked against GLIBC) in an older version, but that is not worth the effort at this point.
+
 ### Diff direction
 
 In some cases, we want the diff to be vertical when the screenshot is wide, and we want the diff to be horizontal when the screenshot is tall. We install

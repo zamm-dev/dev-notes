@@ -182,7 +182,49 @@ $ git rev-parse --short HEAD
 f12edd9
 ```
 
-Surprisingly, the exact same commit ID can be checked out on different machines, and still appear to generate different results. It is unclear how to remove this sort of variance from the pre-commit hook.
+Surprisingly, the exact same commit ID can be checked out on different machines, and still appear to generate different results. It is unclear how to remove this sort of variance from the pre-commit hook. We take another look at the linked issue, and find that in the [latest v3.2.5 release](https://github.com/prettier/prettier/blob/main/CHANGELOG.md#use-json-parser-for-tsconfigjson-by-default-16012-by-sosukesuzuki), it has been reverted to treating `tsconfig.json` as JSON by default. Since pre-commit doesn't seem to do a great job of pinning releases, and the 3.2.5 release is not yet available on the prettier mirror, we redirect this locally. We edit `package.json` to update the version of prettier used:
+
+```json
+{
+  ...,
+  "devDependencies": {
+    ...
+    "prettier": "3.2.5",
+    ...
+  },
+  ...
+}
+```
+
+and run
+
+```bash
+$ yarn install
+```
+
+To verify that this worked, we do
+
+```bash
+$ yarn prettier --version
+yarn run v1.22.19
+$ /root/zamm/node_modules/.bin/prettier --version
+3.2.5
+Done in 0.17s.
+```
+
+Next, we edit `.pre-commit-config.yaml` to use the local version of prettier, removing the previous prettier hook and using a new one:
+
+```yaml
+  - repo: local
+    hooks:
+      ...
+      - id: prettier
+        name: prettier
+        entry: yarn prettier --write --plugin prettier-plugin-svelte
+        language: system
+        types: [file]
+        files: \.(json|yaml|html|js|ts|svelte)$
+```
 
 Unfortunately, the `cargo-clippy` pre-commit check runs a Bash script that is not available on Windows, so you will get the message
 
