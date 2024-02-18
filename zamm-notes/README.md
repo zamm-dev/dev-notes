@@ -1,5 +1,16 @@
 # ZAMM
 
+## Running the install
+
+If you try to install the .deb package, and run into the error
+
+```bash
+$ zamm
+zamm: error while loading shared libraries: libssl.so.1.1: cannot open shared object file: No such file or directory
+```
+
+then follow the instructions [here](https://stackoverflow.com/a/72633324). It appears from one of the comments that [this link](http://nz2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb) might work instead of the one mentioned in the answer itself.
+
 ## Setting up a dev environment for the existing project
 
 ### Building the project

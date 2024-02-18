@@ -195,6 +195,33 @@ Your branch is up to date with 'origin/docker'.
 nothing to commit, working tree clean
 ```
 
+### Unable to find refs
+
+If you get
+
+```bash
+$ git submodule update --init --remote
+fatal: Unable to find refs/remotes/origin/HEAD revision in submodule path 'forks/rvcr'
+```
+
+then according to [this answer](https://stackoverflow.com/a/76387807) you'll want to see if there's anything wrong with the repo:
+
+```bash
+$ git show-ref
+bdef1caa1eef11a5dc99dc413fae87054a57e21b refs/heads/easier-debug
+0e38451f9b575334f9a08616198785d1d7b7edfc refs/heads/main
+bdef1caa1eef11a5dc99dc413fae87054a57e21b refs/heads/zamm-fixes
+bdef1caa1eef11a5dc99dc413fae87054a57e21b refs/remotes/origin/easier-debug
+0e38451f9b575334f9a08616198785d1d7b7edfc refs/remotes/origin/main
+bdef1caa1eef11a5dc99dc413fae87054a57e21b refs/tags/zamm/v0.0.0
+```
+
+We don't see `refs/remotes/origin/HEAD` here. We end up just deleting the folder and doing
+
+```bash
+$ git submodule update --init
+```
+
 ### Init from Git
 
 If you're using a version of Git such as version 2.25.1, you may get a prompt like this when you try to clone a private submodule:

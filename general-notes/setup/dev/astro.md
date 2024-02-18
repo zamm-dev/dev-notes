@@ -636,3 +636,39 @@ We edit `package.json` to get the dev script working by default on Windows:
 ```
 
 Since we're not allowing external connections to NodeJS, this should be relatively safe.
+
+## Canonical URL
+
+Our submission to HN gets changed automatically into `example.com`, and this turns out to be because we have
+
+```html
+<link rel="canonical" href="https://example.com/">
+```
+
+in our header. We find out that this is because `src/components/BaseHead.astro` has
+
+```astro
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+```
+
+Looking at the documentation for those two variables, and going through our code base, we see that `astro.config.mjs` has
+
+```mjs
+export default defineConfig({
+  site: 'https://example.com',
+  ...
+});
+```
+
+We change that to `https://zamm.dev`. We are still getting the same behavior. We restart the dev server, and finally verify that it is now fixed.
+
+## Playing videos on mobile
+
+We see that the videos aren't autoplaying on mobile. We look for why this might be, and find [this answer](https://stackoverflow.com/a/49125732). We fix our video tags accordingly, like so:
+
+```html
+<video playsinline autoplay loop muted width="100%">
+  <source src="/posts/v0.1.0/title-grow.mp4" type="video/mp4" />
+  This browser does not display the video tag.
+</video>
+```
