@@ -381,7 +381,7 @@ This appears to be a fluke that doesn't happen again, or else we would've tried 
 }
 ```
 
-We remove the corresponding `resolutions` override for `vite` from `package.json`. We do a final
+We remove the corresponding `resolutions` override for `vite` from `package.json` that we added in [`chat.md`](/zamm-notes/chat.md). We do a final
 
 ```bash
 $ yarn install
@@ -467,7 +467,40 @@ warning svelte-preprocess@5.1.3: The engine "pnpm" appears to be invalid.
 error vite@5.1.3: The engine "node" is incompatible with this module. Expected version "^18.0.0 || >=20.0.0". Got "16.20.2"
 ```
 
-We could just build the frontend in a newer version of Ubuntu, and then build the backend (which will get linked against GLIBC) in an older version, but that is not worth the effort at this point.
+We could just build the frontend in a newer version of Ubuntu, and then build the backend (which will get linked against GLIBC) in an older version, but that is not worth the effort at this point. We upgrade the `Dockerfile` to use a later base image of Ubuntu 20.04 so that we can use a newer version of NodeJS:
+
+```Dockerfile
+FROM ubuntu:20.04
+...
+
+ARG TAURI_CLI_VERSION=1.5.9
+...
+RUN cargo install --locked tauri-cli@${TAURI_CLI_VERSION}
+
+ARG NODEJS_VERSION=20.5.1
+```
+
+Note that we're also pinning `TAURI_CLI_VERSION` because the new Dockerfile fails to build with the latest Tauri CLI version that depends on a newer version of Rust.
+
+We edit the `Makefile` to build a new Docker image for this version of the software:
+
+```Makefile
+...
+
+BUILD_IMAGE = ghcr.io/amosjyng/zamm:v0.1.1-build
+...
+```
+
+and we similarly edit the file `.github/workflows/tests.yaml`:
+
+```yaml
+jobs:
+  build:
+    name: Build entire program
+    ...
+    container:
+      image: "ghcr.io/amosjyng/zamm:v0.1.0-build"
+```
 
 ### Diff direction
 
@@ -1232,6 +1265,43 @@ describe.concurrent("Storybook visual tests", () => {
   ...
 });
 ```
+
+We eventually change this to
+
+```ts
+          const frame = page.frame({ name: "storybook-preview-iframe" });
+          if (!frame) {
+            throw new Error("Could not find Storybook iframe");
+          }
+          await page.locator("button[title='Hide addons [A]']").click();
+
+          // wait for fonts to load
+          await frame.evaluate(() => document.fonts.ready);
+
+          const screenshot = await takeScreenshot(
+            frame,
+            ...
+          );
+
+          ...
+
+          if (variantConfig.assertDynamic !== undefined) {
+            ...
+            const newScreenshot = await takeScreenshot(
+              frame,
+              ...
+            );
+```
+
+while refactoring `takeScreenshot` to take in a frame
+
+```ts
+  const takeScreenshot = async (frame: Frame, screenshotEntireBody?: boolean) => {
+    ...
+  };
+```
+
+This is in case the issue is that we were waiting for fonts on the main page to load rather than fonts inside the frame. Unfortunately, it appears that this actually hurts the chances of a frontend run completing successfully due to the storybook div not being found at this point in time, so we revert this change.
 
 ### Running consistently in headed mode
 

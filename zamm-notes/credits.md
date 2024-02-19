@@ -856,3 +856,40 @@ Finally, the dedication is somehow situated at the bottom. Bottom margins do not
   }
 </style>
 ```
+
+## Fixing the Tauri logo render
+
+The `dependency-with-icon` Storybook screenshot test fails. We see that this may be because the images load [lazily](https://stackoverflow.com/a/77288613). We try the associated solution by editing `src-svelte/src/routes/storybook.test.ts` while adhering to TypeScript recommendations:
+
+```ts
+      test<StorybookTestContext>(
+        `${testName} should render the same`,
+        async ({ expect, page }) => {
+          ...
+          // wait for images to load
+          const imagesLocator = page.locator("//img");
+          const images = await imagesLocator.evaluateAll((images) => {
+            return images.map((i) => {
+              i.scrollIntoView();
+              return i as HTMLImageElement;
+            });
+          });
+          const imagePromises = images.map(
+            (i) => i.complete || new Promise((f) => (i.onload = f)),
+          );
+          await Promise.all(imagePromises);
+          ...
+      });
+```
+
+This still doesn't work. Upon further debugging, no `img`'s are actually being matched. Upon even further debugging, we see that when we edited the way dependency icons are specified, we forgot to change it in the story as well. We edit `src-svelte/src/routes/credits/Creditor.stories.ts` to fix this:
+
+```ts
+DependencyWithIcon.args = {
+  ...,
+  logo: "tauri.png",
+  ...
+};
+```
+
+and remove the other change to the Storybook test file because it wasn't working anyways.
