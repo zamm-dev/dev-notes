@@ -120,6 +120,29 @@ If you had set up [a Python sidecar](/general-notes/setup/tauri/python-sidecar.m
 
 > Hello, dude! You have been greeted from Python via Rust via TypeScript!
 
+## Avoiding running Specta on Windows
+
+Because Specta generates file contents in a very different order on Windows, We edit `src-tauri\src\main.rs` to not run Specta on Windows:
+
+```rs
+...
+#[cfg(all(debug_assertions, not(target_os = "windows")))]
+use specta::collect_types;
+
+#[cfg(all(debug_assertions, not(target_os = "windows")))]
+use tauri_specta::ts;
+...
+
+fn main() {
+    #[cfg(all(debug_assertions, not(target_os = "windows")))]
+    ts::export(
+      ...
+    ).unwrap();
+
+    ...
+}
+```
+
 ## Compilation warnings
 
 To avoid

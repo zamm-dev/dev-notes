@@ -194,3 +194,42 @@ $ pre-commit autoupdate
 ```
 
 You may need to do this when the CI environment runs on different versions.
+
+# CI runs
+
+We get this failure on CI every now and then for `svelte-check`:
+
+```
+Loading svelte-check in workspace: /home/runner/work/zamm/zamm/src-svelte
+Getting Svelte diagnostics...
+
+/home/runner/work/zamm/zamm/src-svelte/src/lib/Slider.svelte:8:10
+Error: Cannot find module '@neodrag/svelte' or its corresponding type declarations. (ts)
+    type DragEventData,
+  } from "@neodrag/svelte";
+
+
+
+/home/runner/work/zamm/zamm/src-svelte/src/lib/Switch.svelte:19:10
+Error: Cannot find module '@neodrag/svelte' or its corresponding type declarations. (ts)
+    type DragEventData,
+  } from "@neodrag/svelte";
+```
+
+It passes again after we delete the Yarn cache, which indicates that the problem has something to do with the cache. This is surprising because the previous build step should have already packaged up `src-svelte/forks/neodrag/packages/core/dist/` and `src-svelte/forks/neodrag/packages/svelte/dist/` for download.
+
+In any case, we can try to fix this by always recompiling it in `.github\workflows\tests.yaml` before we run `yarn install`:
+
+```yaml
+jobs:
+  ...
+  pre-commit:
+    ...
+    steps:
+      ...
+      - name: Build Neodrag fork
+        run: |
+          npm install -g pnpm
+          cd src-svelte/forks/neodrag && pnpm install && pnpm compile
+      ...
+```

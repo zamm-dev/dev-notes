@@ -1279,3 +1279,71 @@ jobs:
           releaseDraft: true
           prerelease: false
 ```
+
+### Building on Windows
+
+For just a regular install, we can do
+
+```yaml
+  windows:
+    name: Create build for Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.FONTS_PAT }}
+          submodules: "recursive"
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODEJS_VERSION }}
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+          components: rustfmt, clippy
+      - name: Build frontend
+        run: |
+          npm install -g pnpm
+          cd src-svelte/forks/neodrag
+          pnpm install
+          pnpm compile
+          cd ../..
+          yarn install
+          yarn svelte-kit sync
+          yarn build
+      - name: Build the app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: v__VERSION__
+          releaseName: "Release v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+```
+
+We can add a license to `src-tauri\tauri.conf.json`:
+
+```json
+{
+  ...,
+  "tauri": {
+    ...,
+    "bundle": {
+      ...,
+      "windows": {
+        "nsis": {
+          "license": "../LICENSE"
+        },
+        "wix": {
+          "license": "../LICENSE.rtf"
+        }
+      }
+    },
+    ...
+  },
+  ...
+}
+```
+
+where we create a `LICENSE.rtf` because that's the format expected by WiX, according to the Tauri documentation.

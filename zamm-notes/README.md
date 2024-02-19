@@ -283,7 +283,151 @@ fn get_os() -> Option<OS> {
 
 `src-svelte/src/lib/bindings.ts` gets regenerated automatically, but because it appears Specta on Windows generates the definitions in a completely different order, we regenerate the file again on Linux for a cleaner diff compared to previous versions.
 
-Unfortunately, other failing tests on Windows require further work.
+Unfortunately, other failing tests on Windows require further work. We get `test_can_determine_shell` working by adding PowerShell as a shell possibility. It appears to come with [all recent versions](https://serverfault.com/a/1065554) of Windows, so we always include it:
+
+```rs
+pub enum Shell {
+    ...,
+    #[allow(clippy::enum_variant_names)]
+    PowerShell,
+}
+
+fn get_shell() -> Option<Shell> {
+    ...
+
+    #[cfg(target_os = "windows")]
+    return Some(Shell::PowerShell);
+    #[cfg(not(target_os = "windows"))]
+    return None;
+}
+
+...
+
+fn get_shell_init_file(shell: &Option<Shell>) -> Option<String> {
+    let relative_file = match shell {
+        ...,
+        Some(Shell::PowerShell) => None,
+        ...
+    };
+    ...
+}
+
+```
+
+The `return` is necessary for compilation to succeed for the `Some(...)` line, and it is added to the `None` line as well for consistency.
+
+We allow `src-svelte/src/lib/bindings.ts` to be updated on Linux, as usual. We rename `test_can_predict_shell_init` to `test_can_predict_shell_init_for_zsh` because the context assumes a ZSH shell, and therefore isn't so applicable to Windows. As such, we guard it with a `#[cfg(not(target_os = "windows"))]` flag.
+
+As for `test_can_predict_profile_init`, we can predict that no such file will be found on Windows. However, to make it easier to do conditional compilation on multiple statements, we add the `cfg_if` macro as mentioned [here](https://stackoverflow.com/a/43070636):
+
+```bash
+$ cargo add --dev cfg-if
+```
+
+and then use it on the test:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+    use cfg_if::cfg_if;
+    ...
+
+    #[test]
+    fn test_can_predict_profile_init() {
+        let shell_init_file = get_shell_init_file(&None);
+        println!("Shell init file is {:?}", shell_init_file);
+
+        cfg_if! {
+            if #[cfg(target_os = "windows")] {
+                assert!(shell_init_file.is_none());
+            } else {
+                let file_path = shell_init_file.unwrap();
+                assert!(file_path.starts_with('/'));
+                assert!(file_path.ends_with(".profile"));
+            }
+        }
+    }
+
+    ...
+}
+```
+
+Finally, we fix the `test_invalid_filename` in `src-tauri\src\commands\keys\set.rs`, which is failing because the Windows OS returns a different error when we try to write to `/`. We replace the output, if it appears, with the expected one in Linux. This will be useful for other tests as well, such as ones dealing with timestamps.
+
+```rs
+#[cfg(test)]
+pub mod tests {
+    ...
+    use std::collections::HashMap;
+    ...
+
+    pub async fn check_set_api_key_sample(
+        ...,
+        json_replacements: HashMap<String, String>,
+    ) {
+        ...
+        let actual_edited_json = json_replacements
+            .iter()
+            .fold(actual_json, |acc, (k, v)| acc.replace(k, v));
+        let expected_json = sample.response.message.trim();
+        assert_eq!(actual_edited_json, expected_json);
+        ...
+    }
+
+    async fn check_set_api_key_sample_unit(
+        ...
+    ) {
+        check_set_api_key_sample(
+            ...,
+            HashMap::new(),
+        )
+        .await;
+    }
+
+    ...
+
+    #[tokio::test]
+    async fn test_invalid_filename() {
+        ...
+        check_set_api_key_sample(
+           ...,
+            HashMap::from([(
+                // error on Windows
+                "\"The system cannot find the path specified. (os error 3)\""
+                    .to_string(),
+                // should be replaced by equivalent error on Linux
+                "\"Is a directory (os error 21)\"".to_string(),
+            )]),
+        )
+        .await;
+    }
+```
+
+We modify the test in `src-tauri\src\commands\keys\mod.rs` as well to take care of this:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+    use std::collections::HashMap;
+    ...
+
+    #[tokio::test]
+    async fn test_get_after_set() {
+        ...
+
+        check_set_api_key_sample(
+            ...,
+            HashMap::new(),
+        )
+        .await;
+
+        ...
+    }
+}
+
+```
 
 ## Developing the project from scratch
 

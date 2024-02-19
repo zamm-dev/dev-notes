@@ -1,4 +1,22 @@
-# PowerShell autocomplete setup
+# PowerShell
+
+## Environment variables
+
+Instead of
+
+```bash
+$ echo $SCREENSHOTS_BASE_DIR
+```
+
+in Powershell, you do
+
+```powershell
+$Env:SCREENSHOTS_BASE_DIR
+```
+
+to check on the value of an environment variable.
+
+## Autocomplete setup
 
 We try setting up autocomplete for PowerShell by running this command as an Administrator:
 

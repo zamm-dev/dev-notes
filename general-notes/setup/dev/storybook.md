@@ -108,6 +108,8 @@ const config = {
 export default config;
 ```
 
+(This problem crops up again after we update Storybook from 7.4.0 to 7.5.1, so it appears we have to do this after every Storybook update.)
+
 Next, follow the instructions [here](https://www.thisdot.co/blog/integrating-storybook-with-sveltekit-typescript-and-scss/). Create a file `src-svelte/src/routes/api_keys_display.stories.ts`:
 
 ```ts
