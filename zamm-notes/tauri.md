@@ -1188,3 +1188,433 @@ sideEffects:
 All the other get-preference API calls have the exact same start and end state for their directories as well, because this API call does not do any disk writes.
 
 `src-tauri\src\commands\keys\set.rs` involves more advanced disk testing functionality, so we'll just leave that alone for now and commit our changes first.
+
+Next, to prepare for refactoring the API keys API, we move the preference sample disk IO into the `src-tauri/api/sample-disk-writes/preferences/` folder, and update our test files to match. Then, we move the API keys sample disk IO into the `src-tauri/api/sample-disk-writes/sample-init-files/` folder, for example:
+
+- `src-tauri/api/sample-init-files/no-newline/.bashrc` gets moved to `src-tauri/api/sample-disk-writes/shell-init/no-newline/start/.bashrc`, and `src-tauri/api/sample-init-files/no-newline/expected.bashrc` gets moved to `src-tauri/api/sample-disk-writes/shell-init/no-newline/end/.bashrc`, to keep the files for the same test together
+- `src-tauri/api/sample-init-files/no-file/expected.bashrc` gets moved to `src-tauri/api/sample-disk-writes/shell-init/new-file/.bashrc` with no `end` folder, because in this case we start off with an initially empty directory anyways
+- `src-tauri/api/sample-init-files/unset/.bashrc` and `src-tauri/api/sample-init-files/unset/expected.bashrc` are removed entirely because now we can just use any other test's `start` and `end` directories to test the unset functionality
+
+We then edit the sample calls, such as `src-tauri\api\sample-calls\set_api_key-existing-with-newline.yaml`, to point to the disk side effects files:
+
+```yaml
+request:
+  - set_api_key
+  - >
+    {
+      "filename": ".bashrc",
+      ...
+    }
+...
+sideEffects:
+  disk:
+    startStateDirectory: shell-init/with-newline/start
+    endStateDirectory: shell-init/with-newline/end
+
+```
+
+Because the filename is no longer qualified by the path to the specific test file, we create a new set of tests at `src-tauri\api\sample-disk-writes\shell-init\nested\start\folder\.bashrc`:
+
+```bash
+# don't mind me
+```
+
+and `src-tauri\api\sample-disk-writes\shell-init\nested\end\folder\.bashrc`:
+    
+```bash
+# don't mind me
+export OPENAI_API_KEY="0p3n41-4p1-k3y"
+```
+
+and create the corresponding `src-tauri\api\sample-calls\set_api_key-nested-folder.yaml`:
+
+```yaml
+request:
+  - set_api_key
+  - >
+    {
+      "filename": "folder/.bashrc",
+      "service": "OpenAI",
+      "api_key": "0p3n41-4p1-k3y"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: shell-init/nested/start
+    endStateDirectory: shell-init/nested/end
+
+```
+
+We edit `src-tauri\src\test_helpers\api_testing.rs` to support comparing nested directories:
+
+```rs
+...
+use std::ffi::OsString;
+...
+
+fn compare_dir_all(
+    expected_output_dir: impl AsRef<Path>,
+    actual_output_dir: impl AsRef<Path>,
+) {
+    let mut expected_outputs = vec![];
+    for entry in fs::read_dir(expected_output_dir).unwrap() {
+        let entry = entry.unwrap();
+        expected_outputs.push(entry);
+    }
+
+    let mut actual_outputs = vec![];
+    for entry in fs::read_dir(actual_output_dir).unwrap() {
+        let entry = entry.unwrap();
+        actual_outputs.push(entry);
+    }
+
+    assert_eq!(
+        expected_outputs
+            .iter()
+            .map(|e| e.file_name())
+            .collect::<Vec<OsString>>(),
+        actual_outputs
+            .iter()
+            .map(|e| e.file_name())
+            .collect::<Vec<OsString>>()
+    );
+    for (expected_output, actual_output) in
+        expected_outputs.iter().zip(actual_outputs.iter())
+    {
+        let file_type = expected_output.file_type().unwrap();
+        if file_type.is_dir() {
+            compare_dir_all(expected_output.path(), actual_output.path());
+        } else {
+            let expected_file = fs::read(expected_output.path()).unwrap();
+            let actual_file = fs::read(actual_output.path()).unwrap();
+
+            let expected_file_str = String::from_utf8(expected_file).unwrap();
+            let actual_file_str = String::from_utf8(actual_file).unwrap();
+            assert_eq!(expected_file_str, actual_file_str);
+        }
+    }
+}
+
+...
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    fn compare_temp_dir_outputs(
+        &self,
+        disk_side_effect: &Disk,
+        actual_output_dir: &PathBuf,
+    ) {
+        let relative_expected_output_dir = format!(
+            "api/sample-disk-writes/{}",
+            &disk_side_effect.end_state_directory
+        );
+        let expected_output_dir = Path::new(&relative_expected_output_dir);
+        compare_dir_all(&expected_output_dir, actual_output_dir);
+    }
+
+    ...
+}
+```
+
+We edit `src-tauri\src\commands\keys\set.rs` to use this new functionality:
+
+```rs
+#[cfg(test)]
+pub mod tests {
+    ...
+    use crate::test_helpers::{
+        ..., SideEffectsHelpers, ...
+    };
+    ...
+    use std::env;
+    use stdext::function_name;
+    ...
+
+    struct SetApiKeyTestCase<'a> {
+        ...
+        test_fn_name: &'static str,
+        ...
+    }
+
+    impl<'a> SampleCallTestCase<SetApiKeyRequest, ZammResult<()>>
+        for SetApiKeyTestCase<'a>
+    {
+        ...
+
+        fn temp_test_subdirectory(&self) -> String {
+            let test_logical_path =
+                self.test_fn_name.split("::").collect::<Vec<&str>>();
+            let test_name = test_logical_path[test_logical_path.len() - 2];
+            format!("{}/{}", Self::EXPECTED_API_CALL, test_name)
+        }
+
+        async fn make_request(
+            &mut self,
+            args: &Option<SetApiKeyRequest>,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            let request = args.as_ref().unwrap();
+            let temp_test_dir = side_effects.disk.as_ref().unwrap();
+            let current_dir = env::current_dir().unwrap();
+            env::set_current_dir(temp_test_dir).unwrap();
+
+            let result = set_api_key_helper(
+                self.api_keys,
+                self.db,
+                request.filename.as_deref(),
+                &request.service,
+                request.api_key.clone(),
+            )
+            .await;
+            env::set_current_dir(current_dir).unwrap();
+            result
+        }
+
+        ...
+    }
+
+    ...
+
+    pub async fn check_set_api_key_sample<'a>(
+        test_fn_name: &'static str,
+        ...
+    ) {
+        let mut test_case = SetApiKeyTestCase {
+            ...,
+            test_fn_name,
+            ...
+        };
+        test_case.check_sample_call(sample_file).await;
+    }
+
+    async fn check_set_api_key_sample_unit(
+        test_fn_name: &'static str,
+        ...
+    ) {
+        check_set_api_key_sample(
+            test_fn_name,
+            ...
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_write_new_init_file() {
+        ...
+        check_set_api_key_sample_unit(
+            function_name!(),
+            ...
+        )
+        .await;
+    }
+
+    ...
+
+    #[tokio::test]
+    async fn test_nested_folder() {
+        let api_keys = ZammApiKeys(Mutex::new(ApiKeys::default()));
+        check_set_api_key_sample_unit(
+            function_name!(),
+            &setup_zamm_db(),
+            "api/sample-calls/set_api_key-nested-folder.yaml",
+            &api_keys,
+        )
+        .await;
+    }
+
+    ...
+}
+```
+
+Note that we are using `env::current_dir` and `env::set_current_dir` to temporarily change the current directory so that the test code doesn't have to do test-specific directory munging -- for example, setting the path for the init file to be the fully qualified temp test directory, but only when the input path is non-empty. If we don't do this, then there might be bugs that we don't catch: for example, writing out to the current directory when nothing should be written at all. If output is written to the current directory where the tests are running from rather than the temp test directory, then it will appear as if no files were written at all and therefore the test will erroneously pass.
+
+However, because we're changing the current directory now, we need to ensure that this doesn't interfere with other tests running simultaneously. We do a quick fix in `src-tauri\Makefile` to remove test parallelism for now:
+
+```Makefile
+...
+
+tests:
+	cargo test -- --include-ignored --test-threads=1
+
+...
+```
+
+and we do the same in `.github\workflows\tests.yaml`:
+
+```yaml
+...
+
+jobs:
+  ...
+  rust:
+    ...
+    steps:
+      ...
+      - name: Run Rust Tests
+        run: cargo test -- --test-threads=1
+        ...
+```
+
+We have to edit `src-tauri\src\commands\keys\mod.rs` as well to conform to the new signature:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+    use stdext::function_name;
+    ...
+
+    #[tokio::test]
+    async fn test_get_after_set() {
+        ...
+
+        check_set_api_key_sample(
+            function_name!(),
+            ...
+        )
+        .await;
+        ...
+    }
+}
+```
+
+Finally, because we changed the API calls, frontend tests are also failing. We edit `src-svelte\src\routes\components\api-keys\Display.test.ts`:
+
+```ts
+  test("can edit API key", async () => {
+    systemInfo.set({
+      ...,
+      shell_init_file: ".bashrc",
+    });
+    ...
+  });
+
+  ...
+
+  test("can submit with custom file", async () => {
+    ...
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/set_api_key-nested-folder.yaml",
+      ...
+    );
+
+    ...
+    await userEvent.type(fileInput, "folder/.bashrc");
+    ...
+  });
+```
+
+We commit these changes, and do another refactor of `src-tauri\src\test_helpers\api_testing.rs` to give a default implementation of `standard_test_subdir`:
+
+```rs
+pub fn standard_test_subdir(api_call: &str, test_fn_name: &str) -> String {
+    let test_logical_path =
+        test_fn_name.split("::").collect::<Vec<&str>>();
+    let test_name = test_logical_path[test_logical_path.len() - 2];
+    format!("{}/{}", api_call, test_name)
+}
+```
+
+We then use this in files such as `src-tauri\src\commands\keys\set.rs`:
+
+```rs
+    impl<'a> SampleCallTestCase<SetApiKeyRequest, ZammResult<()>>
+        for SetApiKeyTestCase<'a>
+    {
+        ...
+
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        ...
+    }
+```
+
+We now investigate possibilities for easily allowing tests to run in parallel again. We find out that there is the [`sealed_test`](https://docs.rs/sealed_test/latest/sealed_test/) crate, which seems too heavyweight for our purposes, but which in turn uses the [`two-rusty-forks`](https://crates.io/crates/two-rusty-forks) crate. We try installing `two-rusty-forks` and enclosing our tests in the macro as instructed, but unfortunately, because our tests are async, we run into:
+
+```
+error: no rules expected the token `async`                          
+   --> src\commands\keys\set.rs:258:9
+    |
+258 |         async fn test_write_new_init_file() {
+    |         ^^^^^ no rules expected this token in macro call      
+    |
+note: while trying to match `fn`
+   --> C:\Users\Amos Ng\.cargo\registry\src\index.crates.io-6f17d22bba15001f\two-rusty-forks-0.4.0\src\fork_test.rs:104:10
+    |
+104 |          fn $test_name:ident() $body:block
+    |          ^^
+
+```
+
+Since fixing this would involve more work, we leave it be for now.
+
+Next, we realize that our function signatures have gotten awkward. As such, we rearrange them so that the mocked state variables are together:
+
+```rs
+        check_set_api_key_sample(
+            function_name!(),
+            &setup_zamm_db(),
+            &api_keys,
+            "api/sample-calls/set_api_key-existing-no-newline.yaml",
+            HashMap::new(),
+        )
+        .await;
+```
+
+Next, we put the current directory changing logic into `src-tauri\src\test_helpers\api_testing.rs`, because it is broadly applicable to tests:
+
+```rs
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+        // prepare side-effects
+        let current_dir = env::current_dir().unwrap();
+        ...
+        if let Some(side_effects) = &sample.side_effects {
+            // prepare disk if necessary
+            if let Some(disk_side_effect) = &side_effects.disk {
+                let test_temp_dir = self.get_temp_dir();
+                self.initialize_temp_dir_inputs(
+                    disk_side_effect,
+                    &test_temp_dir,
+                );
+                println!(
+                    "Test will use temp directory at {}",
+                    &test_temp_dir.display()
+                );
+                env::set_current_dir(&test_temp_dir).unwrap();
+                temp_dir = Some(test_temp_dir);
+            }
+        }
+        ...
+
+        let result = self.make_request(...).await;
+        env::set_current_dir(current_dir).unwrap();
+
+        ...
+    }
+```
+
+Note that we reset the current directory as soon as the request is made. This is to ensure that test failures don't prevent the current directory from being reset, since Rust doesn't have any `finally` blocks. The actual requests shouldn't fail because they should be designed to return `Err` in case of failure.
+
+Now, we can edit `src-tauri\src\commands\keys\set.rs` to greatly simplify our request function:
+
+```rs
+        async fn make_request(
+            &mut self,
+            ...,
+            _: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            let request = args.as_ref().unwrap();
+
+            set_api_key_helper(
+                ...
+            )
+            .await
+        }
+```

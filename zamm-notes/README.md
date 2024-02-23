@@ -232,6 +232,8 @@ Unfortunately, the `cargo-clippy` pre-commit check runs a Bash script that is no
 Executable `/usr/bin/bash` not found
 ```
 
+A proper fix for this may involve moving the shell script to [a Python script](https://github.com/pre-commit/pre-commit/issues/1455) that can then be assured of running across platforms.
+
 #### Tests
 
 `cargo test` may fail on Windows for various reasons. If you see

@@ -73,3 +73,15 @@ $ restic backup --files-from .\Documents\restic\includes.txt --exclude-file .\Do
 ```
 
 It's okay if you kill the process, or if the network times out. You can run the same command again, and Restic will pick up where it left off.
+
+## Windows sleep
+
+In Settings, under "System > Power & Battery > Screen and Sleep", even when you set "When plugged in, put my device to sleep after" to "Never", the computer still goes to sleep after a while, causing the backup process to stop. We see from David Ford's eventual response to [this post](https://answers.microsoft.com/en-us/windows/forum/all/windows-10-and-11-power-settings-sleep-never-yet/830af0e5-0291-4cfd-8268-a2ac9e9411e1) that we are to follow [these instructions](https://www.tenforums.com/tutorials/72133-add-system-unattended-sleep-timeout-power-options-windows.html) and run in an elevated command prompt:
+
+```
+$ REG ADD HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\238C9FA8-0AAD-41ED-83F4-97BE242C8F20\7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 /v Attributes /t REG_DWORD /d 2 /f
+```
+
+Which enables us to then go to the "Control Panel > Hardware and Sound > Power Options > Edit Plan Settings" and click "Change advanced power settings" to see "Sleep > System unattended sleep timeout" and set the plugged in value to "0", because according to [this documentation](https://admx.help/?Category=Windows_10_2016&Policy=Microsoft.Policies.PowerManagement::UnattendedSleepTimeOutAC):
+
+> If you specify 0 seconds, Windows does not automatically transition to sleep.
