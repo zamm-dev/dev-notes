@@ -1600,7 +1600,7 @@ Next, we put the current directory changing logic into `src-tauri\src\test_helpe
     }
 ```
 
-Note that we reset the current directory as soon as the request is made. This is to ensure that test failures don't prevent the current directory from being reset, since Rust doesn't have any `finally` blocks. The actual requests shouldn't fail because they should be designed to return `Err` in case of failure.
+Note that we reset the current directory as soon as the request is made. This is to ensure that test failures don't prevent the current directory from being reset, since Rust doesn't have any `finally` blocks. The actual requests shouldn't fail because they should be designed to return `Err` in case of failure -- but if they do because the `make_request` test code fails, then a stackoverflow appears to occur.
 
 Now, we can edit `src-tauri\src\commands\keys\set.rs` to greatly simplify our request function:
 
@@ -1618,3 +1618,876 @@ Now, we can edit `src-tauri\src\commands\keys\set.rs` to greatly simplify our re
             .await
         }
 ```
+
+### Database side effects
+
+#### Initial implementation
+
+We edit `src-tauri/api/sample-call-schema.json` to include a database object:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-06/schema#",
+  "$ref": "#/definitions/SampleCall",
+  "definitions": {
+    "SampleCall": {
+      ...,
+      "properties": {
+        ...
+        "sideEffects": {
+          ...
+          "properties": {
+            ...
+            "database": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "startStateDump": {
+                  "type": "string"
+                },
+                "endStateDump": {
+                  "type": "string"
+                }
+              },
+              "required": ["endStateDump"]
+            }
+          }
+        }
+      },
+      ...
+    }
+  }
+}
+```
+
+As usual, `src-svelte/src/lib/sample-call.ts` and `src-tauri/src/sample_call.rs` are updated automatically by quicktype.
+
+We initially get the output
+
+```yaml
+!Ok
+api_keys: []
+llm_calls:
+- id:
+    id: d9f5ef39-0095-49d9-89fe-0b20d42963c2
+  timestamp: 2024-02-23T03:12:32.673979400
+  provider: OpenAI
+  llm_requested: gpt-4
+  llm: gpt-4-0613
+  temperature: 1.0
+  prompt_tokens: 32
+  response_tokens: 12
+  total_tokens: 44
+  prompt:
+    type: Chat
+    messages:
+    - role: System
+      text: You are ZAMM, a chat program. Respond in first person.
+    - role: Human
+      text: Hello, does this work?
+  completion:
+    role: AI
+    text: Yes, it works. How can I assist you today?
+```
+
+We don't want the redundant "id > id". But if we define `EntityId` as such in `src-tauri\src\models\llm_calls.rs`:
+
+```rs
+#[derive(
+    ...,
+    Serialize, Deserialize
+)]
+#[diesel(sql_type = Text)]
+#[serde(transparent)]
+pub struct EntityId {
+    pub uuid: Uuid,
+}
+```
+
+then we get the error
+
+```
+---- commands::llms::chat::tests::test_start_conversation stdout ----
+Test will use temp directory at C:\Users\AMOSNG~1\AppData\Local\Temp\zamm/tests\chat/test_start_conversation
+thread 'commands::llms::chat::tests::test_start_conversation' panicked at src\commands\llms\chat.rs:261:44:
+called `Result::unwrap()` on an `Err` value: Error("can only flatten structs and maps", line: 36, column: 1)
+```
+
+when trying to parse things back. Unsurprisingly, the same error happens when we try to implement it manually based on [uuid's implementation](https://docs.rs/uuid/1.7.0/src/uuid/external/serde_support.rs.html#58) linked to from the [uuid documentation](https://docs.rs/uuid/1.7.0/uuid/struct.Uuid.html#impl-Deserialize%3C'de%3E-for-Uuid):
+
+```rs
+impl Serialize for EntityId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.uuid.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EntityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let uuid: Uuid = Deserialize::deserialize(deserializer)?;
+        Ok(EntityId { uuid })
+    }
+}
+
+```
+
+In the end, this turns out to be because we did another flatten in `src-tauri\src\models\llm_calls.rs`:
+
+```rs
+pub struct LlmCall {
+    #[serde(flatten)]
+    pub id: EntityId,
+    ...
+}
+```
+
+We remove this second flatten, and it now works as expected.
+
+Next, we tackle the problem of the added `!Ok` at the beginning of the YAML file. This is because we are using the `!` tag to indicate that the value is a Result. We can remove this by making `db_contents` the Ok variant of a Result by adding a `?` at the end:
+
+```rs
+pub async fn write_database_contents(
+    ...
+) -> ZammResult<()> {
+    let db_contents = get_database_contents(...).await?;
+    ...
+}
+```
+
+While coding up the rest of this, we realized that the YAML serializer isn't going to faithfully represent the contents of the SQL row anyways, so we might as well serialize the pretty YAML version of the row.
+
+At the end, we finally end up with a `src-tauri\src\test_helpers\database_contents.rs` that looks like this:
+
+```rs
+use crate::commands::errors::ZammResult;
+use crate::models::llm_calls::{LlmCall, LlmCallRow, NewLlmCallRow};
+use crate::models::{ApiKey, NewApiKey};
+use crate::schema::{api_keys, llm_calls};
+use crate::ZammDatabase;
+use anyhow::anyhow;
+use diesel::prelude::*;
+use std::fs;
+use std::path::PathBuf;
+use tokio::sync::MutexGuard;
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct DatabaseContents {
+    api_keys: Vec<ApiKey>,
+    llm_calls: Vec<LlmCall>,
+}
+
+impl DatabaseContents {
+    pub fn insertable_api_keys(&self) -> Vec<NewApiKey> {
+        self.api_keys.iter().map(|k| k.as_insertable()).collect()
+    }
+
+    pub fn insertable_llm_calls(&self) -> Vec<NewLlmCallRow> {
+        self.llm_calls.iter().map(|k| k.as_sql_row()).collect()
+    }
+}
+
+pub async fn get_database_contents(
+    zamm_db: &ZammDatabase,
+) -> ZammResult<DatabaseContents> {
+    let db_mutex: &mut MutexGuard<'_, Option<SqliteConnection>> =
+        &mut zamm_db.0.lock().await;
+    let db = db_mutex.as_mut().ok_or(anyhow!("Error getting db"))?;
+    let api_keys = api_keys::table.load::<ApiKey>(db)?;
+    let llm_call_rows = llm_calls::table.load::<LlmCallRow>(db)?;
+    let llm_calls: Vec<LlmCall> = llm_call_rows.into_iter().map(|r| r.into()).collect();
+    Ok(DatabaseContents {
+        api_keys,
+        llm_calls,
+    })
+}
+
+pub async fn write_database_contents(
+    zamm_db: &ZammDatabase,
+    file_path: &PathBuf,
+) -> ZammResult<()> {
+    let db_contents = get_database_contents(zamm_db).await?;
+    let serialized = serde_yaml::to_string(&db_contents)?;
+    fs::write(file_path, serialized)?;
+    Ok(())
+}
+
+pub async fn read_database_contents(
+    zamm_db: &ZammDatabase,
+    file_path: &str,
+) -> ZammResult<()> {
+    let db_mutex: &mut MutexGuard<'_, Option<SqliteConnection>> =
+        &mut zamm_db.0.lock().await;
+    let db = db_mutex.as_mut().ok_or(anyhow!("Error getting db"))?;
+
+    let serialized = fs::read_to_string(file_path)?;
+    let db_contents: DatabaseContents = serde_yaml::from_str(&serialized)?;
+    db.transaction::<(), diesel::result::Error, _>(|conn| {
+        diesel::insert_into(api_keys::table)
+            .values(&db_contents.insertable_api_keys())
+            .execute(conn)?;
+        diesel::insert_into(llm_calls::table)
+            .values(&db_contents.insertable_llm_calls())
+            .execute(conn)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+```
+
+which in turn involves editing `src-tauri\src\models\api_keys.rs` to implement serde's Serialize and Deserialize, as well as a new test-only function to retrieve an insertable version of the struct:
+
+```rs
+#[derive(..., serde::Serialize, serde::Deserialize)]
+pub struct ApiKey {
+    ...
+}
+
+#[cfg(test)]
+impl ApiKey {
+    pub fn as_insertable(&self) -> NewApiKey {
+        NewApiKey {
+            service: self.service,
+            api_key: &self.api_key,
+        }
+    }
+}
+```
+
+This in turn involves marking `Service` as `Copy` in `src-tauri\src\setup\api_keys.rs`. *That* in turn involves editing `src-tauri/src/commands/keys/set.rs` to make use of this new Copy trait:
+
+```rs
+async fn set_api_key_helper(
+    ...
+) -> ZammResult<()> {
+    ...
+    let db_update_result = || -> ZammResult<()> {
+        ...
+                diesel::replace_into(...)
+                    .values(crate::models::NewApiKey {
+                        service: *service,
+                        ...
+                    })
+                    ...;
+        ...
+    }
+    ...
+}
+```
+
+We need to expose this new module in `src-tauri/src/test_helpers/mod.rs`:
+
+```rs
+...
+pub mod database_contents;
+...
+```
+
+and then make the changes discussed above to `EntityId` and `LlmCall` in `src-tauri\src\models\llm_calls.rs`, and also mark `LlmCallRow` as both Serializable and Deserializable.
+
+Next, to support the `?` operator in the usage of `serde_yaml` above, we add this to `src-tauri\src\commands\errors.rs`:
+
+```rs
+pub enum SerdeError {
+    ...,
+    #[error(transparent)]
+    Yaml {
+        #[from]
+        source: serde_yaml::Error,
+    },
+    ...
+}
+
+...
+
+impl From<serde_yaml::Error> for Error {
+    fn from(err: serde_yaml::Error) -> Self {
+        let serde_err: SerdeError = err.into();
+        serde_err.into()
+    }
+}
+```
+
+To support this, we will have to move `serde_yaml` into the regular dependencies section of `src-tauri/Cargo.toml`, instead of staying in the dev dependencies section. We could mark everything involved here as `#[cfg(test)]` instead, but since we will be exposing this functionality to the frontend anyways, we'll just do it the easy way.
+
+We make use of this new database functionality in `src-tauri\src\test_helpers\api_testing.rs`:
+
+```rs
+...
+use crate::test_helpers::database::setup_zamm_db;
+use crate::test_helpers::database_contents::{
+    read_database_contents, write_database_contents,
+};
+use crate::ZammDatabase;
+use path_absolutize::Absolutize;
+use std::collections::HashMap;
+...
+
+fn compare_files(
+    expected_file_path: impl AsRef<Path>,
+    actual_file_path: impl AsRef<Path>,
+    output_replacements: &HashMap<String, String>,
+) {
+    let expected_path_abs = expected_file_path.as_ref().absolutize().unwrap();
+    let actual_path_abs = actual_file_path.as_ref().absolutize().unwrap();
+
+    let expected_file = fs::read(&expected_path_abs).unwrap_or_else(|_| {
+        panic!(
+            "Error reading expected file at {}",
+            expected_path_abs.as_ref().display()
+        )
+    });
+    let actual_file = fs::read(&actual_path_abs).unwrap_or_else(|_| {
+        panic!(
+            "Error reading actual file at {}",
+            actual_path_abs.as_ref().display()
+        )
+    });
+
+    let expected_file_str = String::from_utf8(expected_file).unwrap();
+    let actual_file_str = String::from_utf8(actual_file).unwrap();
+
+    let replaced_actual_str = output_replacements
+        .iter()
+        .fold(actual_file_str, |acc, (k, v)| acc.replace(k, v));
+    assert_eq!(expected_file_str, replaced_actual_str);
+}
+
+fn compare_dir_all(
+    ...,
+    output_replacements: &HashMap<String, String>,
+) {
+    ...
+    for (expected_output, actual_output) in
+        ...
+    {
+        ...
+        if file_type.is_dir() {
+            compare_dir_all(
+                ...,
+                output_replacements,
+            );
+        } else {
+            compare_files(
+                ...,
+                output_replacements,
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SideEffectsHelpers {
+    pub temp_test_dir: Option<PathBuf>,
+    pub disk: Option<PathBuf>,
+    pub db: Option<ZammDatabase>,
+}
+
+...
+
+impl SampleCall {
+    pub fn db_start_dump(&self) -> Option<String> {
+        self.side_effects
+            .as_ref()
+            .and_then(|se| se.database.as_ref())
+            .and_then(|db| db.start_state_dump.as_deref())
+            .map(|p: &str| format!("api/sample-database-writes/{}", p))
+    }
+
+    pub fn db_end_dump(&self) -> Option<String> {
+        self.side_effects
+            .as_ref()
+            .and_then(|se| se.database.as_ref())
+            .map(|db| db.end_state_dump.as_ref())
+            .map(|p: &str| format!("api/sample-database-writes/{}", p))
+    }
+}
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    fn output_replacements(
+        &self,
+        _sample: &SampleCall,
+        _result: &U,
+    ) -> HashMap<String, String> {
+        HashMap::new()
+    }
+
+    fn initialize_temp_dir_inputs(&self, ..., temp_dir: &PathBuf) {
+        fs::create_dir_all(temp_dir).unwrap();
+        ...
+    }
+
+    fn compare_temp_dir_outputs(
+        &self,
+        ...,
+        output_replacements: &HashMap<String, String>,
+    ) {
+        ...
+        compare_dir_all(expected_output_dir, actual_output_dir, output_replacements);
+    }
+
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+        // prepare side-effects
+        let current_dir = env::current_dir().unwrap();
+        let mut side_effects_helpers = SideEffectsHelpers::default();
+        if let Some(side_effects) = &sample.side_effects {
+            let temp_test_dir = self.get_temp_dir();
+            println!(
+                "Test will use temp directory at {}",
+                &temp_test_dir.display()
+            );
+
+            // prepare disk if necessary
+            if let Some(disk_side_effect) = &side_effects.disk {
+                let mut test_disk_dir = temp_test_dir.clone();
+                test_disk_dir.push("disk");
+                ...
+                side_effects_helpers.disk = Some(test_disk_dir);
+            }
+
+            // prepare db if necessary
+            if side_effects.database.is_some() {
+                let test_db = setup_zamm_db();
+                if let Some(initial_contents) = sample.db_start_dump() {
+                    read_database_contents(&test_db, &initial_contents)
+                        .await
+                        .unwrap();
+                }
+                side_effects_helpers.db = Some(test_db);
+            }
+
+            side_effects_helpers.temp_test_dir = Some(temp_test_dir);
+        }
+
+        ...
+        let replacements = self.output_replacements(&sample, &result);
+        println!("Replacements:");
+        for (k, v) in &replacements {
+            println!("  {} -> {}", k, v);
+        }
+
+        ...
+
+        // check the call against disk side-effects
+        if let Some(test_disk_dir) = &side_effects_helpers.disk {
+            ...
+            self.compare_temp_dir_outputs(
+                ...,
+                &replacements,
+            );
+        }
+
+        // check the call against db side-effects
+        if let Some(test_db) = &side_effects_helpers.db {
+            let mut test_db_file = side_effects_helpers.temp_test_dir.unwrap().clone();
+            test_db_file.push("db.yaml");
+            write_database_contents(test_db, &test_db_file)
+                .await
+                .unwrap();
+
+            compare_files(sample.db_end_dump().unwrap(), &test_db_file, &replacements);
+        }
+    }
+}
+```
+
+where `temp_test_dir` is a rename we did for naming consistency.
+
+We edit `src-tauri\src\commands\llms\chat.rs` to make use of this new API:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+    use crate::models::llm_calls::ChatMessage;
+    use crate::test_helpers::api_testing::standard_test_subdir;
+    use std::collections::HashMap;
+    use stdext::function_name;
+    ...
+
+    fn to_yaml_string<T: Serialize>(obj: &T) -> String {
+        serde_yaml::to_string(obj).unwrap().trim().to_string()
+    }
+
+    ...
+
+    struct ChatTestCase {
+        test_fn_name: &'static str,
+        ...
+    }
+
+    impl SampleCallTestCase<ChatRequest, ZammResult<LlmCall>> for ChatTestCase {
+        ...
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        async fn make_request(
+            ...,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<LlmCall> {
+            ...
+            chat_helper(
+                ...,
+                side_effects.db.as_ref().unwrap(),
+                ...
+            )
+            .await
+        }
+
+        fn output_replacements(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<LlmCall>,
+        ) -> HashMap<String, String> {
+            let expected_output = parse_response(&sample.response.message);
+            let actual_output = result.as_ref().unwrap();
+            HashMap::from([
+                (
+                    to_yaml_string(&actual_output.id),
+                    to_yaml_string(&expected_output.id),
+                ),
+                (
+                    to_yaml_string(&actual_output.timestamp),
+                    to_yaml_string(&expected_output.timestamp),
+                ),
+            ])
+        }
+
+        ...
+    }
+
+    ...
+
+    async fn test_llm_api_call(
+        test_fn_name: &'static str,
+        recording_path: &str,
+        sample_path: &str,
+    ) {
+        ...
+        let mut test_case = ChatTestCase {
+            test_fn_name,
+            ...
+        };
+        test_case.check_sample_call(sample_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation() {
+        test_llm_api_call(
+            function_name!(),
+            ...
+        )
+        .await;
+    }
+
+    ...
+}
+```
+
+We create `src-tauri\api\sample-database-writes\conversation-continued.yaml` to reflect the expected state of the DB after two chat request calls:
+
+```yaml
+api_keys: []
+llm_calls:
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+  timestamp: 2024-01-16T08:50:19.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hello, does this work?
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Yes, it works. How can I assist you today?
+  tokens:
+    prompt: 32
+    response: 12
+    total: 44
+- id: c13c1e67-2de3-48de-a34c-a32079c03316
+  timestamp: 2024-01-16T09:50:19.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hello, does this work?
+      - role: AI
+        text: Yes, it works. How can I assist you today?
+      - role: Human
+        text: Tell me something funny.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: 'Sure, here''s a joke for you: Why don''t scientists trust atoms? Because they make up everything!'
+  tokens:
+    prompt: 57
+    response: 22
+    total: 79
+
+```
+
+We do the same for `src-tauri\api\sample-database-writes\conversation-started.yaml`, which is only a smaller version of the above. We now have to edit `.pre-commit-config.yaml` to prevent these files from being formatted at commit, because the test will be doing an exact string match, and there appears to be [no way](https://users.rust-lang.org/t/is-there-a-crate-that-let-me-customize-code-style-of-printed-yaml-json-indent-and-stuff/84757) to get `serde-yaml` to format the output differently:
+
+```yaml
+      - id: prettier
+        ...
+        exclude: ^src-tauri/api/sample-database-writes/
+```
+
+Finally, we edit our sample API calls, such as `src-tauri\api\sample-calls\chat-continue-conversation.yaml`, to refer to these new database dumps:
+
+```yaml
+...
+sideEffects:
+  database:
+    startStateDump: conversation-started.yaml
+    endStateDump: conversation-continued.yaml
+```
+
+`src-tauri\api\sample-calls\chat-start-conversation.yaml` only has the end state dump because it doesn't start off with any data:
+
+```yaml
+...
+sideEffects:
+  database:
+    endStateDump: conversation-started.yaml
+
+```
+
+We commit this.
+
+#### API key settings
+
+Now we try to do it for the API key setting as well. During implementation, we edit `src-tauri\src\test_helpers\database_contents.rs`:
+
+```rs
+...
+use path_absolutize::Absolutize;
+...
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+    let file_path_buf = PathBuf::from(file_path);
+    let file_path_abs = file_path_buf.absolutize()?;
+    let serialized = fs::read_to_string(&file_path_abs).map_err(|e| {
+        anyhow!("Error reading file at {}: {}", &file_path_abs.display(), e)
+    })?;
+    ...
+}
+```
+
+in order to debug the error
+
+```
+The system cannot find the path specified. (os error 3)
+```
+
+After doing so, we finally see the reason for the failure:
+
+```
+called `Result::unwrap()` on an `Err` value: Other { source: Error reading file at C:\Users\AMOSNG~1\AppData\Local\Temp\zamm\tests\set_api_key\test_unset\disk\api\sample-database-writes\empty.yaml: The system cannot find the path specified. (os error 3) }
+```
+
+We are trying to access the gold file *after* the current directory has been moved.
+
+We end up with editing `src-tauri\src\test_helpers\api_testing.rs` such that
+
+```rs
+fn read_sample(filename: &str) -> SampleCall {
+    let file_path = Path::new(filename);
+    let abs_file_path = file_path.absolutize().unwrap();
+    let sample_str = fs::read_to_string(&abs_file_path)
+        .unwrap_or_else(|_| panic!("No file found at {}", abs_file_path.display()));
+    ...
+}
+
+...
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+
+        // prepare side-effects
+        ...
+        if let Some(side_effects) = &sample.side_effects {
+            ...
+
+            // prepare disk if necessary
+            if let Some(disk_side_effect) = &side_effects.disk {
+                let mut test_disk_dir = temp_test_dir.clone();
+                test_disk_dir.push("disk");
+                self.initialize_temp_dir_inputs(disk_side_effect, &test_disk_dir);
+
+                env::set_current_dir(&test_disk_dir).unwrap();
+                side_effects_helpers.disk = Some(test_disk_dir);
+            }
+
+            side_effects_helpers.temp_test_dir = Some(temp_test_dir);
+        }
+
+        ...
+    }
+
+    ...
+}
+```
+
+We can now edit `src-tauri\src\commands\keys\set.rs` to make use of this. The code simplifies down a lot:
+
+```rs
+#[cfg(test)]
+pub mod tests {
+    ...
+
+    impl<'a> SampleCallTestCase<SetApiKeyRequest, ZammResult<()>>
+        for SetApiKeyTestCase<'a>
+    {
+        ...
+
+        async fn make_request(
+            ...,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            let request = args.as_ref().unwrap();
+
+            set_api_key_helper(
+                ...,
+                side_effects.db.as_ref().unwrap(),
+                ...
+            )
+            .await
+        }
+
+        ...
+    }
+
+    ...
+
+    #[tokio::test]
+    async fn test_overwrite_different_key() {
+        let api_keys = ZammApiKeys(Mutex::new(ApiKeys {
+            openai: Some("0p3n41-4p1-k3y".to_string()),
+        }));
+        check_set_api_key_sample_unit(
+            function_name!(),
+            &api_keys,
+            "api/sample-calls/set_api_key-different.yaml",
+        )
+        .await;
+    }
+
+    ...
+}
+```
+
+Most of the other changes in that file just involve ripping out code that is no longer used. This new test comes in because this new structure makes it obvious that we never test the case where an existing API key is overwritten with a different value.
+
+We edit `src-tauri\src\commands\keys\mod.rs` as well to update the call to `check_set_api_key_sample`.
+
+We create the sample file for that test case at `src-tauri\api\sample-calls\set_api_key-different.yaml`:
+
+```yaml
+request:
+  - set_api_key
+  - >
+    {
+      "filename": ".bashrc",
+      "service": "OpenAI",
+      "api_key": "4-d1ff3r3n7-k3y"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: shell-init/different
+  database:
+    startStateDump: openai-api-key.yaml
+    endStateDump: different-openai-api-key.yaml
+
+```
+
+As that sample file indicates, we create `src-tauri\api\sample-disk-writes\shell-init\different\.bashrc`:
+
+```bash
+export OPENAI_API_KEY="4-d1ff3r3n7-k3y"
+
+```
+
+We define `src-tauri\api\sample-database-writes\openai-api-key.yaml` as
+
+```yaml
+api_keys:
+- service: OpenAI
+  api_key: 0p3n41-4p1-k3y
+llm_calls: []
+
+```
+
+This will be the starting state for this test, but the ending state for other tests.
+
+We create `src-tauri/api/sample-database-writes/different-openai-api-key.yaml` as well:
+
+```yaml
+api_keys:
+- service: OpenAI
+  api_key: 4-d1ff3r3n7-k3y
+llm_calls: []
+
+```
+
+We define `src-tauri\api\sample-database-writes\empty.yaml` for other tests:
+
+```yaml
+api_keys: []
+llm_calls: []
+
+```
+
+Now we can edit all the other tests, such as `src-tauri\api\sample-calls\set_api_key-unset.yaml`:
+
+```yaml
+...
+sideEffects:
+  ...
+  database:
+    startStateDump: openai-api-key.yaml
+    endStateDump: empty.yaml
+```
+
+All the other sample files follow a similar pattern.
+
+
