@@ -182,3 +182,119 @@ success Removed linked package "@neodrag/svelte".
 info You will need to run `yarn install --force` to re-install the package that was linked.
 Done in 0.07s.
 ```
+
+## Moving the fork location
+
+After creating a `forks` folder in the project's root directory, we wish to move our neodrag fork there too. We see that [newer versions of Git](https://stackoverflow.com/a/6310246) have this feature already, so we check that we can just do that as well with our Git:
+
+```bash
+$ git --version 
+git version 2.43.0
+$ git mv src-svelte/forks/neodrag forks/neodrag
+$ git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+        modified:   .gitmodules
+        renamed:    src-svelte/forks/neodrag -> forks/neodrag
+```
+
+It appears that this only changes the path and not the submodule itself in `.gitmodules`, so we edit it:
+
+```
+...
+[submodule "forks/neodrag"]
+	path = forks/neodrag
+	url = https://github.com/amosjyng/neodrag.git
+...
+```
+
+We edit our `Dockerfile`:
+
+```Dockerfile
+RUN git clone --depth 1 --branch zamm/v0.1.1 https://github.com/amosjyng/neodrag.git forks/neodrag && \
+  cd forks/neodrag && \
+  ...
+```
+
+where we have to upload a `zamm/v0.1.1` tag to the remote repo instead of just using the commit hash `e954f97`, because otherwise we get the error
+
+```
+Cloning into 'forks/neodrag'...
+warning: Could not find remote branch e954f97 to clone.
+fatal: Remote branch e954f97 not found in upstream origin
+```
+
+We edit our `Makefile`:
+
+```Makefile
+copy-docker-deps:
+	...
+	mv -n /tmp/dependencies/forks/neodrag/packages/svelte/dist ./forks/neodrag/packages/svelte/
+	...
+```
+
+and our `src-svelte/Makefile`:
+
+```Makefile
+build: ../forks/neodrag/packages/svelte/dist ...
+	yarn ...
+
+```
+
+and our `.github/workflows/tests.yaml`:
+
+```yaml
+jobs:
+  build:
+    ...
+    steps:
+      ...
+      - name: Upload artifacts
+        ...
+        with:
+          name: builds
+          path: |
+            ...
+            forks/neodrag/packages/core/dist/
+            forks/neodrag/packages/svelte/dist/
+            ...
+          ...
+  pre-commit:
+    ...
+    steps:
+      ...
+      - name: Build Neodrag fork
+        run: |
+          ...
+          cd forks/neodrag && pnpm install && ...
+```
+
+and our `.github/workflows/publish.yaml`:
+
+```yaml
+      - name: Build frontend
+        run: |
+          ...
+          cd forks/neodrag
+          ...
+          cd ..
+					...
+```
+
+and our `src-svelte/package.json`:
+
+```json
+{
+	...,
+	"dependencies": {
+    ...,
+    "@neodrag/svelte": "file:../forks/neodrag/packages/svelte",
+    ...
+  }
+}
+```
+
+With a `yarn install`, the reference inside `yarn.lock` should update too.

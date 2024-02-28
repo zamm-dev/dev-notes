@@ -121,6 +121,8 @@ pub fn setup_zamm_db() -> ZammDatabase {
 
 ```
 
+We realize at some point that we forgot to refactor out the remaining uses of `setup_database` in `src-tauri\src\models\api_keys.rs` and `src-tauri\src\setup\api_keys.rs`, so we go ahead and do the refactor there as well.
+
 ## Sample calls refactor
 
 There's a lot of copied code for testing sample calls. We'll do this by refactoring things little by little. We start by at least refactoring the API call check and request parsing into `src-tauri\src\test_helpers\api_testing.rs`:
@@ -812,6 +814,8 @@ Changes for the other files are straightforward, except for `src-tauri\src\comma
         ...
     }
 ```
+
+### Disk side-effects
 
 Next, we wish for the test infrastructure to take care of tests involving disk side effects. We edit `src-tauri\api\sample-call-schema.json` to take additional information into account in the test files:
 
@@ -2490,4 +2494,527 @@ sideEffects:
 
 All the other sample files follow a similar pattern.
 
+#### Raw SQL dump
 
+As mentioned above, the YAML dump isn't a faithful representation of the actual strings being stored in the SQL database. We'll keep it, because it is a more interpretable dump in case any diffs occur. But we'll also add a SQL dump, in case something with the JSON-specific serialization changes.
+
+First we edit `src-tauri\src\test_helpers\database_contents.rs` to provide a new dump function. We run the `sqlite3` command because it's unclear if there's a way to do this from our Diesel connection.
+
+```rs
+pub fn dump_sqlite_database(db_path: &PathBuf, dump_path: &PathBuf) {
+    let dump_output = std::process::Command::new("sqlite3")
+        .arg(db_path)
+        // avoid the inserts into __diesel_schema_migrations
+        .arg(".dump api_keys llm_calls")
+        .output()
+        .expect("Error running sqlite3 .dump command");
+    // filter output by lines starting with "INSERT"
+    let inserts = String::from_utf8_lossy(&dump_output.stdout)
+        .lines()
+        .filter(|line| line.starts_with("INSERT"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    fs::write(dump_path, inserts).expect("Error writing dump file");
+}
+```
+
+Then, we edit `src-tauri\src\test_helpers\database.rs` to provide a way to specify a file for the database:
+
+```rs
+...
+use std::path::PathBuf;
+...
+
+pub fn setup_database(file: Option<&PathBuf>) -> SqliteConnection {
+    let mut conn = match file {
+        Some(file) => {
+            SqliteConnection::establish(file.as_path().to_str().unwrap()).unwrap()
+        }
+        None => SqliteConnection::establish(":memory:").unwrap(),
+    };
+
+    ...
+}
+
+pub fn setup_zamm_db(file: Option<&PathBuf>) -> ZammDatabase {
+    ZammDatabase(...setup_database(file))
+}
+
+```
+
+We'll have to edit all existing calls to `setup_database` and `setup_zamm_db` to pass in `None` by default. For example, we edit this test in `src-tauri\src\setup\api_keys.rs`:
+
+```rs
+    #[test]
+    fn test_empty_db_doesnt_crash() {
+        temp_env::with_var(..., || {
+            let conn = setup_database(None);
+
+            ...
+        });
+    }
+```
+
+We do the same in `src-tauri\src\models\api_keys.rs`. However, `src-tauri/src/test_helpers/api_testing.rs` is where we make use of this new option:
+
+```rs
+impl SampleCall {
+    pub fn db_start_dump(&self) -> Option<String> {
+        self.side_effects
+            ...
+            .map(|p: &str| format!("api/sample-database-writes/{}/dump.yaml", p))
+    }
+
+    pub fn db_end_dump(&self, extension: &str) -> String {
+        let end_state_dump_dir = &self
+            .side_effects
+            .as_ref()
+            .unwrap()
+            .database
+            .as_ref()
+            .unwrap()
+            .end_state_dump;
+
+        format!(
+            "api/sample-database-writes/{}/dump.{}",
+            end_state_dump_dir, extension
+        )
+    }
+}
+
+struct TestDatabaseInfo {
+    pub temp_db_dir: PathBuf,
+    pub temp_db_file: PathBuf,
+}
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    async fn check_sample_call(&mut self, ...) -> SampleCallResult<T, U> {
+        ...
+        // prepare side-effects
+        ...
+        let mut test_db_info: Option<TestDatabaseInfo> = None;
+        if let Some(side_effects) = &sample.side_effects {
+            ...
+
+            // prepare db if necessary
+            if side_effects.database.is_some() {
+                let temp_db_dir = temp_test_dir.join("database");
+                fs::create_dir_all(&temp_db_dir).unwrap();
+                let temp_db_file = temp_db_dir.join("db.sqlite3");
+
+                let test_db = setup_zamm_db(Some(&temp_db_file));
+                ...
+
+                side_effects_helpers.db = Some(test_db);
+                test_db_info = Some(TestDatabaseInfo {
+                    temp_db_dir,
+                    temp_db_file,
+                });
+            }
+
+            ...
+        }
+
+        ...
+
+        // check the call against db side-effects
+        if let Some(test_db) = &side_effects_helpers.db {
+            let db_info = test_db_info.unwrap();
+            let actual_db_yaml_dump = db_info.temp_db_dir.join("dump.yaml");
+            let actual_db_sql_dump = db_info.temp_db_dir.join("dump.sql");
+            write_database_contents(test_db, &actual_db_yaml_dump)
+                .await
+                .unwrap();
+            dump_sqlite_database(&db_info.temp_db_file, &actual_db_sql_dump);
+
+            compare_files(
+                sample.db_end_dump("yaml"),
+                &actual_db_yaml_dump,
+                &replacements,
+            );
+            compare_files(
+                sample.db_end_dump("sql"),
+                &actual_db_sql_dump,
+                &replacements,
+            );
+        }
+
+        ...
+    }
+}
+
+```
+
+Note that in doing this, we have changed the directory structure. For example, we move `src-tauri/api/sample-database-writes/different-openai-api-key.yaml` into `src-tauri/api/sample-database-writes/different-openai-api-key/dump.yaml` and create a `src-tauri/api/sample-database-writes/different-openai-api-key/dump.sql` that looks like:
+
+```sql
+INSERT INTO api_keys VALUES('open_ai','4-d1ff3r3n7-k3y');
+```
+
+We also edit our sample files to match. For example, `src-tauri/api/sample-calls/set_api_key-different.yaml` becomes:
+
+```yaml
+...
+sideEffects:
+  ...
+  database:
+    startStateDump: openai-api-key
+    endStateDump: different-openai-api-key
+```
+
+where the dump variable now refers to a directory instead of a file. Unfortunately, this sort of change cannot be caught by a type checker, because it is merely a string as far as configuration is concerned.
+
+Finally, we edit `src-tauri\src\commands\llms\chat.rs`, because the replacements hashmap now needs an extra entry to handle how the timestamps are represented differently for SQLite and for serde-yaml:
+
+```rs
+        fn output_replacements(
+            &self,
+            ...
+        ) -> HashMap<String, String> {
+            ...
+            let expected_output_timestamp = to_yaml_string(&expected_output.timestamp);
+            let actual_output_timestamp = to_yaml_string(&actual_output.timestamp);
+            HashMap::from([
+                ...,
+                (
+                    // sqlite dump produces timestamps with space instead of T
+                    actual_output_timestamp.replace("T", " "),
+                    expected_output_timestamp.replace("T", " "),
+                ),
+                (actual_output_timestamp, expected_output_timestamp),
+            ])
+        }
+```
+
+#### Using the replacement HashMap in src-tauri\src\commands\keys\set.rs
+
+We'll use the new standard replacement API in `src-tauri\src\commands\keys\set.rs`:
+
+```rs
+    impl<'a> SampleCallTestCase<SetApiKeyRequest, ZammResult<()>>
+        for SetApiKeyTestCase<'a>
+    {
+        ...
+
+        fn output_replacements(
+            &self,
+            _: &SampleCall,
+            _: &ZammResult<()>,
+        ) -> HashMap<String, String> {
+            self.json_replacements.clone()
+        }
+
+        ...
+    }
+
+    impl<'a> ZammResultReturn<SetApiKeyRequest, ()> for SetApiKeyTestCase<'a> {}
+
+    ...
+
+    #[tokio::test]
+    async fn test_invalid_filename() {
+        ...
+        check_set_api_key_sample(
+            ...,
+            HashMap::from([(
+                // error on Windows
+                "The system cannot find the path specified. (os error 3)"
+                    .to_string(),
+                // should be replaced by equivalent error on Linux
+                "Is a directory (os error 21)".to_string(),
+            )]),
+        )
+        .await;
+    }
+```
+
+We remove the quotes for the hashmap in `test_invalid_filename` for clarity.
+
+Our tests fail. It turns out we aren't doing this replacement for standard API calls. We edit `src-tauri\src\test_helpers\api_testing.rs`:
+
+```rs
+...
+
+fn apply_replacements(
+    input: &str,
+    replacements: &HashMap<String, String>,
+) -> String {
+    replacements
+        .iter()
+        .fold(input.to_string(), |acc, (k, v)| acc.replace(k, v))
+}
+
+fn compare_files(
+    ...
+) {
+    ...
+    let replaced_actual_str = apply_replacements(&actual_file_str, output_replacements);
+    assert_eq!(expected_file_str, replaced_actual_str);
+}
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+
+        // check the call against sample outputs
+        let actual_json = ...;
+        let replaced_actual_json = apply_replacements(&actual_json, &replacements);
+        ...
+        assert_eq!(replaced_actual_json, expected_json);
+        ...
+    }
+
+    ...
+}
+```
+
+### Network side effects
+
+Once again, we edit `src-tauri\api\sample-call-schema.json`:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-06/schema#",
+  "$ref": "#/definitions/SampleCall",
+  "definitions": {
+    "SampleCall": {
+      ...,
+      "properties": {
+        ...,
+        "sideEffects": {
+          ...,
+          "properties": {
+            ...,
+            "network": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "recordingFile": {
+                  "type": "string"
+                }
+              },
+              "required": ["recordingFile"]
+            }
+          }
+        }
+      },
+      ...
+    }
+  }
+}
+```
+
+As usual, `src-svelte/src/lib/sample-call.ts` and `src-tauri/src/sample_call.rs` are automatically updated by quicktype.
+
+We move everything from `src-tauri/api/sample-call-requests` to `src-tauri/api/sample-network-requests`. We then edit `src-tauri/src/test_helpers/api_testing.rs` to make use of this:
+
+```rs
+...
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use rvcr::{VCRMiddleware, VCRMode};
+use vcr_cassette::Headers;
+...
+
+pub struct NetworkHelper {
+    pub network_client: ClientWithMiddleware,
+    pub mode: VCRMode,
+}
+
+#[derive(Default)]
+pub struct SideEffectsHelpers {
+    ...,
+    pub network: Option<NetworkHelper>,
+}
+
+...
+
+impl SampleCall {
+    pub fn network_recording(&self) -> String {
+        let recording_file = &self
+            .side_effects
+            .as_ref()
+            .unwrap()
+            .network
+            .as_ref()
+            .unwrap()
+            .recording_file;
+
+        format!("api/sample-network-requests/{}", recording_file)
+    }
+
+    ...
+}
+
+...
+
+const CENSORED: &str = "<CENSORED>";
+
+fn censor_headers(headers: &Headers, blacklisted_keys: &[&str]) -> Headers {
+    return headers
+        .clone()
+        .iter()
+        .map(|(k, v)| {
+            if blacklisted_keys.contains(&k.as_str()) {
+                (k.clone(), vec![CENSORED.to_string()])
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect();
+}
+
+pub trait SampleCallTestCase<T, U>
+    ...
+{
+    ...
+
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+
+        if let Some(side_effects) = &sample.side_effects {
+            ...
+
+            // prepare network if necessary
+            if side_effects.network.is_some() {
+                let recording_path = PathBuf::from(sample.network_recording());
+                let vcr_mode = if !recording_path.exists() {
+                    VCRMode::Record
+                } else {
+                    VCRMode::Replay
+                };
+                let middleware = VCRMiddleware::try_from(recording_path)
+                    .unwrap()
+                    .with_mode(vcr_mode.clone())
+                    .with_modify_request(|req| {
+                        req.headers = censor_headers(&req.headers, &["authorization"]);
+                    })
+                    .with_modify_response(|resp| {
+                        resp.headers =
+                            censor_headers(&resp.headers, &["openai-organization"]);
+                    });
+
+                let network_client: ClientWithMiddleware =
+                    ClientBuilder::new(reqwest::Client::new())
+                        .with(middleware)
+                        .build();
+
+                side_effects_helpers.network = Some(NetworkHelper {
+                    network_client,
+                    mode: vcr_mode,
+                });
+            }
+
+            ...
+        }
+
+        ...
+    }
+}
+```
+
+It doesn't appear as if there is any way to assert with `rvcr` that all requests have been played, so we leave that be for now.
+
+We edit `src-tauri\src\commands\llms\chat.rs`, which features much simplified code now:
+
+```rs
+    impl SampleCallTestCase<ChatRequest, ZammResult<LlmCall>> for ChatTestCase {
+        ...
+
+        async fn make_request(
+            &mut self,
+            ...
+        ) -> ZammResult<LlmCall> {
+            let actual_args = args.as_ref().unwrap().clone();
+
+            let network_helper = side_effects.network.as_ref().unwrap();
+            let api_keys = match network_helper.mode {
+                VCRMode::Record => ZammApiKeys(Mutex::new(ApiKeys {
+                    openai: env::var("OPENAI_API_KEY").ok(),
+                })),
+                VCRMode::Replay => ZammApiKeys(Mutex::new(ApiKeys {
+                    openai: Some("dummy".to_string()),
+                })),
+            };
+
+            chat_helper(
+                &api_keys,
+                ...,
+                network_helper.network_client.clone(),
+            )
+            .await
+        }
+      
+        ...
+    }
+```
+
+We also remove the network file argument from `test_llm_api_call`, because that is now handled by the YAML file.
+
+Finally, we modify the sample recordings such as `src-tauri/api/sample-calls/chat-continue-conversation.yaml` to point to the new network recording file:
+
+```yaml
+...
+sideEffects:
+  ...
+  network:
+    recordingFile: continue-conversation.json
+```
+
+All tests pass on the first go. To make sure that they are not passing spuriously, we modify a sample network recording file to ensure that tests are in fact reading from it.
+
+#### CI
+
+We edit `.github\workflows\tests.yaml` to install `sqlite3` before the tests run:
+
+```yaml
+...
+jobs:
+  ...
+  rust:
+    ...
+    steps:
+      ...
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ... sqlite3
+```
+
+We find that it fails on CI:
+
+```
+error[E0706]: functions in traits cannot be declared `async`
+  --> src/commands/keys/get.rs:35:9
+   |
+35 |           async fn make_request(
+   |           ^----
+   |           |
+   |  _________`async` because of this
+   | |
+36 | |             &mut self,
+37 | |             _: &Option<()>,
+38 | |             _: &SideEffectsHelpers,
+39 | |         ) -> ZammResult<ApiKeys> {
+   | |________________________________^
+   |
+   = note: `async` trait functions are not currently supported
+   = note: consider using the `async-trait` crate: https://crates.io/crates/async-trait
+   = note: see issue #91611 <https://github.com/rust-lang/rust/issues/91611> for more information
+```
+
+We can reproduce this on our Linux box with Rust 1.71.1. We try installing the latest version of Rust on our Linux box:
+
+```bash
+$ asdf install rust latest
+$ asdf global rust 1.76.0
+```
+
+Now everything passes. We update the versions everywhere else, in `Dockerfile`, in `.github/workflows/publish.yaml`, and in `.github/workflows/tests.yaml`.

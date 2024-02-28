@@ -6873,6 +6873,230 @@ and we add a new test to `src-svelte/src/routes/chat/Chat.test.ts` where we make
   });
 ```
 
+### Widening the message bubble size
+
+We edit `src-svelte\src\routes\chat\MessageUI.svelte` to change the default message size:
+
+```css
+  .message .text-container {
+    ...
+    max-width: 80%;
+    ...
+  }
+```
+
+This works, but then we realize that the text does not get resized when the window gets resized.
+
+We try adding some more logic. There's a lot of jitter, so we try saving the timeout ID and clearing it if it hasn't fired yet. We get the error
+
+```
+Loading svelte-check in workspace: c:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-svelte
+Getting Svelte diagnostics...
+
+c:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-svelte\src\routes\chat\MessageUI.svelte:36:9
+Error: Type 'Timeout' is not assignable to type 'number'. (ts)        
+        }
+        resizeTimeoutId = setTimeout(() => {
+          if (textElement) {
+```
+
+We apply the solution [here](https://stackoverflow.com/a/56239226).
+
+We eventually end up with editing `src-svelte\src\routes\chat\Chat.svelte` to store and inform the child elements of the overall chat width:
+
+```svelte
+<script lang="ts">
+  ...
+  import { writable } from 'svelte/store';
+
+  ...
+  let conversationWidthPx = writable(0);
+  ...
+
+  function resizeConversationView() {
+    if (conversationView) {
+      ...
+      requestAnimationFrame(() => {
+        if (conversationView && ...) {
+          ...
+
+          const conversationDimensions = conversationView.getBoundingClientRect();
+          conversationWidthPx.set(conversationDimensions.width);
+        }
+      });
+    }
+  }
+
+  ...
+</script>
+
+<InfoBox title="Chat" fullHeight>
+  ...
+          {#each conversation.slice(1) as message}
+            <Message ... {conversationWidthPx} />
+          {/each}
+  ...
+</InfoBox>
+```
+
+We then pass through all extra props in `src-svelte\src\routes\chat\Message.svelte`:
+
+```svelte
+...
+
+<MessageUI ... {...$$restProps}>
+  ...
+</MessageUI>
+```
+
+In `src-svelte\src\routes\chat\MessageUI.svelte`, we make use of the new data available to us. What we want is:
+
+1. If the chat window is 400px or less wide, the message bubbles should take up the entire space
+2. Otherwise, the message bubbles should take up 80% of the space or 400px, whichever is greater
+3. Message bubbles should be at most 600px wide no matter what
+4. Message bubbles should resize correctly to be bigger if the window resizes to be wider
+5. Because the above cannot be achieved with CSS alone, JavaScript will be needed to fix the width. The CSS should still follow the above as closely as possible to minimize flicker, and therefore the text container still needs to be `width: fit-content;` in order to avoid having flicker that extends across the entire width of the chat window.
+
+```svelte
+<script lang="ts">
+  ...
+  import type { Writable } from "svelte/store";
+
+  ...
+  export let conversationWidthPx: Writable<number> | undefined = undefined;
+  ...
+
+  let initialResizeTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  let finalResizeTimeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  // chat window size at which the message bubble should be full width
+  const MIN_FULL_WIDTH_PX = 400;
+  const MAX_WIDTH_PX = 600;
+
+  function maxMessageWidth(chatWidthPx: number) {
+    if (chatWidthPx <= MIN_FULL_WIDTH_PX) {
+      return chatWidthPx;
+    }
+
+    const fractionalWidth = Math.max(0.8 * chatWidthPx, MIN_FULL_WIDTH_PX);
+    return Math.min(fractionalWidth, MAX_WIDTH_PX);
+  }
+
+  function resizeBubble(chatWidthPx: number) {
+    if (chatWidthPx > 0 && textElement) {
+      try {
+        textElement.style.width = "";
+
+        const maxWidth = maxMessageWidth(chatWidthPx);
+        const currentWidth = textElement.getBoundingClientRect().width;
+        const newWidth = Math.min(currentWidth, maxWidth);
+        textElement.style.width = `${newWidth}px`;
+
+        if (finalResizeTimeoutId) {
+          clearTimeout(finalResizeTimeoutId);
+        }
+        finalResizeTimeoutId = setTimeout(() => {
+          if (textElement) {
+            const range = document.createRange();
+            range.selectNodeContents(textElement);
+            const textRect = range.getBoundingClientRect();
+            const actualTextWidth = textRect.width;
+
+            const finalWidth = Math.min(actualTextWidth, newWidth);
+            textElement.style.width = `${finalWidth}px`;
+          }
+        }, 10);
+      } catch (err) {
+        console.warn("Cannot resize chat message bubble: ", err);
+      }
+    }
+  }
+
+  onMount(() => {
+    conversationWidthPx?.subscribe((chatWidthPx) => {
+      if (initialResizeTimeoutId) {
+        clearTimeout(initialResizeTimeoutId);
+      }
+      initialResizeTimeoutId = setTimeout(() => resizeBubble(chatWidthPx), 100);
+    });
+  });
+</script>
+
+...
+
+<style>
+  ...
+
+  .message .text-container {
+    ...
+  }
+
+  .text {
+    ...
+    max-width: 600px;
+  }
+
+  /* this takes sidebar width into account */
+  @media (max-width: 635px) {
+    .text {
+      max-width: 400px;
+    }
+  }
+
+  @media (min-width: 635px) {
+    .message .text-container {
+      max-width: calc(80% + 2.1rem);
+    }
+  }
+
+  ...
+</script>
+```
+
+Note that:
+
+1. The width on the `textElement` needs to be reset to its natural state before we measure it again, or else the chat bubble will not grow when the window grows because it will be constrained to at most its previous size. This still works to shrink the message bubble, but not grow it.
+2. `maxMessageWidth` doesn't need the early return, because the `currentWidth` will still be less than the `maxMessageWidth` and `Math.min` will ensure that the final max width does not exceed the chat window width. However, we might as well return the correct value still for correctness' sake, and to promote defense in depth against bugs.
+3. The timeouts are there to avoid excessive flickering when resizing the window. Only when the user pauses for a sufficiently long time will the final resize be done.
+4. We remove `max-width` from the regular `.message .text-container` to ensure that the message bubble takes up the entire space by default when the screen is small
+5. The max-width CSS rule on the text always applies. If the chat window size is not big enough, it won't matter. If it's big enough to matter, this rule reduces flicker by already setting the max size.
+6. We empirically test the screen size at which `maxMessageWidth` starts growing beyond 400px. This turns out to be a screen size of 635px. We use a media query to limit the max text width before this point to reduce screen flicker.
+7. Once it starts growing beyond 400px, we want the message bubble to contain the entire text (so that it doesn't suddenly shrink once the screen grows big enough), but also to be small enough to reduce screen flicker. After adding in the margin and the padding for the message bubble, plus a small leeway, this comes out to 80% of the chat window width plus 2.1rem. No matter if we do it here or in the `maxMessageWidth` function, we'll need to do margin and padding calculations.
+
+We add a new story at `src-svelte\src\routes\chat\Chat.stories.ts` to showcase this new full-width display:
+
+```ts
+export const FullMessageWidth: StoryObj = Template.bind({}) as any;
+FullMessageWidth.args = {
+  conversation,
+  showMostRecentMessage: false,
+};
+FullMessageWidth.parameters = {
+  viewport: {
+    defaultViewport: "mobile1",
+  },
+};
+```
+
+As usual, we also mark this for screenshot testing at `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      ...,
+      "full-message-width",
+    ],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+```
+
+A full test of all the requirements listed here (e.g. that chat message bubbles can grow after shrinking) will require enabling some interaction (e.g. resizing the window) in the Storybook tests, and will therefore be left as a TODO. Testing for flicker reduction would require either animation testing or else temporarily disabling the final resize timeout for the purposes of screenshoting the pre-flicker state; this will also be left as a TODO.
+
 ## Adding a type field for variant API calls
 
 In case we ever add incompatible LLM calls (for example, to non-chat models), we'll make use of Serde's [enum representations](https://serde.rs/enum-representations.html) in order to add a `type` field to our API calls. We first edit the models in `src-tauri/src/models/llm_calls.rs`:

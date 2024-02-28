@@ -126,6 +126,23 @@ to
 .vscode/settings.json
 ```
 
+If you later upgrade Rust, you may see the error
+
+```bash
+$ /root/.asdf/shims/rust-analyzer --version
+error: 'rust-analyzer' is not installed for the toolchain '1.76.0-x86_64-unknown-linux-gnu'
+```
+
+[Installing it again](https://github.com/rust-lang/rust-analyzer/issues/14776#issuecomment-1551722991) should work:
+
+```bash
+$ rustup component add rust-analyzer
+info: downloading component 'rust-analyzer'
+info: installing component 'rust-analyzer'
+$ /root/.asdf/shims/rust-analyzer --version
+rust-analyzer 1.76.0 (07dca48 2024-02-04)
+```
+
 # Setting up Rust on Windows
 
 Go [here](https://www.rust-lang.org/tools/install) and download the `rustup-init.exe` executable for your platform. Run it and follow the instructions. For example, a command prompt should pop up with a screen like this:
