@@ -233,3 +233,24 @@ jobs:
           cd src-svelte/forks/neodrag && pnpm install && pnpm compile
       ...
 ```
+
+This still doesn't work, so we remove the previous step we added and replace it with
+
+```yaml
+jobs:
+  ...
+  pre-commit:
+    ...
+    steps:
+      ...
+      - name: Prepare yarn link
+        run: yarn link
+        working-directory: forks/neodrag/packages/svelte
+      - name: Install main Node dependencies
+        run: yarn install --frozen-lockfile
+      - name: Setup Svelte project
+        run: |
+          yarn link @neodrag/svelte
+          yarn svelte-kit sync
+        working-directory: src-svelte
+```
