@@ -7097,6 +7097,621 @@ const components: ComponentTestConfig[] = [
 
 A full test of all the requirements listed here (e.g. that chat message bubbles can grow after shrinking) will require enabling some interaction (e.g. resizing the window) in the Storybook tests, and will therefore be left as a TODO. Testing for flicker reduction would require either animation testing or else temporarily disabling the final resize timeout for the purposes of screenshoting the pre-flicker state; this will also be left as a TODO.
 
+### Rendering markdown
+
+We add a new dependency we found online:
+
+```bash
+$ yarn add svelte-markdown
+```
+
+Then we follow the instructions and edit our `src-svelte\src\routes\chat\Message.svelte` to incorporate Markdown formatting:
+
+```svelte
+<script lang="ts">
+  ...
+  import SvelteMarkdown from 'svelte-markdown'
+
+  ...
+</script>
+
+<MessageUI ...>
+  <div class="markdown">
+    <SvelteMarkdown source={message.text} />
+  </div>
+</MessageUI>
+
+<style>
+  .markdown :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .markdown :global(:last-child) {
+    margin-bottom: 0;
+  }
+</style>
+
+```
+
+We get rid of the margins for the first and last elements because they are superfluous when the chat message bubble itself already has internal padding.
+
+We can now edit `src-svelte\src\routes\chat\MessageUI.svelte` to remove this CSS rule:
+
+```css
+  .message .text-container {
+    ...
+    white-space: pre-line;
+    ...
+  }
+```
+
+We add a new story to `src-svelte\src\routes\chat\Message.stories.ts`, based on the other ones already there:
+
+```ts
+export const Code: StoryObj = Template.bind({}) as any;
+Code.args = {
+  message: {
+    role: "Human",
+    text: "This is some Python code:\n\n" + 
+      "```python\n" +
+      "def hello_world():\n" +
+      "    print('Hello, world!')\n" +
+      "```\n\n" +
+      "What do you think?",
+  },
+};
+Code.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+```
+
+We register this new story in `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "message"],
+    variants: [..., "code"],
+  },
+  ...
+];
+```
+
+We notice that there's no syntax highlighting yet. We commit our changes first before trying to tackle that. However, `prettier` now fails with the error
+
+```
+yarn run v1.22.21
+$ "C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\.bin\prettier" --write --plugin prettier-plugin-svelte src-svelte/src/routes/chat/Message.stories.ts src-svelte/package.json src-svelte/src/routes/chat/Message.svelte src-svelte/src/routes/chat/MessageUI.svelte
+src-svelte\src\routes\chat\Message.stories.ts 285ms
+src-svelte\package.json 54ms
+{
+    "type": "Script",
+    "start": 0,
+    "end": 295,
+    "context": "default",
+    "content": {
+        "type": "Program",
+        "start": 284,
+        "end": 286,
+        "loc": {
+            "start": {
+                "line": 1,
+                "column": 0
+            },
+            "end": {
+                "line": 1,
+                "column": 286
+            }
+        },
+        "body": [
+            {
+                "type": "BlockStatement",
+                "start": 284,
+                "end": 286,
+                "loc": {
+                    "start": {
+                        "line": 1,
+                        "column": 284
+                    },
+                    "end": {
+                        "line": 1,
+                        "column": 286
+                    }
+                },
+                "body": []
+            }
+        ],
+        "sourceType": "module"
+    }
+}
+
+[error] src-svelte\src\routes\chat\Message.svelte: Error: unknown node type: Script
+[error]     at Object.print (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier-plugin-svelte\plugin.js:1452:11)
+[error]     at callPluginPrintFunction (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8601:26)
+[error]     at mainPrintInternal (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8550:22)
+[error]     at mainPrint (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8537:18)
+[error]     at AstPath.call (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8359:24)
+[error]     at printTopLevelParts (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier-plugin-svelte\plugin.js:1493:33)
+[error]     at Object.print (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier-plugin-svelte\plugin.js:903:16)
+[error]     at callPluginPrintFunction (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8601:26)
+[error]     at mainPrintInternal (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8550:22)
+[error]     at mainPrint (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\prettier\index.js:8537:18)
+```
+
+The only result online is [this issue](https://github.com/microsoft/parallel-prettier/issues/23), which doesn't immediately seem related because we're already using prettier v3.
+
+Stashing our changes and running prettier again on all frontend files resulted in a lot of reformats. `yarn install --frozen-lockfile` and then running prettier again resulted in files largely being restored to the way they were before, with the sole exception of `sampleCall.ts`. Resetting the repo, applying the stashed changes again, and doing a second `yarn install --frozen-lockfile` appears to allow prettier to successfully reformat. We are now able to commit again. This appears to have been a fluke with the prettier plugin.
+
+We see that Shiki is in the list of [supported extensions](https://marked.js.org/using_advanced#extensions). However, because of speed comparisons like [this](https://begin.com/blog/posts/2021-11-09-tale-of-the-tape-highlightjs-vs-shiki), we decide to try to use highlight.js. We do
+
+```bash
+$ yarn add svelte-highlight
+```
+
+We look at the [language list](https://github.com/metonym/svelte-highlight/blob/master/SUPPORTED_LANGUAGES.md) to see what our imports should be, [this example](https://www.npmjs.com/package/svelte-markdown#renderers) to see how our code should look, and the [README](https://github.com/metonym/svelte-highlight?tab=readme-ov-file#css-stylesheet) for styling options, and create `src-svelte\src\routes\chat\CodeRender.svelte`:
+
+```svelte
+<script lang="ts">
+  import Highlight from "svelte-highlight";
+  import bash from "svelte-highlight/languages/bash";
+  import javascript from "svelte-highlight/languages/javascript";
+  import typescript from "svelte-highlight/languages/typescript";
+  import rust from "svelte-highlight/languages/rust";
+  import python from "svelte-highlight/languages/python";
+  import plaintext from "svelte-highlight/languages/plaintext";
+  import "svelte-highlight/styles/github.css";
+
+  export let text: string;
+  export let lang: string;
+
+  function getLanguageStr() {
+    if (lang) {
+      return lang.split(" ")[0];
+    }
+    return "plaintext";
+  }
+
+  function getLanguage() {
+    let languageStr = getLanguageStr();
+    switch (languageStr) {
+      case "sh":
+      case "bash":
+        return bash;
+      case "js":
+      case "javascript":
+        return javascript;
+      case "typescript":
+        return typescript;
+      case "rust":
+        return rust;
+      case "py":
+      case "python":
+        return python;
+      default:
+        return plaintext;
+    }
+  }
+
+  let language = getLanguage();
+</script>
+
+<div class="code">
+  <Highlight {language} code={text} />
+</div>
+
+<style>
+  .code :global(code) {
+    border-radius: var(--corner-roundness);
+    background-color: #ffffff88;
+  }
+</style>
+
+```
+
+Note that contrary to what [the documentation](https://marked.js.org/using_pro#renderer) appears to say about the render function signature being `code(string code, string infostring, boolean escaped)`, we discover empirically from `$: console.log($$props);` that the actual props being passed in are:
+
+```json
+{
+  "raw": "```python\ndef hello_world():\n    print('Hello, world!')\n```",
+  "lang": "python",
+  "text": "def hello_world():\n    print('Hello, world!')"
+}
+```
+
+Now we just have to edit `src-svelte/src/routes/chat/Message.svelte` to use this new component:
+
+```svelte
+<script lang="ts">
+  ...
+  import CodeRender from "./CodeRender.svelte";
+  ...
+</script>
+
+<MessageUI ...>
+  <div ...>
+    <SvelteMarkdown ... renderers={{ code: CodeRender }} />
+  </div>
+</MessageUI>
+```
+
+Fortunately, our screenshot tests are now alerting us to the fact that the code we'd previously written to resize the chat bubbles are no longer having their intended effect. As such, we update `src-svelte\src\routes\chat\MessageUI.svelte` to resize child elements of the new markdown div separately:
+
+```svelte
+<script lang="ts">
+  ...
+  const remPx = 18;
+  // arrow size, left padding, and right padding
+  const messagePaddingPx = (0.5 + 0.75 + 0.75) * remPx;
+  ...
+
+  function maxMessageWidth(chatWidthPx: number) {
+    const availableWidthPx = chatWidthPx - messagePaddingPx;
+    if (availableWidthPx <= MIN_FULL_WIDTH_PX) {
+      return availableWidthPx;
+    }
+
+    const fractionalWidth = Math.max(0.8 * availableWidthPx, MIN_FULL_WIDTH_PX);
+    return Math.min(fractionalWidth, MAX_WIDTH_PX);
+  }
+
+  function resetChildren(textElement: HTMLDivElement) {
+    const pElements = textElement.querySelectorAll("p");
+    pElements.forEach((pElement) => {
+      pElement.style.width = "";
+    });
+
+    const codeElements = textElement.querySelectorAll<HTMLDivElement>(".code");
+    codeElements.forEach((codeElement) => {
+      codeElement.style.width = "";
+    });
+  }
+
+  function resizeChildren(textElement: HTMLDivElement, maxWidth: number) {
+    const pElements = textElement.querySelectorAll("p");
+    pElements.forEach((pElement) => {
+      const range = document.createRange();
+      range.selectNodeContents(pElement);
+      const textRect = range.getBoundingClientRect();
+      const actualTextWidth = textRect.width;
+
+      pElement.style.width = `${actualTextWidth}px`;
+    });
+
+    const codeElements = textElement.querySelectorAll<HTMLDivElement>(".code");
+    codeElements.forEach((codeElement) => {
+      let existingWidth = codeElement.getBoundingClientRect().width;
+      if (existingWidth > maxWidth) {
+        codeElement.style.width = `${maxWidth}px`;
+      }
+    });
+  }
+
+  function resizeBubble(chatWidthPx: number) {
+    if (chatWidthPx > 0 && textElement) {
+      try {
+        const markdownElement = textElement.querySelector<HTMLDivElement>(".markdown");
+        if (!markdownElement) {
+          return;
+        }
+
+        resetChildren(markdownElement);
+
+        const maxWidth = maxMessageWidth(chatWidthPx);
+        const currentWidth = markdownElement.getBoundingClientRect().width;
+        const newWidth = Math.ceil(Math.min(currentWidth, maxWidth));
+        markdownElement.style.width = `${newWidth}px`;
+
+        if (finalResizeTimeoutId) {
+          clearTimeout(finalResizeTimeoutId);
+        }
+        finalResizeTimeoutId = setTimeout(() => {
+          resizeChildren(markdownElement, maxWidth);
+          markdownElement.style.width = "";
+        }, 10);
+      } catch (err) {
+        ...
+      }
+    }
+  }
+
+  ...
+</script>
+
+...
+
+<style>
+  .message {
+    ...
+    --internal-spacing: 0.75rem;
+    ...
+  }
+
+  .message .text-container {
+    ...
+    padding: var(--internal-spacing);
+    ...
+  }
+
+  .text {
+    ...
+    width: fit-content;
+    ...
+  }
+
+  ...
+</style>
+```
+
+Note that our strategy is now:
+
+1. Reset all child element widths to their natural state, so that they can grow again if the window got resized to be larger
+2. Constrain markdown div to at most the maximum width. Note that we do have to take the `Math.min` so that excessive flicker does not occur if the div is already narrower than the maximum width. Otherwise, the div will be resized to its maximum size before shrinking back down.
+3. After the browser has had a chance to rerender and wrap the `p` text, we resize the children again to fit their content. The `p` elements are resized to fit their text content, and the code elements are resized to fit the maximum width, if they exceed it. Later on, we will add the CSS necessary to produce a scroll behavior if the code elements exceed their maximum width.
+4. We remove the width set on the markdown div so that it can now `fit-content` to the new size of its child elements, which should all already be constrained to the maximum width. Due to the re-wrapped text in the previous step, the markdown div may shrink in size again compared to step 2.
+
+In `src-svelte\src\routes\chat\CodeRender.svelte`, we add scrollbars when code is overflowing the maximum width expected of it, and move the transparent background and rounded corners to the containing div so that those effects don't disappear when we scroll to the horizontal end of the code. We also set the vertical padding to be consistent with the rest of the message bubble:
+
+```css
+  .code {
+    overflow-x: auto;
+    box-sizing: border-box;
+    border-radius: var(--corner-roundness);
+    background-color: #ffffff88;
+  }
+
+  .code :global(code) {
+    padding: var(--internal-spacing) 1rem;
+    background-color: transparent;
+  }
+
+  .code, .code :global(pre), .code :global(code) {
+    width: fit-content;
+  }
+```
+
+where `--internal-spacing` is from the CSS variable defined above. We use this in `src-svelte\src\routes\chat\Message.svelte` as well for the `p` elements:
+
+```css
+  .markdown {
+    width: fit-content;
+  }
+
+  .markdown :global(p) {
+    margin: var(--internal-spacing) 0;
+  }
+
+  ...
+```
+
+Meanwhile, in `src-svelte\src\routes\chat\Chat.svelte`, we change the logic to only scroll to the bottom if it's the first mount. We don't want to change the user's scroll position on a resize. However, we must scroll to the bottom a second time shortly afterwards in case the internal element resizing produces a greater scroll:
+
+```ts
+  ...
+
+  onMount(() => {
+    resizeConversationView(true);
+    const resizeCallback = () => resizeConversationView(false);
+    window.addEventListener("resize", resizeCallback);
+    ...
+
+    return () => {
+      window.removeEventListener("resize", resizeCallback);
+      ...
+    };
+  });
+
+  ...
+
+  function resizeConversationView(initialMount: boolean = false) {
+    if (...) {
+      ...
+      requestAnimationFrame(() => {
+        if(...) {
+          ...
+          if (initialMount && showMostRecentMessage) {
+            showChatBottom();
+            // scroll to bottom again in case resized elements produce greater scroll
+            setTimeout(showChatBottom, 120);
+          }
+        }
+      });
+    }
+  }
+```
+
+Finally, we edit `src-svelte\src\routes\chat\Chat.stories.ts` to demonstrate the new code, and to fix the copy-paste for `FullMessageWidth` wherein `showMostRecentMessage` was erroneously set to false:
+
+```ts
+const conversation: ChatMessage[] = [
+  ...,
+  {
+    role: "Human",
+    text:
+      "This is some Python code:\n\n" +
+      "```python\n" +
+      "def hello_world():\n" +
+      "    print('Hello, world!')\n" +
+      "```\n\n" +
+      "Convert it to Rust",
+  },
+  {
+    role: "AI",
+    text: "Here's how the Python code you provided would look in Rust:\n\n"
+      + "```rust\nfn main() {\n    println!(\"Hello, world!\");\n}\n```",
+  },
+];
+
+...
+
+export const FullMessageWidth: StoryObj = ...;
+FullMessageWidth.args = {
+  conversation,
+};
+...
+```
+
+We realize while testing on CI that the monospace font used is inconsistent across platforms. We change this by adding Inconsolata, because at first we don't like the look of JetBrains Mono for this particular use case:
+
+```bash
+$ yarn add @fontsource/inconsolata
+```
+
+We import it in `src-svelte\src\routes\styles.css`:
+
+```css
+...
+@import "@fontsource/inconsolata";
+...
+```
+
+and reference it in `src-svelte\src\routes\chat\CodeRender.svelte`:
+
+```css
+  .code :global(code) {
+    ...
+    font-family: "Inconsolata", monospace;
+  }
+```
+
+However, we later decide we do prefer the look of JetBrains Mono after all, so we undo the previous steps and instead put
+
+```css
+  .code :global(code) {
+    ...
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+```
+
+where we decrease the font size to match the rest of the text we have.
+
+Next, we add an inset effect to the code blocks in `src-svelte\src\routes\chat\MessageUI.svelte`. We add it here instead of `CodeRender.svelte` because we wish to produce differently colored shadow effects based on whether it's a human or AI message, and the information about that only exists at this level.
+
+```svelte
+<script lang="ts">
+  ...
+  export let forceHighlight = false;
+  ...
+</script>
+
+<div ... class:force-highlight={forceHighlight} ...>
+  ...
+</div>
+
+<style>
+  ...
+
+  .message :global(.code) {
+    transition: box-shadow var(--standard-duration);
+  }
+  
+  .message.human :global(.code) {
+    box-shadow:
+      inset 0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 102, 0, 0.1);
+  }
+
+  .message.human :global(.code:hover), .message.human.force-highlight :global(.code) {
+    box-shadow:
+      inset 0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 102, 0, 0.2),
+      0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 102, 0, 0.05);
+  }
+
+  .message.ai :global(.code) {
+    box-shadow:
+      inset 0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 0, 102, 0.1);
+  }
+
+  .message.ai :global(.code:hover), .message.ai.force-highlight :global(.code) {
+    box-shadow:
+      inset 0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 0, 102, 0.2),
+      0.02rem 0.02rem 0.3rem 0.1rem rgba(0, 0, 102, 0.05);
+  }
+
+  ...
+</style>
+```
+
+We add new stories to `src-svelte\src\routes\chat\Message.stories.ts` to demonstrate the code blocks for both AI and human messages:
+
+```ts
+let humanCodeMessage = {
+  role: "Human",
+  text:
+    "This is some Python code:\n\n" +
+    "```python\n" +
+    "def hello_world():\n" +
+    "    print('Hello, world!')\n" +
+    "```\n\n" +
+    "Convert it to Rust",
+};
+
+let aiCodeMessage = {
+  role: "AI",
+  text:
+    "Here's how the Python code you provided would look in Rust:\n\n" +
+    '```rust\nfn main() {\n    println!("Hello, world!");\n}\n```',
+};
+
+export const HumanCode: StoryObj = Template.bind({}) as any;
+HumanCode.args = {
+  message: humanCodeMessage,
+};
+HumanCode.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+
+export const HighlightedHumanCode: StoryObj = Template.bind({}) as any;
+HighlightedHumanCode.args = {
+  message: humanCodeMessage,
+  forceHighlight: true,
+};
+HighlightedHumanCode.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+
+export const AICode: StoryObj = Template.bind({}) as any;
+AICode.args = {
+  message: aiCodeMessage,
+};
+AICode.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+
+export const HighlightedAiCode: StoryObj = Template.bind({}) as any;
+HighlightedAiCode.args = {
+  message: aiCodeMessage,
+  forceHighlight: true,
+};
+HighlightedAiCode.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+
+```
+
+We register these new snapshots in `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "message"],
+    variants: [..., "human-code", "highlighted-human-code", "ai-code", "highlighted-ai-code"],
+  },
+  ...
+];
+```
+
 ## Adding a type field for variant API calls
 
 In case we ever add incompatible LLM calls (for example, to non-chat models), we'll make use of Serde's [enum representations](https://serde.rs/enum-representations.html) in order to add a `type` field to our API calls. We first edit the models in `src-tauri/src/models/llm_calls.rs`:
