@@ -298,3 +298,32 @@ and our `src-svelte/package.json`:
 ```
 
 With a `yarn install`, the reference inside `yarn.lock` should update too.
+
+Our CI tests pass at first, but this is due to cached builds. When we run them again later, we run into the problem
+
+```
+cd src-svelte && make
+make[1]: *** No rule to make target `../forks/neodrag/packages/svelte/dist', needed by `build'.  Stop.
+make: *** [svelte] Error 2
+```
+
+We reproduce this locally
+
+```bash
+$ make clean
+$ make
+```
+
+We update `src-svelte/Makefile`:
+
+```Makefile
+../forks/neodrag/packages/core/dist: ../forks/neodrag/packages/core/src/*
+	cd ../forks/...
+
+../forks/neodrag/packages/svelte/dist: ../forks/neodrag/packages/core/dist ../forks/neodrag/packages/svelte/src/*
+	cd ../forks/...
+```
+
+and check that the build passes locally before trying it on CI.
+
+We then eventually find in [`tauri.md`](/zamm-notes/tauri.md) that the publish script is now broken too. We fix it as described in that file.

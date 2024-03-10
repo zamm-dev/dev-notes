@@ -3018,3 +3018,193 @@ $ asdf global rust 1.76.0
 ```
 
 Now everything passes. We update the versions everywhere else, in `Dockerfile`, in `.github/workflows/publish.yaml`, and in `.github/workflows/tests.yaml`.
+
+# Build
+
+## Update signature
+
+We follow the instructions [here](https://tauri.app/v1/guides/distribution/updater/):
+
+```bash
+$ yarn tauri signer generate -- -w ~/.tauri/zamm.key 
+yarn run v1.22.19
+warning From Yarn 1.0 onwards, scripts don't require "--" for options to be forwarded. In a future version, any explicit "--" will be forwarded as-is to the scripts.
+$ tauri signer generate -w /root/.tauri/zamm.key
+Please enter a password to protect the secret key.
+Password: 
+Password (one more time): 
+Deriving a key from the password in order to encrypt the secret key... done
+
+Your keypair was generated successfully
+Private: /root/.tauri/zamm.key (Keep it secret!)
+Public: /root/.tauri/zamm.key.pub
+---------------------------
+
+Environment variables used to sign:
+`TAURI_PRIVATE_KEY`  Path or String of your private key
+`TAURI_KEY_PASSWORD`  Your private key password (optional)
+
+ATTENTION: If you lose your private key OR password, you'll not be able to sign your update package and updates will not work.
+---------------------------
+
+Done in 75.88s.
+```
+
+Next, we find that we must point Tauri to a specific URL endpoint for its version check. We could implement this as a server, but then we'll need to keep the server running, point the subdomain to our server, and setup and configure SSL for the subdomain. Instead, we use the approach recommended in [this thread](https://github.com/tauri-apps/tauri/discussions/2776) and simply use GitHub's gists feature to host a static JSON file.
+
+By default, GitHub's gist's "Raw" button refers to a specific version of a Gist, for example:
+
+> https://gist.githubusercontent.com/amosjyng/b3bbcb4ea176009732ea6898f87fe102/raw/161d0a8cc3a5b76e550a06b93311791b6eb22202/zamm-latest-version.json
+
+Instead, as noted in the GitHub discussion on Tauri auto-update, we refer to the most up to date version of the gist with
+
+> https://gist.githubusercontent.com/amosjyng/b3bbcb4ea176009732ea6898f87fe102/raw
+
+Now we edit `src-tauri/tauri.conf.json` as such:
+
+```json
+{
+  ...,
+  "tauri": {
+    ...,
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzNkRBRTE1N0QzNTkyRjkKUldUNWtqVjlGYTV0azNqYjI1VHYxbHdBTDQxcVQ1WS8wKzI0dXhGbjZ3VnJKaXZCTWtuR09FaE4K",
+      "endpoints": [
+        "https://gist.githubusercontent.com/amosjyng/b3bbcb4ea176009732ea6898f87fe102/raw"
+      ]
+    },
+    ...
+  }
+}
+```
+
+We set the `TAURI_PRIVATE_KEY` and `TAURI_KEY_PASSWORD` environment variables locally, and check that the new signatures are being generated as expected:
+
+```bash
+$ make
+...
+    Finished 2 bundles at:
+        /root/zamm/src-tauri/target/release/bundle/deb/zamm_0.1.1_amd64.deb
+        /root/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage
+        /root/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage.tar.gz (updater)
+
+    Finished 1 updater signature at:
+        /root/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage.tar.gz.sig
+```
+
+We set these on the GitHub repo secrets as well, and edit `.github/workflows/publish.yaml` to put these into the CI run:
+
+```yaml
+name: publish
+
+on: workflow_dispatch
+
+env:
+  ...
+  TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+  TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+  ...
+
+...
+```
+
+We run the publish workflow on CI, and find that the Windows build is now failing with
+
+```
+yarn run v1.22.21
+error Command "build" not found.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+This is odd, because from [this answer](https://stackoverflow.com/a/66849577), the error implies that the `build` script is not defined in `package.json`. We check `src-svelte/package.json` and find that it is indeed defined:
+
+```json
+{
+  ...,
+  "scripts": {
+    ...,
+    "build": "vite build",
+    ...
+  },
+  ...
+}
+```
+
+We eventually realize that this is because the Svelte fork location was moved in [`yarn-fork.md`](/general-notes/setup/repo/yarn-fork.md), and as part of that we erroneously changed the cd to end up in the `forks` folder rather than `src-svelte`. We make the publish script clearer instead of using a `cd`:
+
+```yaml
+      - name: Setup frontend dependencies
+        run: |
+          npm install -g pnpm
+          pnpm install
+          pnpm compile
+        working-directory: forks/neodrag
+      - name: Build frontend
+        run: |
+          yarn install
+          yarn svelte-kit sync
+          yarn build
+        working-directory: src-svelte
+```
+
+We see that upon a successful run, the publish script generates a `latest.json` for us:
+
+```json
+{
+  "version": "0.1.1",
+  "notes": "",
+  "pub_date": "2024-03-10T04:33:18.684Z",
+  "platforms": {
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNWtqVjlGYTV0azBEWElNMlo0TnUvclg0V012NS9RVWZHZ2JUcjhRZy9CSmNxcEJFNjVkUFhVL0ZMRHNmMTF3ZVgvK3FqVWw3NHE1aExKRU5TZUI2T05yYXNObnFOL1FnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzEwMDQ0MzUyCWZpbGU6emFtbV8wLjEuMV9hbWQ2NC5BcHBJbWFnZS50YXIuZ3oKNWxBeXkyUTllSnhFTzNOb0FuRUVIQ0xkUmRSOHpZK0ZjUnVqNGdnQjFwaW4xMFRnaVBUbEEvOGh0YkJXS2JndkRLWHA0dmoyQ21JbXRRdGZpcGpRQ0E9PQo=",
+      "url": "https://github.com/zamm-dev/zamm/releases/download/v0.1.1/zamm_0.1.1_amd64.AppImage.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNWtqVjlGYTV0azFlQWdXQ2dnaWlKTDZhdGJBNXd4cmlGNVZ4MTBvWll4UFlGYnVtOTU4dzdmSlhJL3EzUFRLbHZJSGhpNjg2Y0k0bW13RWNTQlJvVmdBQlFTcFdUcWcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzEwMDQ0NjMwCWZpbGU6emFtbV8wLjEuMV94NjRfZW4tVVMubXNpLnppcApzQ1VFS05ZUzdPU00rK2w1QWl3N2RjblJuVEgyVFpnWWl3YUxaV0RZV1RrWlByd0VGOGJCdmlKT3J6MUw3SVhWeHRZK3FzczlJSDVtbjhnMjd2My9CUT09Cg==",
+      "url": "https://github.com/zamm-dev/zamm/releases/download/v0.1.1/zamm_0.1.1_x64_en-US.msi.zip"
+    },
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNWtqVjlGYTV0ay9Vd2FLbjgzM21rVjkxencxamVlNFJ2c0ZHQTFVTERsOGFGR013RTlsY3JZUWxDRXV3QlRuRTZTK1puNmkvL2Q0VFNVK0RiTGY4bWVGU0tNV3prZkFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzEwMDQ1MTk0CWZpbGU6emFtbS5hcHAudGFyLmd6Ck1iTnNSMTJ0cGx1ZFVFYzl4bEp2N1Vad0UreWdiR2lYbHNSeU5FSWJhQ2syNE5pQ2ltKzZnYWZTWExpSnkyUGFZUDhDUGRmcGZ5OWhzYStDNzZja0JBPT0K",
+      "url": "https://github.com/zamm-dev/zamm/releases/download/v0.1.1/zamm_universal.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNWtqVjlGYTV0ay9Vd2FLbjgzM21rVjkxencxamVlNFJ2c0ZHQTFVTERsOGFGR013RTlsY3JZUWxDRXV3QlRuRTZTK1puNmkvL2Q0VFNVK0RiTGY4bWVGU0tNV3prZkFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzEwMDQ1MTk0CWZpbGU6emFtbS5hcHAudGFyLmd6Ck1iTnNSMTJ0cGx1ZFVFYzl4bEp2N1Vad0UreWdiR2lYbHNSeU5FSWJhQ2syNE5pQ2ltKzZnYWZTWExpSnkyUGFZUDhDUGRmcGZ5OWhzYStDNzZja0JBPT0K",
+      "url": "https://github.com/zamm-dev/zamm/releases/download/v0.1.1/zamm_universal.app.tar.gz"
+    }
+  }
+}
+```
+
+We update our gist with this new `latest.json` file, except that we edit it to spoof it as version `0.1.2`. We find that sure enough, our app successfully notifies us of an update on launch. A more rigorous test would involve actually releasing a mock 0.1.2 release and verifying that it is successfully downloaded and installed. However, we content ourselves with just the notification for now.
+
+On CI, we find the error
+
+```
+   Compiling zamm v0.1.1 (/__w/zamm/zamm/src-tauri)
+    Finished release [optimized] target(s) in 19.39s
+    Bundling zamm_0.1.1_amd64.deb (/__w/zamm/zamm/src-tauri/target/release/bundle/deb/zamm_0.1.1_amd64.deb)
+    Bundling zamm_0.1.1_amd64.AppImage (/__w/zamm/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage)
+    Bundling /__w/zamm/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage.tar.gz (/__w/zamm/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage.tar.gz)
+    Finished 2 bundles at:
+        /__w/zamm/zamm/src-tauri/target/release/bundle/deb/zamm_0.1.1_amd64.deb
+        /__w/zamm/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage
+        /__w/zamm/zamm/src-tauri/target/release/bundle/appimage/zamm_0.1.1_amd64.AppImage.tar.gz (updater)
+
+       Error A public key has been found, but no private key. Make sure to set `TAURI_PRIVATE_KEY` environment variable.
+make: *** [Makefile:7: build] Error 1
+```
+
+We add the keys to `.github/workflows/tests.yaml` as well:
+
+```yaml
+...
+
+env:
+  ...
+  TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+  TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+...
+```
