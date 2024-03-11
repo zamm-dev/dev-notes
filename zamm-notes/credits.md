@@ -893,3 +893,93 @@ DependencyWithIcon.args = {
 ```
 
 and remove the other change to the Storybook test file because it wasn't working anyways.
+
+## Adding Typodermic font logo
+
+For Typodermic fonts, we'll display a small Typodermic logo next to the link, like we do for GitHub links. We add the Typodermic logo at `src-svelte/static/logos/typodermic.png`, and then create `src-svelte/src/routes/credits/TypodermicIcon.svelte` based on `GitHubIcon.svelte`:
+
+```svelte
+<script lang="ts">
+  export let size = "18px";
+</script>
+
+<img src="/logos/typodermic.png" alt="Typodermic" width={size} />
+
+```
+
+We add the corresponding logic to `src-svelte/src/routes/credits/Creditor.svelte`, right next to where the existing logic for `isGitHubLink` is:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  function formatUrlHelper(urlString: string) {
+    ...
+    if (url.hostname.endsWith("github.com")) {
+      ...
+    }
+
+    if (url.hostname.endsWith("typodermicfonts.com")) {
+      return url.pathname.slice(1, -1);
+    }
+
+    ...
+  }
+
+  ...
+</script>
+
+<script lang="ts">
+  ...
+  import GitHubIcon from "...";
+  import TypodermicIcon from "./TypodermicIcon.svelte";
+  ...
+  const isGitHubLink = ...;
+  const isTypodermicLink = url.startsWith("https://typodermicfonts.com");
+  ...
+</script>
+
+<div class="creditor atomic-reveal">
+  ...
+      {#if isGitHubLink}
+        ...
+      {:else if isTypodermicLink}
+        <TypodermicIcon />
+      {/if}
+  ...
+</div>
+```
+
+We add new stories to `src-svelte/src/routes/credits/Creditor.stories.ts` to demonstrate, along with the regular variant that we realize we've never added:
+
+```ts
+...
+
+export const Regular: StoryObj = Template.bind({}) as any;
+Regular.args = {
+  name: "Serde",
+  url: "https://serde.rs/",
+};
+
+...
+
+export const TypodermicFont: StoryObj = Template.bind({}) as any;
+TypodermicFont.args = {
+  name: "Nasalization",
+  url: "https://typodermicfonts.com/nasalization/",
+};
+
+...
+```
+
+As usual, we register these in `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "credits", "creditor"],
+    variants: ["regular", ..., "typodermic-font", ...],
+  },
+];
+```
