@@ -672,3 +672,20 @@ We see that the videos aren't autoplaying on mobile. We look for why this might 
   This browser does not display the video tag.
 </video>
 ```
+
+## Constraining hero image size
+
+We find that we want the hero image to be at most 500px tall, while preserving the aspect ratio. We discover [this answer](https://stackoverflow.com/a/3751836). We edit `src/layouts/BlogPost.astro` as recommended, in the process moving `margin: 0 auto;` from the `img` to its parent container:
+
+```css
+			.hero-image {
+				width: fit-content;
+				margin: 0 auto;
+			}
+			.hero-image img {
+				...
+				max-height: 500px;
+				width: auto;
+				...
+			}
+```

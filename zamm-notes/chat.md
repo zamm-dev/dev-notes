@@ -7097,6 +7097,173 @@ const components: ComponentTestConfig[] = [
 
 A full test of all the requirements listed here (e.g. that chat message bubbles can grow after shrinking) will require enabling some interaction (e.g. resizing the window) in the Storybook tests, and will therefore be left as a TODO. Testing for flicker reduction would require either animation testing or else temporarily disabling the final resize timeout for the purposes of screenshoting the pre-flicker state; this will also be left as a TODO.
 
+#### Fixing width
+
+We notice that while this works fine in the browser, it fails on the app built from the publish workflow for the following interaction:
+
+```json
+[
+  {"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},
+  {"role":"Human","text":"Give me a code snippet a few lines long that I can use in a screenshot."},
+  {"role":"AI","text":"Sure, here's a simple Python code snippet that you can use:\n\n```python\ndef greet(name):\n   print(\"Hello, \" + name + \"! How are you today?\")\n\nname = input(\"Enter your name: \")\ngreet(name)\n```"}
+]
+```
+
+We edit `src-svelte/src/routes/chat/Chat.svelte` to start off with a demonstration:
+
+```ts
+  export let conversation: ChatMessage[] = [
+    {
+      role: "System",
+      text: "You are ZAMM, a chat program. Respond in first person.",
+    },
+    {
+      role: "Human",
+      text: "Give me a code snippet a few lines long that I can use in a screenshot.",
+    },
+    {
+      role: "AI",
+      text: 'Sure, here\'s a simple Python code snippet that you can use:\n\n```python\ndef greet(name):\n   print("Hello, " + name + "! How are you today?")\n\nname = input("Enter your name: ")\ngreet(name)\n```',
+    },
+  ];
+```
+
+Nothing changes. We realize that this is because we have to instead edit `persistentConversation` in `src-svelte/src/routes/chat/PersistentChat.svelte` to pass the conversation to the `Chat` component. Once we do so, we find that we cannot reproduce this behavior.
+
+Perhaps it is because the AppImage was bundled with an older version of Webkit. We try building from our Docker image. Sure enough, it is finally reproducible on this older Webkit.
+
+Upon debugging by increasing the timeout to allow us to use the web inspector, we realize that this is because the text element width is being set to fractional values such as 489.667724609375. We edit `src-svelte/src/routes/chat/MessageUI.svelte` to always round the width up on `p` elements:
+
+```ts
+  function resizeChildren(...) {
+    ...
+    pElements.forEach((pElement) => {
+      ...
+      const actualTextWidth = Math.ceil(textRect.width);
+      ...
+    });
+
+    ...
+  }
+```
+
+If we do this, we might as well ensure that we're using integers everywhere else. We edit this further:
+
+```ts
+
+  function maxMessageWidth(chatWidthPx: number) {
+    ...
+    if (...) {
+      return Math.ceil(...);
+    }
+
+    ...
+    return Math.ceil(...);
+  }
+```
+
+We also edit `resizeBubble` to rename `maxWidth` to `maxPotentialWidth` and `newWidth` to `maxActualWidth`, and then to pass in `maxActualWidth` to `resizeChildren`. This is because at every step, the width should never go up, only down.
+
+```ts
+
+  function resizeBubble(chatWidthPx: number) {
+    ...
+        const maxPotentialWidth = maxMessageWidth(chatWidthPx);
+        const currentWidth = markdownElement.getBoundingClientRect().width;
+        const maxActualWidth = Math.ceil(Math.min(currentWidth, maxPotentialWidth));
+        ...
+
+        ...
+        finalResizeTimeoutId = setTimeout(() => {
+          resizeChildren(markdownElement, maxActualWidth);
+          ...
+        }, 10);
+    ...
+  }
+```
+
+### Setting a cap on the chat message height
+
+We'll try to use this chat message:
+
+    Hey, I have this definition for a book object:
+
+    ```python
+    class Book:
+      def __init__(self, title, author, pages):
+          self.title = title
+          self.author = author
+          self.pages = pages
+
+      def book_info(self):
+          return f"'{self.title}' by {self.author} has {self.pages} pages."
+
+      def is_long(self):
+          return self.pages > 200
+    ```
+
+    Do you have any code comments for me?
+
+We add this to `src-svelte/src/routes/chat/Chat.stories.ts`:
+
+```ts
+export const ExtraLongInput: StoryObj = Template.bind({}) as any;
+ExtraLongInput.args = {
+  conversation,
+  initialMessage:
+    `Hey, I have this definition for a book object:
+
+\`\`\`python
+class Book:
+  def __init__(self, title, author, pages):
+      self.title = title
+      self.author = author
+      self.pages = pages
+
+  def book_info(self):
+      return f"'{self.title}' by {self.author} has {self.pages} pages."
+
+  def is_long(self):
+      return self.pages > 200
+\`\`\`
+
+Do you have any code comments for me?`,
+};
+ExtraLongInput.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+```
+
+According to the [Autosize documentation](https://www.jacklmoore.com/autosize/), we set a maximum height by using CSS. As such, we edit the CSS in `src-svelte/src/routes/chat/Form.svelte`:
+
+```css
+  textarea {
+    ...
+    max-height: 9.8rem;
+    ...
+  }
+```
+
+Then, we register this as a new gold screenshot in `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      ...,
+      "extra-long-input",
+      ...
+    ],
+    ...
+  },
+  ...
+];
+```
+
 ### Rendering markdown
 
 We add a new dependency we found online:

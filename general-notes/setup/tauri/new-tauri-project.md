@@ -767,7 +767,7 @@ Then for pre-commit, follow the instructions at
 
 ### Debugging
 
-To allow the web inspector for debugging a final build, add the `"devtools"` feature to `Cargo.toml` as mentioned [here](https://github.com/tauri-apps/tauri/discussions/3059):
+To allow the web inspector/dev tools/dev console for debugging a final build, add the `"devtools"` feature to `Cargo.toml` as mentioned [here](https://github.com/tauri-apps/tauri/discussions/3059):
 
 ```toml
 tauri = { ..., features = [..., "devtools"] }

@@ -1517,7 +1517,13 @@ We can do as the Storybook repo maintainers recommend and use SSIM with a failur
   };
 ```
 
-Unfortunately, this strategy results in missing changes to an entire letter, so we undo our changes here.
+Unfortunately, this strategy results in missing changes to an entire letter, so we undo our changes here at first. However, we later find that with the chat conversation screenshots, there are slight font kerning differences on different runs. We add it back in with a threshold of 0.5% to fight test flakiness, because at this threshold failures to resize chat bubbles are still successfully detected. This does mean that individual character swaps are no longer detected, but larger scale differences should still show up.
+
+Because the image diffs are a lot less useful now, we use the solutions [here](https://stackoverflow.com/q/5132749) to highlight pixel-level differences. For example:
+
+```bash
+$ compare actual.png expected.png diff-output.png
+```
 
 ### Buffer error
 
