@@ -5,7 +5,7 @@
 Install ImageMagick:
 
 ```bash
-$ sudo apt install install imagemagick
+$ sudo apt install imagemagick
 ```
 
 Then use the command mentioned [here](https://superuser.com/a/802627), at the resolution you want:

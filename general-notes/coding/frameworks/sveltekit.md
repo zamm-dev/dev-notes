@@ -245,3 +245,51 @@ and change the existing table implementation to use it instead:
 ```
 
 This requires understanding what the InfoBox is for, and what information the existing table is meant to convey.
+
+## Upgrading to SvelteKit 2
+
+We find that SvelteKit 2 [solves](https://old.reddit.com/r/sveltejs/comments/np9qc0/send_event_from_a_parent_to_child/jbsfh2m/) a problem we want with triggering child component functionality from the parent, so we try to upgrade by following the instructions [here](https://kit.svelte.dev/docs/migrating-to-sveltekit-2):
+
+```bash
+$ svelte-migrate@latest sveltekit-2
+Need to install the following packages:
+svelte-migrate@1.3.8
+Ok to proceed? (y) y
+Please re-run this script in a directory with a svelte.config.js
+```
+
+We go inside `src-svelte` and do it again:
+
+```bash
+$ npx svelte-migrate@latest sveltekit-2
+
+This will update files in the current directory
+If you're inside a monorepo, run this in individual project directories rather than the workspace root.
+
+√ Continue? ... yes
+√ Which folders should be migrated? » src
+Updated @sveltejs/kit to ^2.0.0
+Updated @sveltejs/adapter-static to ^3.0.0
+Updated @sveltejs/vite-plugin-svelte to ^3.0.0
+Changed `vitePreprocess` import: https://kit.svelte.dev/docs/migrating-to-sveltekit-2#vitepreprocess-is-no-longer-exported-from-sveltejs-kit-vite
+✔ Your project has been migrated
+
+Recommended next steps:
+
+  1: Run npm install (or the corresponding installation command of your package manager)
+  2: git commit -m "migration to SvelteKit 2"
+  3: Review the migration guide at https://kit.svelte.dev/docs/migrating-to-sveltekit-2
+  4: Read the updated docs at https://kit.svelte.dev/docs
+
+Run git diff to review changes.
+```
+
+We see that `package.json` and `svelte.config.js` have been updated:
+
+```js
+...
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+...
+```
+
+We run `yarn` to update `../yarn.lock`. All the local tests pass, and all the CI tests pass as well. This upgrade went smoothly, and our tests give us high confidence that all is well.

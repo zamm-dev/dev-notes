@@ -85,3 +85,60 @@ $ REG ADD HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\238C9FA8-0AA
 Which enables us to then go to the "Control Panel > Hardware and Sound > Power Options > Edit Plan Settings" and click "Change advanced power settings" to see "Sleep > System unattended sleep timeout" and set the plugged in value to "0", because according to [this documentation](https://admx.help/?Category=Windows_10_2016&Policy=Microsoft.Policies.PowerManagement::UnattendedSleepTimeOutAC):
 
 > If you specify 0 seconds, Windows does not automatically transition to sleep.
+
+## Restoring from backup
+
+Set up the repository and password as before, and then run:
+
+```bash
+$ restic snapshots  
+repository 26719cd1 opened (version 2, compression level auto)
+created new cache in /home/amos/.cache/restic
+ID        Time                 Host             Tags        Paths
+--------------------------------------------------------------------------------------
+dc4b9667  2024-02-24 10:43:20  DESKTOP-N5K32L1              C:\Users\Amos Ng\Documents
+                                                            C:\Users\Amos Ng\Music
+                                                            ...
+
+1e657c35  2024-02-29 13:45:12  DESKTOP-N5K32L1              C:\Users\Amos Ng\Documents
+                                                            C:\Users\Amos Ng\Music
+                                                            ...
+--------------------------------------------------------------------------------------
+```
+
+If you run into this error:
+
+```bash
+$ restic snapshots
+Fatal: Fatal: config cannot be loaded: unsupported repository version
+```
+
+You can update restic with
+
+```bash
+$ sudo restic self-update
+writing restic to /usr/bin/restic
+find latest release of restic at GitHub
+latest version is 0.16.4
+download SHA256SUMS
+download SHA256SUMS.asc
+GPG signature verification succeeded
+download restic_0.16.4_linux_amd64.bz2
+downloaded restic_0.16.4_linux_amd64.bz2
+saved 24539136 bytes in /usr/bin/restic
+successfully updated restic to version 0.16.4
+```
+
+Then, you can check the files in a snapshot:
+
+```bash
+$ restic ls latest | less
+```
+
+Restore one of them with
+
+```bash
+$ restic restore latest --path "/Documents/Some Backed Up Folder" --target ~/Downloads/restoration
+repository 26719cd1 opened (version 2, compression level auto)
+...
+```

@@ -8141,6 +8141,636 @@ We change it as requested, and realize for the first time that it was displayed 
 </div>
 ```
 
+## Refactoring out scroll behavior
+
+We want to replicate the scroll behavior in other parts of the app, so we'll refactor it out into a new component. We create `src-svelte/src/lib/FixedScrollable.svelte` based on existing code:
+
+```svelte
+<script lang="ts">
+  import { onMount } from "svelte";
+
+  export let maxHeight: string;
+  export let initialPosition: "top" | "bottom" = "top";
+  let scrollContents: HTMLDivElement | undefined = undefined;
+  let topIndicator: HTMLDivElement;
+  let bottomIndicator: HTMLDivElement;
+  let topShadow: HTMLDivElement;
+  let bottomShadow: HTMLDivElement;
+
+  export function getDimensions() {
+    if (scrollContents) {
+      return scrollContents.getBoundingClientRect();
+    }
+
+    throw new Error("Scrollable component not mounted");
+  }
+
+  export function scrollToBottom() {
+    if (scrollContents) {
+      scrollContents.scrollTop = scrollContents.scrollHeight;
+    }
+  }
+
+  function intersectionCallback(shadow: HTMLDivElement) {
+    return (entries: IntersectionObserverEntry[]) => {
+      let indicator = entries[0];
+      if (indicator.isIntersecting) {
+        shadow.classList.remove("visible");
+      } else {
+        shadow.classList.add("visible");
+      }
+    };
+  }
+
+  onMount(() => {
+    let topScrollObserver = new IntersectionObserver(
+      intersectionCallback(topShadow),
+    );
+    topScrollObserver.observe(topIndicator);
+    let bottomScrollObserver = new IntersectionObserver(
+      intersectionCallback(bottomShadow),
+    );
+    bottomScrollObserver.observe(bottomIndicator);
+
+    if (initialPosition === "bottom") {
+      scrollToBottom();
+    }
+
+    return () => {
+      topScrollObserver.disconnect();
+      bottomScrollObserver.disconnect();
+    };
+  });
+
+  $: style = `max-height: ${maxHeight}`;
+</script>
+
+<div class="scrollable composite-reveal" {style}>
+  <div class="shadow top" bind:this={topShadow}></div>
+  <div
+    class="scroll-contents composite-reveal"
+    {style}
+    bind:this={scrollContents}
+  >
+    <div class="indicator top" bind:this={topIndicator}></div>
+    <slot />
+    <div class="indicator bottom" bind:this={bottomIndicator}></div>
+  </div>
+  <div class="shadow bottom" bind:this={bottomShadow}></div>
+</div>
+
+<style>
+  .scrollable {
+    position: relative;
+  }
+
+  .scrollable :global(.shadow.visible) {
+    display: block;
+  }
+
+  .scroll-contents {
+    overflow-y: auto;
+  }
+
+  .shadow {
+    z-index: 1;
+    height: 0.375rem;
+    width: 100%;
+    position: absolute;
+    display: none;
+  }
+
+  .shadow.top {
+    top: 0;
+    background-image: radial-gradient(
+      farthest-side at 50% 0%,
+      rgba(150, 150, 150, 0.4) 0%,
+      rgba(0, 0, 0, 0) 100%
+    );
+  }
+
+  .shadow.bottom {
+    bottom: 0;
+    background-image: radial-gradient(
+      farthest-side at 50% 100%,
+      rgba(150, 150, 150, 0.4) 0%,
+      rgba(0, 0, 0, 0) 100%
+    );
+  }
+
+  .indicator {
+    height: 1px;
+    width: 100%;
+  }
+
+  .indicator.top {
+    margin-bottom: -1px;
+  }
+
+  .indicator.bottom {
+    margin-top: -1px;
+  }
+</style>
+
+```
+
+This component will be responsible for maintaining scroll behavior, initial scroll offset, and showing shadows at the top and bottom of the scrollable area, which will have a fixed height. Note the export of component functions in non-module scope, which depends on [the upgrade](/general-notes/coding/frameworks/sveltekit.md) (in section "Upgrading to SvelteKit 2") to SvelteKit 2.
+
+Because this takes a slot, we create a view for this in `src-svelte/src/lib/FixedScrollableView.svelte` before we create a Storybook story for it, using content generated from a [lorem ipsum generator](https://www.lipsum.com/):
+
+```svelte
+<script lang="ts">
+  import FixedScrollable from "./FixedScrollable.svelte";
+</script>
+
+<FixedScrollable maxHeight="10rem" {...$$restProps}>
+  <p>
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque faucibus
+    vulputate rhoncus. Maecenas velit urna, consectetur id ipsum ac, porta
+    accumsan neque. Vestibulum sit amet magna aliquet, posuere lorem eu, aliquet
+    sapien. Duis ac arcu a lacus dictum hendrerit. Integer vel lorem dapibus,
+    interdum erat eget, iaculis sem. Mauris massa turpis, vulputate ut iaculis
+    nec, aliquet id massa. Aenean nunc tortor, viverra sed auctor ut, viverra
+    vel dolor. Duis molestie maximus felis id lacinia. Pellentesque venenatis
+    diam sit amet posuere tincidunt. In hac habitasse platea dictumst.
+    Pellentesque in mattis ipsum. Donec tempus mi eu varius egestas. Nulla
+    mattis metus lectus, eget auctor risus aliquam vitae. Aenean ullamcorper
+    elementum enim, vitae viverra mi dignissim sit amet. Cras semper enim eget
+    sapien gravida, eget laoreet elit lobortis. Nam dictum, dolor sit amet
+    rhoncus tincidunt, quam lorem faucibus nunc, sed convallis orci sapien
+    dignissim nisi.
+  </p>
+
+  <p>
+    Donec eu hendrerit mauris, hendrerit iaculis nulla. Nam venenatis volutpat
+    eleifend. Donec quis dolor at arcu commodo aliquet. Duis feugiat nisi in ex
+    viverra, eu facilisis ante tempus. Cras sed porta ipsum. Donec dui diam,
+    ultrices eget neque feugiat, malesuada cursus arcu. In eget laoreet ligula,
+    eget finibus quam. Duis congue porta libero, vitae porttitor erat.
+    Suspendisse ipsum dui, condimentum vitae dictum sed, feugiat non leo.
+    Integer tristique sollicitudin ullamcorper. Nullam elementum facilisis nulla
+    vitae congue. In cursus est commodo ante mollis pharetra.
+  </p>
+
+  <p>
+    Integer at nunc suscipit sem molestie facilisis. Morbi iaculis bibendum dui,
+    quis convallis mauris bibendum ut. Suspendisse arcu nunc, tristique sit amet
+    nisi ut, varius lacinia orci. Nulla tincidunt orci id tellus ultricies, eu
+    vestibulum neque tincidunt. Nam at nisi justo. Etiam lacinia aliquet sem,
+    sit amet facilisis erat vestibulum quis. Proin ut semper turpis, vel euismod
+    nibh. Ut in tempor risus. Vivamus ullamcorper molestie laoreet. Maecenas id
+    fermentum tellus. Curabitur dui leo, porta id tortor non, dignissim vehicula
+    lectus. Nulla et diam at metus accumsan varius sit amet id sapien.
+  </p>
+
+  <p>
+    Pellentesque lacinia enim ut commodo cursus. Nullam rhoncus pretium ornare.
+    Donec pulvinar urna vel tempor accumsan. Nunc viverra purus non lacus
+    condimentum, ut sodales orci placerat. Vivamus luctus dictum nisi. Donec
+    turpis diam, dictum eget ex non, vulputate molestie dui. Duis urna lectus,
+    tempor in bibendum venenatis, congue eu tortor. Duis at dictum sapien,
+    bibendum porta magna. Quisque nisi eros, vulputate nec dui ut, scelerisque
+    rhoncus ante. In varius metus mi, in elementum lorem venenatis lacinia.
+    Proin risus lacus, ultrices eget dolor sed, sodales ullamcorper orci.
+    Vivamus non augue pulvinar, congue orci nec, imperdiet neque. Cras ligula
+    nisl, pharetra vel libero vitae, efficitur lacinia nunc. Maecenas facilisis
+    tortor a arcu egestas commodo.
+  </p>
+
+  <p>
+    Nunc ac pellentesque ex, sit amet posuere purus. In ac tempor libero, vel
+    pretium metus. Nam fermentum ut arcu vehicula fermentum. Mauris euismod
+    magna vitae ipsum aliquam tristique. Duis luctus arcu dictum nibh egestas,
+    eu fringilla augue ultricies. Fusce in augue consequat, luctus nisl vitae,
+    sollicitudin mauris. In ultrices augue sit amet nisi luctus imperdiet. In
+    non felis euismod, viverra metus id, hendrerit leo. Curabitur tristique erat
+    et nisl mattis, eu tempus nisl tristique. Praesent vel sem pellentesque
+    libero sodales lobortis nec a neque. Mauris at lorem auctor, tincidunt augue
+    nec, lobortis sem.
+  </p>
+</FixedScrollable>
+
+```
+
+We add a story for this in `src-svelte/src/lib/FixedScrollable.stories.ts`:
+
+```ts
+import FixedScrollableComponent from "./FixedScrollableView.svelte";
+import type { StoryObj } from "@storybook/svelte";
+
+export default {
+  component: FixedScrollableComponent,
+  title: "Reusable/Scrollable/Fixed",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: FixedScrollableComponent,
+  props: args,
+});
+
+export const Top: StoryObj = Template.bind({}) as any;
+Top.args = {
+  initialPosition: "top",
+};
+
+export const Bottom: StoryObj = Template.bind({}) as any;
+Bottom.args = {
+  initialPosition: "bottom",
+};
+
+```
+
+As usual, we register the new component screenshots at `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "scrollable", "fixed"],
+    variants: ["top", "bottom"],
+  },
+  ...
+];
+```
+
+However, we see from the new bottom screenshot that the component does not scroll all the way to the bottom. It is not clear why this only happens on Webkit, but we find that we can reproduce it if the details pane is open on initial page load. As such, we edit `src-svelte/src/lib/FixedScrollable.svelte`:
+
+```ts
+  onMount(() => {
+    ...
+
+    if (initialPosition === "bottom") {
+      scrollToBottom();
+
+      // hack for Storybook screenshot test on Webkit
+      setTimeout(() => scrollToBottom(), 10);
+    }
+
+    ...
+  });
+```
+
+Now for our main Scrollable component, we create `src-svelte/src/lib/Scrollable.svelte`:
+
+```svelte
+<script lang="ts" context="module">
+  export type ResizedEvent = CustomEvent<DOMRect>;
+</script>
+
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { createEventDispatcher } from "svelte";
+  import FixedScrollable from "./FixedScrollable.svelte";
+
+  export let minHeight = "8rem";
+  export let initialPosition: "top" | "bottom" = "bottom";
+  let scrollableHeight: string = minHeight;
+  let container: HTMLDivElement | null = null;
+  let scrollable: FixedScrollable | null = null;
+  const dispatchResizeEvent = createEventDispatcher();
+
+  export function resizeScrollable() {
+    if (!scrollable) {
+      return;
+    }
+
+    scrollableHeight = minHeight;
+    requestAnimationFrame(() => {
+      if (!container || !scrollable) {
+        console.warn("Container or scrollable not mounted");
+        return;
+      }
+
+      scrollableHeight = `${container.clientHeight}px`;
+      dispatchResizeEvent("resize", scrollable.getDimensions());
+    });
+  }
+
+  export function scrollToBottom() {
+    scrollable?.scrollToBottom();
+  }
+
+  onMount(() => {
+    resizeScrollable();
+    const windowResizeCallback = () => resizeScrollable();
+    window.addEventListener("resize", windowResizeCallback);
+
+    return () => {
+      window.removeEventListener("resize", windowResizeCallback);
+    };
+  });
+</script>
+
+<div class="growable container composite-reveal" bind:this={container}>
+  <FixedScrollable
+    {initialPosition}
+    maxHeight={scrollableHeight}
+    bind:this={scrollable}
+  >
+    <slot />
+  </FixedScrollable>
+</div>
+
+<style>
+  .container {
+    flex-grow: 1;
+  }
+</style>
+
+```
+
+This one is responsible for resizing the fixed-size scrollable element whenever the window gets resized. It emits a resize event if it does. We see from [this answer](https://stackoverflow.com/a/67951078) how to correctly type the resize event in Svelte.
+
+Because this component also operates on a slot, we create a view in `src-svelte/src/lib/ScrollableView.svelte`:
+
+```svelte
+<script lang="ts">
+  import Scrollable from "./Scrollable.svelte";
+</script>
+
+<div class="container">
+  <Scrollable {...$$restProps}>
+    <p>
+      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque faucibus
+      vulputate rhoncus. Maecenas velit urna, consectetur id ipsum ac, porta
+      accumsan neque. Vestibulum sit amet magna aliquet, posuere lorem eu,
+      aliquet sapien. Duis ac arcu a lacus dictum hendrerit. Integer vel lorem
+      dapibus, interdum erat eget, iaculis sem. Mauris massa turpis, vulputate
+      ut iaculis nec, aliquet id massa. Aenean nunc tortor, viverra sed auctor
+      ut, viverra vel dolor. Duis molestie maximus felis id lacinia.
+      Pellentesque venenatis diam sit amet posuere tincidunt. In hac habitasse
+      platea dictumst. Pellentesque in mattis ipsum. Donec tempus mi eu varius
+      egestas. Nulla mattis metus lectus, eget auctor risus aliquam vitae.
+      Aenean ullamcorper elementum enim, vitae viverra mi dignissim sit amet.
+      Cras semper enim eget sapien gravida, eget laoreet elit lobortis. Nam
+      dictum, dolor sit amet rhoncus tincidunt, quam lorem faucibus nunc, sed
+      convallis orci sapien dignissim nisi.
+    </p>
+
+    <p>
+      Donec eu hendrerit mauris, hendrerit iaculis nulla. Nam venenatis volutpat
+      eleifend. Donec quis dolor at arcu commodo aliquet. Duis feugiat nisi in
+      ex viverra, eu facilisis ante tempus. Cras sed porta ipsum. Donec dui
+      diam, ultrices eget neque feugiat, malesuada cursus arcu. In eget laoreet
+      ligula, eget finibus quam. Duis congue porta libero, vitae porttitor erat.
+      Suspendisse ipsum dui, condimentum vitae dictum sed, feugiat non leo.
+      Integer tristique sollicitudin ullamcorper. Nullam elementum facilisis
+      nulla vitae congue. In cursus est commodo ante mollis pharetra.
+    </p>
+
+    <p>
+      Integer at nunc suscipit sem molestie facilisis. Morbi iaculis bibendum
+      dui, quis convallis mauris bibendum ut. Suspendisse arcu nunc, tristique
+      sit amet nisi ut, varius lacinia orci. Nulla tincidunt orci id tellus
+      ultricies, eu vestibulum neque tincidunt. Nam at nisi justo. Etiam lacinia
+      aliquet sem, sit amet facilisis erat vestibulum quis. Proin ut semper
+      turpis, vel euismod nibh. Ut in tempor risus. Vivamus ullamcorper molestie
+      laoreet. Maecenas id fermentum tellus. Curabitur dui leo, porta id tortor
+      non, dignissim vehicula lectus. Nulla et diam at metus accumsan varius sit
+      amet id sapien.
+    </p>
+
+    <p>
+      Pellentesque lacinia enim ut commodo cursus. Nullam rhoncus pretium
+      ornare. Donec pulvinar urna vel tempor accumsan. Nunc viverra purus non
+      lacus condimentum, ut sodales orci placerat. Vivamus luctus dictum nisi.
+      Donec turpis diam, dictum eget ex non, vulputate molestie dui. Duis urna
+      lectus, tempor in bibendum venenatis, congue eu tortor. Duis at dictum
+      sapien, bibendum porta magna. Quisque nisi eros, vulputate nec dui ut,
+      scelerisque rhoncus ante. In varius metus mi, in elementum lorem venenatis
+      lacinia. Proin risus lacus, ultrices eget dolor sed, sodales ullamcorper
+      orci. Vivamus non augue pulvinar, congue orci nec, imperdiet neque. Cras
+      ligula nisl, pharetra vel libero vitae, efficitur lacinia nunc. Maecenas
+      facilisis tortor a arcu egestas commodo.
+    </p>
+
+    <p>
+      Nunc ac pellentesque ex, sit amet posuere purus. In ac tempor libero, vel
+      pretium metus. Nam fermentum ut arcu vehicula fermentum. Mauris euismod
+      magna vitae ipsum aliquam tristique. Duis luctus arcu dictum nibh egestas,
+      eu fringilla augue ultricies. Fusce in augue consequat, luctus nisl vitae,
+      sollicitudin mauris. In ultrices augue sit amet nisi luctus imperdiet. In
+      non felis euismod, viverra metus id, hendrerit leo. Curabitur tristique
+      erat et nisl mattis, eu tempus nisl tristique. Praesent vel sem
+      pellentesque libero sodales lobortis nec a neque. Mauris at lorem auctor,
+      tincidunt augue nec, lobortis sem.
+    </p>
+  </Scrollable>
+  <div class="other-element">
+    <p>
+      This element takes up fixed space. The Scrollable above should expand to fill the rest of the space.
+    </p>
+  </div>
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    height: calc(100vh - 2rem);
+  }
+
+  .other-element {
+    background-color: #f0f0f0;
+    padding: 1rem;
+  }
+</style>
+
+```
+
+and add stories to match at `src-svelte/src/lib/Scrollable.stories.ts`:
+
+```ts
+import ScrollableComponent from "./ScrollableView.svelte";
+import type { StoryObj } from "@storybook/svelte";
+
+export default {
+  component: ScrollableComponent,
+  title: "Reusable/Scrollable/Growable",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: ScrollableComponent,
+  props: args,
+});
+
+export const Small: StoryObj = Template.bind({}) as any;
+Small.args = {
+  initialPosition: "top",
+};
+Small.parameters = {
+  viewport: {
+    defaultViewport: "mobile1",
+  },
+};
+
+export const Large: StoryObj = Template.bind({}) as any;
+Large.args = {
+  initialPosition: "top",
+};
+Large.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+
+```
+
+As usual, we register the screenshots in `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "scrollable", "growable"],
+    variants: ["small", "large"],
+  },
+  ...
+];
+```
+
+We manually test that window resizing works consistently here. From repeated runs of the automate tests, we see that there is actually some non-determinism in how the larger screenshot is rendered. However, the non-determinism is consistent, so we can at least add it as a variant.
+
+Next, we edit `src-svelte/src/routes/chat/MessageUI.svelte` to no longer listen to `conversationWidthPx`, as store event updates add another layer of complexity. Instead, we remove that as a prop, remove `initialResizeTimeoutId`, export `resizeBubble` to be controlled entirely by the parent, and add a proper cleanup method to ensure the timeout is taken care of on dismount:
+
+```ts
+  export function resizeBubble(...) {
+    ...
+  }
+
+  onMount(() => {
+    return () => {
+      if (finalResizeTimeoutId) {
+        clearTimeout(finalResizeTimeoutId);
+      }
+    };
+  });
+```
+
+Next, we re-export `resizeBubble` in the parent component `src-svelte/src/routes/chat/Message.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  let resizeBubbleBound: (chatWidthPx: number) => void;
+
+  export function resizeBubble(chatWidthPx: number) {
+    resizeBubbleBound(chatWidthPx);
+  }
+</script>
+
+<MessageUI
+  ...
+  bind:resizeBubble={resizeBubbleBound}
+  ...
+>
+  ...
+</MessageUI>
+
+...
+```
+
+We do it this way because it's unclear how to do a re-export directly. Here, we are using the more [recommended way](https://stackoverflow.com/a/61355264) of binding a child component's function directly to a parent variable.
+
+Finally, we make use of all this in `src-svelte/src/routes/chat/Chat.svelte`. We rip out all the logic that is now part of our refactored components, and replace it with:
+
+```svelte
+<script lang="ts">
+  ...
+  import Scrollable, {
+    type ResizedEvent,
+  } from "$lib/Scrollable.svelte";
+  ...
+
+  let initialMount = true;
+  let messageComponents: Message[] = [];
+  let growable: Scrollable | undefined;
+  let conversationWidthPx = 100;
+
+  function resizeConversationView() {
+    growable?.resizeScrollable();
+  }
+
+  function onScrollableResized(e: ResizedEvent) {
+    conversationWidthPx = e.detail.width;
+    messageComponents.forEach((message) => {
+      message.resizeBubble(e.detail.width);
+    });
+    if (initialMount && showMostRecentMessage) {
+      growable?.scrollToBottom();
+    }
+  }
+
+  function appendMessage(message: ChatMessage) {
+    conversation = [...conversation, message];
+    setTimeout(() => {
+      const latestMessage = messageComponents[messageComponents.length - 1];
+      latestMessage.resizeBubble(conversationWidthPx);
+      growable?.scrollToBottom();
+    }, 10);
+  }
+
+  async function sendChatMessage(message: string) {
+    ...
+
+    const chatMessage: ChatMessage = {
+      ...
+    };
+    appendMessage(chatMessage);
+    ...
+
+    try {
+      let llmCall = await chat(...);
+      appendMessage(llmCall.response.completion);
+    } ...
+  }
+
+  onMount(() => {
+    setTimeout(() => {
+      // hack: Storybook window resize doesn't cause remount
+      initialMount = false;
+    }, 1_000);
+  });
+</script>
+
+<InfoBox ...>
+  <div ...>
+    <Scrollable
+      initialPosition={showMostRecentMessage ? "bottom" : "top"}
+      on:resize={onScrollableResized}
+      bind:this={growable}
+    >
+      <div class="composite-reveal" role="list">
+        {#if conversation.length > 1}
+          {#each conversation.slice(1) as message, i (i)}
+            <Message
+              {message}
+              {conversationWidthPx}
+              bind:this={messageComponents[i]}
+            />
+          {/each}
+        {/if}
+      </div>
+    </Scrollable>
+
+    ...
+  </div>
+</InfoBox>
+```
+
+Note that:
+
+1. We create the function `appendMessage` to handle all scroll-to-bottom behavior after every new message
+2. We add a unique id to each rendered conversation message in order to prevent any unexpected mounts. Since the conversation array is append-only for now, we can use the index as the id.
+3. The initial resize for the message should already produce all the final word wrapping. The second resize is only there to reduce the padding, and shouldn't affect the word wrapping (and by extension, shouldn't affect the rendered height of the elements). As such, we can just scroll to the bottom as soon as the initial resize is done, without waiting for a callback from the second resize to finish.
+
+Our screenshot tests are highly useful in bolstering our confidence that all these changes still keep the chat UI looking as expected. We manually test that window resize events still behave as expected.
+
+We fix up `src-svelte/src/routes/chat/Chat.stories.ts` after realizing that the component has been named `Chatcomponent` with a lowercase c, so we rename it to `ChatComponent`. We also remove the first `Empty.parameters`, because it gets overridden by the second one anyways. These don't actually change the tests, so there is no need to update any screenshots.
+
 ## Persisting and resuming conversations
 
 We create a new migration to introduce the concept of *conversations* that LLM calls are related to:

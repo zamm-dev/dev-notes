@@ -2,6 +2,34 @@
 
 ## Keyman
 
+Follow the instructions [here](https://keyman.com/linux/) to install Keyman:
+
+```bash
+$ sudo add-apt-repository ppa:keymanapp/keyman
+$ sudo apt install keyman onboard-keyman
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+Package onboard-keyman is not available, but is referred to by another package.
+This may mean that the package is missing, has been obsoleted, or
+is only available from another source
+
+E: Package 'onboard-keyman' has no installation candidate
+```
+
+The first one doesn't work, so we try the second set of commands:
+
+```bash
+$ (wget -O- https://packages.sil.org/keys/pso-keyring-2016.gpg | \
+  sudo tee /etc/apt/trusted.gpg.d/pso-keyring-2016.gpg)&>/dev/null
+$ (. /etc/os-release && sudo tee /etc/apt/sources.list.d/packages-sil-org.list >/dev/null \
+  <<< "deb http://packages.sil.org/ubuntu $UBUNTU_CODENAME main")
+$ sudo apt update
+$ sudo apt install keyman onboard-keyman
+```
+
+Now "Keyman Configuration" should show up.
+
 Follow some of the steps [here](https://help.keyman.com/knowledge-base/101) to create `~/.xsessionrc` as such:
 
 ```bash
@@ -10,7 +38,9 @@ export XMODIFIERS=@im=ibus
 export QT_IM_MODULE=ibus
 ```
 
-Install some keyboard in Keyman. Start the ibus daemon, and then in ibus preferences, pick the language for the Keyman keyboard you just installed. It will then ask you to pick from different available keyboards for that language, and the one you just installed on Keyman should be visible.
+Install some keyboard in Keyman (for example, `khmer_angkor`). Start the ibus daemon, and then in ibus preferences, pick the language for the Keyman keyboard you just installed. It will then ask you to pick from different available keyboards for that language, and the one you just installed on Keyman should be visible.
+
+We find that some applications don't recognize the new keyboard input until we restart the entire computer.
 
 ### Starting ibus automatically
 
