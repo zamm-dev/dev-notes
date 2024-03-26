@@ -1594,6 +1594,78 @@ jobs:
       ...
 ```
 
+Unfortunately, this somehow fails on CI with the error
+
+```
+/__w/_temp/8d4c3f31-3a9c-4de5-9fbf-6d2fbb954882.sh: 2: sudo: not found
+```
+
+We see that this appears to be because we're using the `mcr.microsoft.com/playwright:v1.38.0-jammy` Docker image instead of running directly on GitHub's base CI image. We try removing that image, and find ourselves with
+
+```
+ FAIL  src/routes/storybook.test.ts > Storybook visual tests
+Error: browserType.launch: 
+╔══════════════════════════════════════════════════════╗
+║ Host system is missing dependencies to run browsers. ║
+║ Missing libraries:                                   ║
+║     libwoff2dec.so.1.0.2                             ║
+║     libvpx.so.7                                      ║
+║     libevent-2.1.so.7                                ║
+║     libopus.so.0                                     ║
+║     libharfbuzz-icu.so.0                             ║
+║     libgstallocators-1.0.so.0                        ║
+║     libgstapp-1.0.so.0                               ║
+║     libgstpbutils-1.0.so.0                           ║
+║     libgstaudio-1.0.so.0                             ║
+║     libgsttag-1.0.so.0                               ║
+║     libgstvideo-1.0.so.0                             ║
+║     libgstgl-1.0.so.0                                ║
+║     libgstcodecparsers-1.0.so.0                      ║
+║     libgstfft-1.0.so.0                               ║
+║     libhyphen.so.0                                   ║
+║     libmanette-0.2.so.0                              ║
+║     libflite.so.1                                    ║
+║     libflite_usenglish.so.1                          ║
+║     libflite_cmu_grapheme_lang.so.1                  ║
+║     libflite_cmu_grapheme_lex.so.1                   ║
+║     libflite_cmu_indic_lang.so.1                     ║
+║     libflite_cmu_indic_lex.so.1                      ║
+║     libflite_cmulex.so.1                             ║
+║     libflite_cmu_time_awb.so.1                       ║
+║     libflite_cmu_us_awb.so.1                         ║
+║     libflite_cmu_us_kal16.so.1                       ║
+║     libflite_cmu_us_kal.so.1                         ║
+║     libflite_cmu_us_rms.so.1                         ║
+║     libflite_cmu_us_slt.so.1                         ║
+║     libGLESv2.so.2                                   ║
+║     libx264.so                                       ║
+╚══════════════════════════════════════════════════════╝
+```
+
+It turns out that we can specify this command instead in `.github\workflows\tests.yaml`:
+
+```bash
+$ yarn playwright install --with-deps
+```
+
+and the tests will run. However, this changes all the screenshots. As such, we update the existing tests on main first so that the image diffs remain coherent. We also add a step to `.github\workflows\tests.yaml` to do a better screenshot diff:
+
+```yaml
+jobs:
+  ...
+  svelte:
+    ...
+    steps:
+      ...
+      - name: Run Svelte Tests
+        run: xvfb-run ...
+      - name: Do better diff
+        if: always()
+        run: python3 diff-screenshots.py
+        working-directory: src-svelte/
+      ...
+```
+
 ### Buffer error
 
 If you get

@@ -74,6 +74,32 @@ $ restic backup --files-from .\Documents\restic\includes.txt --exclude-file .\Do
 
 It's okay if you kill the process, or if the network times out. You can run the same command again, and Restic will pick up where it left off.
 
+## External hard drive
+
+To back up to an external hard drive, do
+
+```
+$ restic -r F:\restic\Aero init
+created restic repository 956886e321 at F:\restic\Aero
+
+Please note that knowledge of your password is required to access
+the repository. Losing your password means that your data is
+irrecoverably lost.
+$ restic -r F:\restic\Aero backup --files-from .\Documents\restic\includes.txt --exclude-file .\Documents\restic\excludes.txt --verbose
+open repository
+repository 956886e3 opened (version 2, compression level auto)
+created new cache in C:\Users\Amos Ng\AppData\Local\restic
+lock repository
+no parent snapshot found, will read all files
+load index files
+
+start scan on [Documents ...]
+start backup on [Documents ...]
+scan finished in 14.672s: 134559 files, 80.842 GiB
+[0:21] 0.34%  107 files 282.363 MiB, total 134559 files 80.842 GiB, 0 errors ETA 1:43:38
+...
+```
+
 ## Windows sleep
 
 In Settings, under "System > Power & Battery > Screen and Sleep", even when you set "When plugged in, put my device to sleep after" to "Never", the computer still goes to sleep after a while, causing the backup process to stop. We see from David Ford's eventual response to [this post](https://answers.microsoft.com/en-us/windows/forum/all/windows-10-and-11-power-settings-sleep-never-yet/830af0e5-0291-4cfd-8268-a2ac9e9411e1) that we are to follow [these instructions](https://www.tenforums.com/tutorials/72133-add-system-unattended-sleep-timeout-power-options-windows.html) and run in an elevated command prompt:
@@ -141,4 +167,12 @@ Restore one of them with
 $ restic restore latest --path "/Documents/Some Backed Up Folder" --target ~/Downloads/restoration
 repository 26719cd1 opened (version 2, compression level auto)
 ...
+```
+
+## Pruning backups
+
+To keep only some backups, run
+
+```bash
+$ restic forget --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly unlimited --prune
 ```

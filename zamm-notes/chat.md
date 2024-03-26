@@ -8766,10 +8766,313 @@ Note that:
 1. We create the function `appendMessage` to handle all scroll-to-bottom behavior after every new message
 2. We add a unique id to each rendered conversation message in order to prevent any unexpected mounts. Since the conversation array is append-only for now, we can use the index as the id.
 3. The initial resize for the message should already produce all the final word wrapping. The second resize is only there to reduce the padding, and shouldn't affect the word wrapping (and by extension, shouldn't affect the rendered height of the elements). As such, we can just scroll to the bottom as soon as the initial resize is done, without waiting for a callback from the second resize to finish.
+4. The `initialMount` is set to true for the entire first second because otherwise the Storybook story doesn't scroll to the bottom on WebKit
 
 Our screenshot tests are highly useful in bolstering our confidence that all these changes still keep the chat UI looking as expected. We manually test that window resize events still behave as expected.
 
 We fix up `src-svelte/src/routes/chat/Chat.stories.ts` after realizing that the component has been named `Chatcomponent` with a lowercase c, so we rename it to `ChatComponent`. We also remove the first `Empty.parameters`, because it gets overridden by the second one anyways. These don't actually change the tests, so there is no need to update any screenshots.
+
+### Testing with interactions
+
+During development, we noticed a regression around the scrollable chat div failing to resize when a multi-line message was sent. We should ideally get this behavior automatically tested. As such, we edit `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+import {
+ ...,
+  type Frame,
+} from "@playwright/test";
+...
+
+interface ComponentTestConfig {
+  ...
+  variants: (string | VariantConfig)[];
+  ...
+}
+
+interface VariantConfig {
+  name: string;
+  prefix?: string;
+  ...
+  additionalAction?: (frame: Frame) => Promise<void>;
+}
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      ...,
+      {
+        name: "new-message-sent",
+        prefix: "extra-long-input",
+        additionalAction: async (frame: Frame) => {
+          await frame.click('button:has-text("Send")');
+          await frame.click('button[title="Dismiss"]');
+        },
+      },
+    ],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+
+...
+
+describe.concurrent("Storybook visual tests", () => {
+  ...
+
+  const takeScreenshot = async (frame: Frame, ...) => {
+    ...
+  };
+
+  ...
+
+  for (const config of components) {
+    ...
+
+      test<StorybookTestContext>(
+        `${testName} should render the same`,
+        async ({ expect, page }) => {
+          const variantPrefixStr = variantConfig.prefix ?? variantConfig.name;
+          const variantPrefix = `--${variantPrefixStr}`;
+          
+          ...
+
+          const frame = page.frame({ name: "storybook-preview-iframe" });
+          if (!frame) {
+            throw new Error("Could not find Storybook iframe");
+          }
+
+          if (variantConfig.additionalAction) {
+            await variantConfig.additionalAction(frame);
+          }
+
+          const screenshot = await takeScreenshot(
+            frame,
+            ...
+          );
+
+          ...
+        },
+        ...
+      );
+  }
+});
+```
+
+Note that:
+
+1. The `ComponentTestConfig.variants` should actually be the more flexible `(string | VariantConfig)[]` type rather than the `string[] | VariantConfig[]` type we specified at first
+2. We add a `prefix` variable to the variant config so that we don't have to create a new Storybook story just to test out behavior
+3. Because the newly defined variant config function will want to act on the Storybook frame, we refactor the frame locator outside of the `takeScreenshot` function
+
+#### Adding keyboard events
+
+The above behavior with `initialMount` is still flaky on CI. As such, we rip the hacky logic out of `src-svelte\src\routes\chat\Chat.svelte`, and add the test-specific logic into `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+...
+
+interface VariantConfig {
+  ...
+  additionalAction?: (frame: Frame, page: Page) => Promise<void>;
+}
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      "empty",
+      "not-empty",
+      "multiline-chat",
+      "extra-long-input",
+      "bottom-scroll-indicator",
+      "typing-indicator-static",
+      {
+        name: "full-message-width",
+        additionalAction: async (frame: Frame, page: Page) => {
+          await new Promise((r) => setTimeout(r, 1000));
+          // need to do a manual scroll because Storybook resize messes things up on CI
+          const scrollContents = frame.locator(".scroll-contents");
+          await scrollContents.focus();
+          await page.keyboard.press("End");
+        },
+      },
+      ...
+  },
+  ...
+];
+
+...
+      test<StorybookTestContext>(
+        `${testName} should render the same`,
+        async ({ expect, page }) => {
+          ...
+          if (variantConfig.additionalAction) {
+            await variantConfig.additionalAction(frame, page);
+          }
+          ...
+        },
+        ...
+      );
+...
+```
+
+### Windows WebKit non-determinism
+
+We notice while testing on Windows that the screenshot tests occasionally non-deterministically fail due to the reported size somehow being smaller than it actually is rendered on screen. This only happens on the initial Storybook page load; if the component is re-mounted, the effect does not appear. This may well be a fluke specific to the combination of WebKit 17.4, Storybook, and Windows, but this does prevent us from further development on Windows. As such, we will have to fix the problem.
+
+We add a zero wait to `src-svelte\src\routes\chat\MessageUI.svelte` right before doing the width calculations:
+
+```svelte
+  export async function resizeBubble(chatWidthPx: number) {
+    if (chatWidthPx > 0 && textElement) {
+      try {
+        ...
+        await new Promise(r => setTimeout(r, 0));
+        const maxPotentialWidth = maxMessageWidth(chatWidthPx);
+        ...
+      } ...
+    }
+  }
+```
+
+Since this is not a "real" phenomenon, but rather a test-related fluke, it seems fine to set a timeout of 0 for the wait.
+
+We propagate this new signature up to `src-svelte\src\routes\chat\Message.svelte`:
+
+```ts
+  let resizeBubbleBound: (chatWidthPx: number) => Promise<void>;
+
+  export function resizeBubble(chatWidthPx: number) {
+    return resizeBubbleBound(chatWidthPx);
+  }
+```
+
+Finally, we await all these new promises in `src-svelte\src\routes\chat\Chat.svelte`:
+
+```ts
+  async function onScrollableResized(e: ResizedEvent) {
+    ...
+    const resizePromises = messageComponents.map((message) => message.resizeBubble(...));
+    await Promise.all(resizePromises);
+    ...
+  }
+
+  function appendMessage(message: ChatMessage) {
+    ...
+    setTimeout(async () => {
+      ...
+      await latestMessage.resizeBubble(conversationWidthPx);
+      ...
+    }, 10);
+  }
+```
+
+Note that because `Message` no longer relies on `conversationWidthPx`, we remove that from the props.
+
+### Getting tests on CI to pass
+
+Non-screenshot tests are failing:
+
+```
+TypeError: Cannot read properties of null (reading 'resizeBubble')
+ ❯ Timeout._onTimeout src/routes/chat/Chat.svelte:44:27
+     42|     setTimeout(async () => {
+     43|       const latestMessage = messageComponents[messageComponents.length…
+     44|       await latestMessage.resizeBubble(conversationWidthPx);
+       |                           ^
+     45|       growable?.scrollToBottom();
+     46|     }, 10);
+ ❯ listOnTimeout node:internal/timers:569:17
+ ❯ processTimers node:internal/timers:512:7
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "won't send multiple messages at once". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+```
+
+We edit `src-svelte\src\routes\chat\Chat.svelte` accordingly:
+
+```ts
+  function appendMessage(message: ChatMessage) {
+    ...
+    setTimeout(async () => {
+      const latestMessage = ...;
+      await latestMessage?.resizeBubble(conversationWidthPx);
+      ...
+    }, ...);
+  }
+```
+
+#### Failing switch and slider tests
+
+Some switch and slider tests are failing on CI with the message:
+
+```
+ ❯ src/lib/Switch.playwright.test.ts  (5 tests | 5 failed) 17469ms
+   ❯ src/lib/Switch.playwright.test.ts > Switch drag test > switches state when drag released at end
+     → expect(received).toHaveAttribute()
+
+received value must be an HTMLElement or an SVGElement.
+
+     → expect(received).toHaveAttribute()
+
+received value must be an HTMLElement or an SVGElement.
+
+     → expect(received).toHaveAttribute()
+
+received value must be an HTMLElement or an SVGElement.
+```
+
+Because this test is flaky and hard to reproduce locally, we try simply running it again on CI. Unfortunately (or fortunately) it fails consistently on CI. This is surprising given that it hasn't failed before, and appears to be yet another example of bit rot.
+
+We try to fix this by defining the function
+
+```ts
+const expectAriaValue = async (slider: Locator, expectedValue: number) => {
+    const sliderValueStr = await slider.evaluate((el) =>
+      el.getAttribute("aria-valuenow"),
+    );
+    expect(sliderValueStr).not.toBeNull();
+    if (!sliderValueStr) {
+      // just for type-checking
+      throw new Error("aria-valuenow attribute was null");
+    }
+    const sliderValue = parseFloat(sliderValueStr);
+    expect(sliderValue).toEqual(expectedValue);
+  };
+```
+
+and refactoring all our tests to use this new function. This appears to solve the issue for the slider tests, so we apply it to the switch tests too. We edit `src-svelte\src\lib\Switch.playwright.test.ts` along with all the tests:
+
+```ts
+  const expectAriaValue = async (switchElement: Locator, expectedValue: boolean) => {
+    const switchValueStr = await switchElement.evaluate((el) =>
+      el.getAttribute("aria-checked"),
+    );
+    expect(switchValueStr).not.toBeNull();
+    expect(switchValueStr).toEqual(expectedValue.toString());
+  };
+
+  test(
+    "switches state when drag released at end",
+    async () => {
+      ...
+      await expectAriaValue(onOffSwitch, false);
+      ...
+      await expectAriaValue(onOffSwitch, true);
+      ...
+    },
+    ...
+  );
+
+  ...
+```
+
+Note that we name the argument `switchElement` instead of `switch` because "switch" is a reserved keyword, and naming it that results in arcane parsing errors such as "Argument expression expected" or "Cannot find name 'async'".
 
 ## Persisting and resuming conversations
 
