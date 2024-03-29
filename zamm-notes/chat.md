@@ -7182,7 +7182,7 @@ We also edit `resizeBubble` to rename `maxWidth` to `maxPotentialWidth` and `new
   }
 ```
 
-### Setting a cap on the chat message height
+### Setting a cap on the chat input height
 
 We'll try to use this chat message:
 
@@ -7877,6 +7877,20 @@ const components: ComponentTestConfig[] = [
   },
   ...
 ];
+```
+
+### Removing top and bottom margins from first and last messages
+
+We notice that there is more whitespace than we'd like to see, because of the margins on the first and last messages sent. We edit `src-svelte\src\routes\chat\MessageUI.svelte` accordingly:
+
+```css
+  .message:first-child .text-container {
+    margin-top: 0;
+  }
+
+  .message:last-child .text-container {
+    margin-bottom: 0;
+  }
 ```
 
 ## Adding a type field for variant API calls

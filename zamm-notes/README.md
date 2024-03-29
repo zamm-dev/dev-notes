@@ -431,6 +431,67 @@ mod tests {
 
 ```
 
+##### End-to-end tests
+
+On Windows, we find this error when trying to run end-to-end tests:
+
+```
+2024-03-29T10:14:32.550Z INFO @wdio/local-runner: Start worker 0-0 with arg: run,./wdio.conf.ts
+[0-0] 2024-03-29T10:14:35.039Z INFO @wdio/local-runner: Run worker command: run
+[0-0] can not find binary msedgedriver.exe in the PATH. This is currently required.You can also pass a custom path with --native-driver
+[0-0] CannotFindBinaryPath
+[0-0] RUNNING in wry - file:///C:/Users/Amos%20Ng/Documents/projects/zamm-dev/zamm/webdriver/test/specs/e2e.test.js
+[0-0] 2024-03-29T10:14:37.070Z INFO webdriver: Initiate new session using the WebDriver protocol
+[0-0] 2024-03-29T10:14:37.070Z INFO @wdio/utils: Connecting to existing driver at http://localhost:4444/  
+[0-0] 2024-03-29T10:14:37.335Z INFO webdriver: [POST] http://localhost:4444/session
+[0-0] 2024-03-29T10:14:37.335Z INFO webdriver: DATA {
+[0-0]   capabilities: {
+[0-0]     alwaysMatch: { browserName: 'wry', 'tauri:options': [Object] },
+[0-0]     firstMatch: [ {} ]
+[0-0]   },
+[0-0]   desiredCapabilities: {
+[0-0]     browserName: 'wry',
+[0-0]     'tauri:options': { application: '../src-tauri/target/release/zamm' }
+[0-0]   }
+[0-0] }
+[0-0] 2024-03-29T10:14:37.704Z ERROR webdriver: RequestError
+[0-0]     at ClientRequest.<anonymous> (file:///C:/Users/Amos%20Ng/Documents/projects/zamm-dev/zamm/node_modules/got/dist/source/core/index.js:790:107)
+[0-0]     at Object.onceWrapper (node:events:633:26)
+[0-0]     at ClientRequest.emit (node:events:530:35)
+[0-0]     at ClientRequest.emit (node:domain:488:12)
+[0-0]     at Socket.socketErrorListener (node:_http_client:495:9)
+[0-0]     at Socket.emit (node:events:518:28)
+[0-0]     at Socket.emit (node:domain:488:12)
+[0-0]     at emitErrorNT (node:internal/streams/destroy:169:8)
+[0-0]     at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:82:21)AggregateError
+[0-0]     at internalConnectMultiple (node:net:1114:18)
+[0-0]     at afterConnectMultiple (node:net:1667:5)
+[0-0] 2024-03-29T10:14:37.705Z ERROR @wdio/runner: Error: Failed to create session.
+[0-0] Unable to connect to "http://localhost:4444/", make sure browser driver is running on that address. 
+[0-0] It seems like the service failed to start or is rejecting any connections.
+```
+
+We see from [this answer](https://sqa.stackexchange.com/a/51392) that we need to go [here](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/?form=MA13LH#downloads), download the latest stable version, and extract the exe to a location on our PATH. Next, our tests fail with
+
+```
+[0-0] 2024-03-29T10:18:38.726Z INFO @wdio/local-runner: Run worker command: run
+[0-0] Starting Microsoft Edge WebDriver 123.0.2420.65 (49b6a5859239c32604bcefee0b98e103c0a9bdae) on port 4445
+[0-0] To submit feedback, report a bug, or suggest new features, please visit https://github.com/MicrosoftEdge/EdgeWebDriver
+[0-0]
+[0-0] Only local connections are allowed.
+[0-0] Please see https://aka.ms/WebDriverSecurity for suggestions on keeping Microsoft Edge WebDriver safe.
+[0-0]
+[0-0] Microsoft Edge WebDriver was started successfully.
+[0-0] RUNNING in wry - file:///C:/Users/Amos%20Ng/Documents/projects/zamm-dev/zamm/webdriver/test/specs/e2e.test.js
+[0-0] 2024-03-29T10:18:40.547Z INFO webdriver: Initiate new session using the WebDriver protocol
+[0-0] 2024-03-29T10:18:40.547Z INFO @wdio/utils: Connecting to existing driver at http://localhost:4444/
+...
+[0-0] 2024-03-29T10:18:41.165Z WARN webdriver: Request failed with status 500 due to unknown error: no msedge binary at ../src-tauri/target/release/zamm
+[0-0] 2024-03-29T10:18:41.165Z INFO webdriver: Retrying 1/3
+[0-0] 2024-03-29T10:18:41.166Z INFO webdriver: [POST] http://localhost:4444/session
+```
+
 ## Developing the project from scratch
 
 Follow the instructions in [`tauri.md`](/general-notes/setup/dev/tauri.md) to set up Tauri.

@@ -983,3 +983,231 @@ const components: ComponentTestConfig[] = [
   },
 ];
 ```
+
+## Using Scrollable
+
+After we refactored out the scrollable logic in "Refactoring out scroll behavior" in [`chat.md`](/zamm-notes/chat.md), we can now use it in the credits page. First, we move the existing scroll logic over to `src-svelte\src\lib\FixedScrollable.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  export let autoscroll = false;
+  export let scrollDelay = 0;
+  ...
+  let scrollInterval: NodeJS.Timeout | undefined = undefined;
+  ...
+
+  function stopScrolling() {
+    if (scrollInterval) {
+      clearInterval(scrollInterval);
+    }
+  }
+
+  onMount(() => {
+    ...
+
+    if (autoscroll) {
+      setTimeout(() => {
+        scrollInterval = setInterval(() => {
+          if (scrollContents) {
+            scrollContents.scrollBy(0, 1);
+          }
+        }, 10);
+      }, scrollDelay);
+    }
+
+    return () => {
+      ...
+      stopScrolling();
+    };
+  });
+
+  ...
+</script>
+
+<div ...>
+  ...
+  <div
+    class="scroll-contents composite-reveal"
+    ...
+    on:mousedown={stopScrolling}
+    on:wheel={stopScrolling}
+    role="none"
+  >
+    ...
+  </div>
+  ...
+</div>
+```
+
+We add this as a story in `src-svelte\src\lib\FixedScrollable.stories.ts`:
+
+```ts
+export const AutoScroll: StoryObj = Template.bind({}) as any;
+AutoScroll.args = {
+  autoscroll: true,
+};
+
+```
+
+We edit `src-svelte\src\lib\Scrollable.svelte` to change the default scroll positioning, and also to pass the new prop through:
+
+```svelte
+<script lang="ts">
+  ...
+  export let initialPosition: "top" | "bottom" = "top";
+  ...
+</script>
+
+<div ...>
+  <FixedScrollable
+    ...
+    {...$$restProps}
+  >
+    ...
+  </FixedScrollable>
+</div>
+```
+
+Finally, we move some things around in `src-svelte\src\routes\credits\Credits.svelte` and make use of this new refactored logic:
+
+```svelte
+<script lang="ts">
+  ...
+  import Scrollable from "$lib/Scrollable.svelte";
+  ...
+
+  let scrollDelay = 4.4 * $standardDuration;
+</script>
+
+<div class="container">
+  <div class="credits-container">
+    <InfoBox title="Credits" fullHeight>
+      <Scrollable autoscroll {scrollDelay}>
+        ... credits contents ...
+      </Scrollable>
+    </InfoBox>
+  </div>
+
+  <div class="dedication-container">
+    ...
+  </div>
+</div>
+
+<style>
+  .container {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .credits-container {
+    flex: 1;
+  }
+
+  .credits-container :global(.info-content), .credits-container :global(.growable) {
+    height: 100%;
+  }
+
+  .credits-container :global(section:last-child .creditor:last-child) {
+    margin-bottom: 0;
+    padding-bottom: 0.5rem;
+  }
+
+  ...
+</style>
+```
+
+Note that:
+
+1. We want to help the credits take up as much space as the window allows for. We check that the scrollable element successfully handles window resize.
+2. We leave a little less space at the bottom of the last element. We may have to change the logic if there are two last elements at the bottom row, because then there will be interference with the margins from the second to last element.
+
+We also notice that on the initial mount, the shadows and scrollbars of the Scrollable are visible before the background border box has had time to fully expand. We look up what the in-progress class is that `InfoBox` inserts into elements it is animating, and we find from `src-svelte\src\lib\InfoBox.svelte` that it is the `wait-for-infobox` class. Unfortunately, this only applies to the leaf nodes whose opacities are being controlled. We add logic in `src-svelte\src\lib\InfoBox.svelte` to apply it to the root element as well:
+
+```ts
+  function revealInfoBox(node: Element, timing: InfoBoxTiming) {
+    ...
+
+    return {
+      ...,
+      tick: (tGlobalFraction: number) => {
+        ...
+
+        if (tGlobalFraction === 0) {
+          node.classList.add("wait-for-infobox");
+        } else if (tGlobalFraction >= 0.7) {
+          node.classList.remove("wait-for-infobox");
+        }
+
+        ...
+      },
+    };
+  }
+```
+
+We compare against 0.7 after experimenting with how natural the delays feel. Then, we edit `src-svelte\src\lib\FixedScrollable.svelte` to make use of the new top-level class application:
+
+```css
+  :global(.wait-for-infobox) .scroll-contents {
+    overflow-y: hidden;
+  }
+
+  ...
+
+  :global(.wait-for-infobox) :global(.shadow.bottom.visible),
+  :global(.wait-for-infobox) :global(.shadow.top.visible) {
+    display: none;
+  }
+```
+
+We have to add a bunch more qualifiers to the CSS rule for the shadows before they become specific enough to override the `.scrollable :global(.shadow.visible)` rule earlier in the CSS file.
+
+We find that adding the scrollbars in can shift the layout. We don't want this jarring visual effect to occur, so we set the scroll contents to have
+
+```css
+  :global(.wait-for-infobox) .scroll-contents {
+    scrollbar-color: transparent transparent;
+  }
+```
+
+instead of `overflow-y: hidden`.
+
+After these changes, we are ready for the end-to-end test. We edit `webdriver\test\specs\e2e.test.js`:
+
+```js
+  it("should allow navigation to the credits page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="Credits"]');
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Credits"]');
+    findAndClick('h3[title="Frameworks"]');
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("credits-screen", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+```
+
+We register a mouse event just to stop the auto-scrolling. We find that this doesn't really work. Instead, after a few attempts and experimenting with the in-browser console, we come up with
+
+```js
+    await browser.pause(2500); // for page to finish rendering
+    await browser.execute(
+      "document.querySelector('.growable .scroll-contents').dispatchEvent(new Event('mousedown')); ",
+    );
+    await browser.execute(
+      "document.querySelector('.growable .scroll-contents').scrollTop = 0;",
+    );
+```
+
+## Additional scroll delay
+
+We edit
+
+```ts
+let scrollDelay = 4.4 * $standardDuration + 1_000;
+```
+
+in order to allow for a small pause after the credits box finishes playing its animation. This makes the credits feel less rushed.
