@@ -431,6 +431,37 @@ mod tests {
 
 ```
 
+##### File paths on Windows
+
+On Windows, we start getting test failures of the form
+
+```
+---- commands::llms::chat::tests::test_continue_conversation stdout ----
+Test will use temp directory at C:\Users\AMOSNG~1\AppData\Local\Temp\zamm/tests\chat/test_continue_conversation
+thread 'commands::llms::chat::tests::test_continue_conversation' panicked at src\test_helpers\api_testing.rs:332:26:
+called `Result::unwrap()` on an `Err` value: Other { source: Error reading file at C:\Users\AMOSNG~1\AppData\Local\Temp\zamm\tests\set_api_key\test_overwrite_existing_init_file_no_newline\disk\api\sample-database-writes\conversation-started\dump.yaml: The system cannot find the path specified. (os error 3) }      
+```
+
+Other test failures such as this:
+
+```
+---- commands::keys::tests::test_get_after_set stdout ----
+Test will use temp directory at C:\Users\AMOSNG~1\AppData\Local\Temp\zamm/tests\set_api_key/test_get_after_set
+Replacements:
+thread 'commands::keys::tests::test_get_after_set' panicked at src\test_helpers\api_testing.rs:72:5:     
+assertion `left == right` failed
+  left: "# dummy initial bashrc file\nexport SOME_ENV_VAR=\"some value\"\n# no newline at end of file to check that it still works\nexport OPENAI_API_KEY=\"0p3n41-4p1-k3y\"\n"
+ right: "# dummy initial bashrc file\nexport SOME_ENV_VAR=\"some value\"\n# no newline at end of file to check that it still works"
+```
+
+are actually caused by the above error as well. We do a git bisect. We see that things were already broken at `cc2431d` (the last time Windows was mentioned) but working at `603933e` (back when tests were fixed for Windows).
+
+```bash
+$ git bisect start cc2431d 603933e
+```
+
+We find out that the commit is at `3db0296`, when the samples were moved into their own directory. However, upon re-testing, the tests actually still run fine with this commit. It is actually the next commit, `eaf0763`, where things start failing. We realize that this is because we haven't set up Makefile functionality on Windows, and the tests pass once the option `--include-ignored --test-threads=1` is included.
+
 ##### End-to-end tests
 
 On Windows, we find this error when trying to run end-to-end tests:
