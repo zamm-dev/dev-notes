@@ -194,3 +194,20 @@ SEPARATOR = "warning: `async-openai` (lib) generated "
 separator_line = clippy_output.split(SEPARATOR)[1]
 zamm_output = "\n".join(separator_line.split("\n")[1:])
 ```
+
+This works at first, but we find that it fails on Linux, presumably after some update to clippy changes the output to be just:
+
+```
+Checking zamm v0.1.2 (/root/zamm/src-tauri)
+    Finished dev [unoptimized + debuginfo] target(s) in 9.66s
+```
+
+As such, we change it again to
+
+```python
+if SEPARATOR not in clippy_output:
+    zamm_output = clippy_output
+else:
+    separator_line = clippy_output.split(SEPARATOR)[1]
+    zamm_output = "\n".join(separator_line.split("\n")[1:])
+```
