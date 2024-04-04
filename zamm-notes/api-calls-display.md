@@ -1521,4 +1521,273 @@ const components: ComponentTestConfig[] = [
 ];
 ```
 
-We notice that 10 items in the list is actually not enough to fill the whole thing up. The bottom indicator never gets triggered again because it stays visible after the new API calls are loaded. We should change the default page size. However, to do so, we'd also need to update our tests. We should write and commit a proper script to generate the test files for us.
+We notice that 10 items in the list is actually not enough to fill the whole thing up. The bottom indicator never gets triggered again because it stays visible after the new API calls are loaded. We should change the default page size. However, to do so, we'd also need to update our tests. We should write and commit a proper script to generate the test files for us. We create `src-tauri\api\sample-database-writes\many-api-calls\generate.py`:
+
+```py
+#!/usr/bin/env python3
+#
+# meant to be run from the src-tauri/ folder
+
+from typing import Generator
+
+yaml_preamble = """api_keys: []
+llm_calls:
+"""
+
+
+def json_preamble(offset: int) -> str:
+    return """request:
+  - get_api_calls
+  - >
+    {
+      "offset": {0}
+    }
+response:
+  message: >
+    [
+""".replace(
+        "{0}", str(offset)
+    )
+
+
+json_postamble = """
+    ]
+sideEffects:
+  database:
+    startStateDump: many-api-calls
+    endStateDump: many-api-calls
+"""
+
+
+def generate_api_call_yaml(i: int) -> str:
+    return f"""- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a{i:02d}
+  timestamp: 2024-01-16T08:50:{i:02d}.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: This is a mock conversation.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Mocking number {i}.
+  tokens:
+    prompt: 15
+    response: 3
+    total: 18
+"""
+
+
+def generate_api_call_sql(i: int) -> str:
+    return """INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a{0:02d}','2024-01-16 08:50:{0:02d}.738093890','open_ai','gpt-4','gpt-4-0613',1.0,15,3,18,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"This is a mock conversation."}]}','{"role":"AI","text":"Mocking number {0}."}');""".replace(
+        "{0:02d}", str(i).zfill(2)
+    ).replace(
+        "{0}", str(i)
+    )
+
+
+def generate_api_call_json(i: int) -> str:
+    return """      {
+        "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a{0:02d}",
+        "timestamp": "2024-01-16T08:50:{0:02d}.738093890",
+        "llm": {
+          "name": "gpt-4-0613",
+          "requested": "gpt-4",
+          "provider": "OpenAI"
+        },
+        "request": {
+          "prompt": {
+            "type": "Chat",
+            "messages": [
+              {
+                "role": "System",
+                "text": "You are ZAMM, a chat program. Respond in first person."
+              },
+              {
+                "role": "Human",
+                "text": "This is a mock conversation."
+              }
+            ]
+          },
+          "temperature": 1.0
+        },
+        "response": {
+          "completion": {
+            "role": "AI",
+            "text": "Mocking number {0}."
+          }
+        },
+        "tokens": {
+          "prompt": 15,
+          "response": 3,
+          "total": 18
+        }
+      }""".replace(
+        "{0:02d}", str(i).zfill(2)
+    ).replace(
+        "{0}", str(i)
+    )
+
+
+def db_index_sequence(n: int) -> Generator[int, None, None]:
+    for i in range(0, n, 2):
+        yield i
+    for i in range(1, n, 2):
+        yield i
+
+
+def generate_yaml(n: int) -> None:
+    with open("api/sample-database-writes/many-api-calls/dump.yaml", "w") as f:
+        f.write(yaml_preamble)
+        for i in db_index_sequence(n):
+            f.write(generate_api_call_yaml(i))
+
+
+def generate_sql(n: int) -> None:
+    with open("api/sample-database-writes/many-api-calls/dump.sql", "w") as f:
+        api_calls = []
+        for i in db_index_sequence(n):
+            api_calls.append(generate_api_call_sql(i))
+        f.write("\n".join(api_calls))
+
+
+def generate_json(test_name: str, offset: int, start: int, end: int) -> None:
+    with open(f"api/sample-calls/get_api_calls-{test_name}.yaml", "w") as f:
+        f.write(json_preamble(offset))
+        api_calls = []
+        for i in range(start, end, -1):
+            api_calls.append(generate_api_call_json(i))
+        api_calls_json = ",\n".join(api_calls)
+        f.write(api_calls_json)
+        f.write(json_postamble)
+
+
+def generate_json_sample_files(n: int, page_size: int) -> None:
+    generate_json(
+        "full",
+        offset=0,
+        start=n - 1,
+        end=n - page_size - 1,
+    )
+    generate_json(
+        "offset",
+        offset=page_size,
+        start=n - page_size - 1,
+        end=-1,
+    )
+
+
+if __name__ == "__main__":
+    n = 13
+    generate_yaml(n)
+    generate_sql(n)
+    generate_json_sample_files(n, 10)
+
+```
+
+and verify that the repo remains unchanged when we run it.
+
+Next, we edit `src-tauri\src\commands\llms\get_api_calls.rs` to change the page size:
+
+```rs
+const PAGE_SIZE: i64 = 50;
+
+async fn get_api_calls_helper(
+    ...
+) -> ZammResult<Vec<LlmCall>> {
+    ...
+    let result: Vec<LlmCallRow> = llm_calls::table
+        ...
+        .limit(PAGE_SIZE)
+        ...;
+    ...
+}
+```
+
+We edit `src-tauri\api\sample-database-writes\many-api-calls\generate.py` accordingly:
+
+```py
+if __name__ == "__main__":
+    n = 60
+    ...
+    generate_json_sample_files(n, 50)
+
+```
+
+Unfortunately our tests are failing. Upon further inspection, this is because on Windows, Python inserts a "\r". We see that we [must write](https://stackoverflow.com/a/7077425) the files in binary mode. We change all our output functions accordingly, anywhere there is a `f.write`; for example:
+
+```py
+def generate_json(...) -> None:
+    with open(..., "wb") as f:
+        f.write(json_preamble(offset).encode())
+        ...
+        f.write(api_calls_json.encode())
+        f.write(json_postamble.encode())
+```
+
+With this, the remaining failing test that needs to be updated is `src-tauri\api\sample-calls\get_api_calls-offset-empty.yaml`:
+
+```yaml
+request:
+  - get_api_calls
+  - >
+    {
+      "offset": 100
+    }
+...
+
+```
+
+Upon manual testing, we find that the API calls list is not loading new API calls when we scroll to the bottom. We realize that this is because promises, unlike timeouts, don't reset to be undefined after they are resolved. We edit `src-svelte\src\routes\api-calls\ApiCalls.svelte` accordingly, remember to update the page size that we had forgotten to edit after changing the backend earlier:
+
+```ts
+...
+
+const PAGE_SIZE = 50;
+
+...
+
+function loadApiCalls() {
+    ...
+
+    llmCallsPromise = getApiCalls(llmCalls.length)
+      .then((newCalls) => {
+        ...
+        llmCallsPromise = undefined;
+      })
+      ...
+  }
+```
+
+We then add the second API call to `src-svelte\src\routes\api-calls\ApiCalls.stories.ts`:
+
+```ts
+export const Full: StoryObj = Template.bind({}) as any;
+Full.parameters = {
+  ...,
+  sampleCallFiles: [
+    "/api/sample-calls/get_api_calls-full.yaml",
+    "/api/sample-calls/get_api_calls-offset.yaml",
+  ],
+};
+```
+
+Now it works as expected. We should turn this manual test into an automated one.
+
+Finally, the timestamps shown on the frontend are identical because the frontend list page does not include the seconds. As such, we edit `src-tauri\api\sample-database-writes\many-api-calls\generate.py` to change all `2024-01-16 08:50:{0:02d}.738093890` into `2024-01-16 08:{0:02d}:50.738093890`.
+
+To make sure that this is referenced elsewhere and not forgotten, we edit `src-tauri\Makefile`:
+
+```Makefile
+test-files:
+	python3 api/sample-database-writes/many-api-calls/generate.py
+
+```
