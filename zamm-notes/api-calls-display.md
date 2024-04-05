@@ -1780,7 +1780,127 @@ Full.parameters = {
 };
 ```
 
-Now it works as expected. We should turn this manual test into an automated one.
+Now it works as expected. We should turn this manual test into an automated one. We do so by creating `src-svelte\src\routes\api-calls\ApiCalls.playwright.test.ts` based on the Switch and Slider playwright tests:
+
+```ts
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  expect,
+  type Page,
+  type Frame,
+  type Locator,
+} from "@playwright/test";
+import { afterAll, beforeAll, describe, test } from "vitest";
+
+const DEBUG_LOGGING = false;
+
+describe("Api Calls endless scroll test", () => {
+  let page: Page;
+  let frame: Frame;
+  let browser: Browser;
+  let context: BrowserContext;
+
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext();
+    page = await context.newPage();
+
+    if (DEBUG_LOGGING) {
+      page.on("console", (msg) => {
+        console.log(msg);
+      });
+    }
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  const getScrollElement = async () => {
+    const url = `http://localhost:6006/?path=/story/screens-llm-call-list--full`;
+    await page.goto(url);
+
+    const maybeFrame = page.frame({ name: "storybook-preview-iframe" });
+    if (!maybeFrame) {
+      throw new Error("Could not find Storybook iframe");
+    }
+    frame = maybeFrame;
+
+    const apiCallsScrollElement = frame.locator(".scroll-contents");
+    return { apiCallsScrollElement };
+  };
+
+  const expectLastMessage = async (
+    apiCallsScrollElement: Locator,
+    expectedValue: string,
+  ) => {
+    // the actual last child is the bottom indicator that triggers the shadow and the
+    // auto-load
+    const lastMessageContainer = apiCallsScrollElement.locator("a:nth-last-child(2) .message.instance .text-container");
+    await expect(lastMessageContainer).toHaveText(expectedValue);
+  };
+
+  test(
+    "loads more messages when scrolled to end",
+    async () => {
+      const { apiCallsScrollElement } = await getScrollElement();
+      await expectLastMessage(apiCallsScrollElement, "Mocking number 10.");
+
+      await apiCallsScrollElement.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await expectLastMessage(apiCallsScrollElement, "Mocking number 0.");
+    },
+    { retry: 2 },
+  );
+});
+
+```
+
+Unfortunately, for some reason, this auto-wait ends up being flaky. We try a manual wait, which fares no better:
+
+```ts
+  const expectLastMessage = async (
+    apiCallsScrollElement: Locator,
+    expectedValue: string,
+  ) => {
+    ...
+    const lastMessageContainer = ...;
+    const lastMessageStr = await lastMessageContainer.evaluate((el) =>
+      el.textContent,
+    );
+    expect(lastMessageStr).not.toBeNull();
+    expect(lastMessageStr).toEqual(expectedValue.toString());
+  };
+
+  test(
+    "loads more messages when scrolled to end",
+    async () => {
+      ...
+
+      await apiCallsScrollElement.evaluate((el) => {
+        ...
+      });
+      await page.waitForTimeout(2000);
+      await expectLastMessage(apiCallsScrollElement, "Mocking number 0.");
+    },
+    ...
+  );
+```
+
+Upon further testing in headed mode, it turns out that the test passes as soon as the bottom drawer is closed, allowing the elements to be visible. We revert to the auto-wait and close the drawer automatically as we do in the Storybook tests:
+
+```ts
+const getScrollElement = async () => {
+    ...
+    await page.goto(url);
+    await page.locator("button[title='Hide addons [A]']").click();
+
+    ...
+  };
+```
 
 Finally, the timestamps shown on the frontend are identical because the frontend list page does not include the seconds. As such, we edit `src-tauri\api\sample-database-writes\many-api-calls\generate.py` to change all `2024-01-16 08:50:{0:02d}.738093890` into `2024-01-16 08:{0:02d}:50.738093890`.
 
