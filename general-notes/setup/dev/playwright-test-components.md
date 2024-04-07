@@ -1746,3 +1746,12 @@ Require stack:
 ```
 
 this appears to be due to [a problem](https://stackoverflow.com/a/63175855) with the canvas installation script. Nuking the `node_modules` folder and reinstalling it with `yarn` appears to fix the problem.
+
+## Debugging
+
+You can use JavaScript to access the Storybook iframe during development. For example:
+
+```js
+window.frames["storybook-preview-iframe"].contentDocument.body.scrollHeight
+window.frames["storybook-preview-iframe"].contentDocument.getElementById("#storybook-root")
+```

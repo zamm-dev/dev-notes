@@ -1417,7 +1417,7 @@ We add an event to notify the parent when the bottom of the list is reached in `
   });
 ```
 
-We bubble this up in `src-svelte\src\lib\Scrollable.svelte`. There are perhaps more idiomatic ways of bubbling events up, but since this is our first time doing this and we are just getting the component set up, we minimize the number of failure points for easier debugging in case something doesn't work:
+We bubble this up in `src-svelte\src\lib\Scrollable.svelte`. There are perhaps more [idiomatic](https://dev.to/mohamadharith/workaround-for-bubbling-custom-events-in-svelte-3khk) ways of [bubbling](https://github.com/baseballyama/svelte-preprocess-delegate-events) events up, but since this is our first time doing this and we are just getting the component set up, we minimize the number of failure points for easier debugging in case something doesn't work:
 
 ```svelte
 <script lang="ts">
@@ -1910,4 +1910,610 @@ To make sure that this is referenced elsewhere and not forgotten, we edit `src-t
 test-files:
 	python3 api/sample-database-writes/many-api-calls/generate.py
 
+```
+
+We finally link to these new pages in the app itself. We just have to edit `src-svelte\src\routes\SidebarUI.svelte` to link to the API calls list page, because that page already links to the individual API call pages:
+
+```ts
+  ...
+  import IconDatabase from "~icons/fa6-solid/database";
+  ...
+
+  const routes: App.Route[] = [
+    ...
+    {
+      name: "API Calls",
+      path: "/api-calls",
+      icon: IconDatabase,
+    },
+    ...
+  ];
+```
+
+However, we notice that the sidebar indicator is now off. We do a little bit more refactoring:
+
+```svelte
+<script lang="ts">
+  ...
+
+  function routeMatches(sidebarRoute: string, pageRoute: string) {
+    if (sidebarRoute === "/") {
+        return pageRoute === sidebarRoute;
+      }
+      return pageRoute.includes(sidebarRoute);
+  }
+
+  function setIndicatorPosition(newRoute: string) {
+    const routeIndex = routes.findIndex((r) => routeMatches(r.path, newRoute));
+    ...
+  }
+
+  ...
+</script>
+
+<header>
+  ...
+  <nav>
+    ...
+    {#each routes as route (route.path)}
+      <a
+        aria-current={routeMatches(route.path, currentRoute) ? "page" : undefined}
+        ...
+      >
+        ...
+      </a>
+    {/each}
+  </nav>
+</header>
+```
+
+We edit `src-svelte\src\routes\SidebarUI.test.ts` to rename the existing tests and add new ones. We can't add them to the existing test because the existing ones assume the same starting URL, and rendering it twice will result in multiple sidebars with the same links existing.
+
+```ts
+describe("Sidebar", () => {
+  test("requires exact match for homepage", () => {
+    render(SidebarUI, {
+      currentRoute: "/",
+      dummyLinks: true,
+    });
+    const homeLink = screen.getByTitle("Dashboard");
+    const apiCallsLink = screen.getByTitle("API Calls");
+    expect(homeLink).toHaveAttribute("aria-current", "page");
+    expect(apiCallsLink).not.toHaveAttribute("aria-current", "page");
+  });
+
+  test("highlights right icon for sub-paths", () => {
+    render(SidebarUI, {
+      currentRoute: "/api-calls/1234",
+      dummyLinks: true,
+    });
+    const homeLink = screen.getByTitle("Dashboard");
+    const apiCallsLink = screen.getByTitle("API Calls");
+    expect(homeLink).not.toHaveAttribute("aria-current", "page");
+    expect(apiCallsLink).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("Sidebar interactions", () => {
+  ...
+});
+```
+
+Now we notice various layout problems. We edit `src-svelte\src\routes\styles.css` for a class that will be repeated frequently:
+
+```css
+.full-height {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+```
+
+We use this in `src-svelte\src\routes\PageTransition.svelte` so that the bottom padding for the individual API call page is properly rendered:
+
+```svelte
+{#key currentRoute}
+  {#if ready}
+    <div
+      class="transition-container full-height"
+      ...
+    >
+      ...
+    </div>
+  {/if}
+{/key}
+
+<style>
+  .transition-container {
+    ...
+    min-height: 100vh;
+    ...
+  }
+</style>
+
+```
+
+We continue onto `src-svelte\src\lib\InfoBox.svelte`, where we remove `flex: 1;` from the `.container` itself unless it is also `full-height`. We also remove the former custom styles for `.container.full-height .info-box`:
+
+```css
+  .container {
+    ...
+  }
+
+  .container.full-height,
+  .container.full-height .border-container,
+  .container.full-height .info-box,
+  .container.full-height .info-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+```
+
+While we have repeated the `full-height` styles from `styles.css`, we do this so that we don't have to add code to set the `full-height` class on every relevant child class. Instead, the parent container being `full-height` will automatically apply the styles to all children.
+
+We make use of this in `src-svelte/src/routes/api-calls/ApiCalls.svelte`, and remove the now-duplicated styles from the divs. We also find that the time column needs a little more width to not run into a second line. We could use JavaScript to find the maximum width and adjust to that, but that seems to be a bit too much work for now.
+
+```svelte
+<InfoBox title="LLM API Calls" fullHeight>
+  <div class="container full-height" ...>
+    ...
+    <div class="scrollable-container full-height">
+      ...
+    </div>
+  </div>
+</InfoBox>
+
+<style>
+  .container {
+    ...
+  }
+
+  .scrollable-container {
+    ...
+  }
+
+  ...
+
+  .message .time {
+    width: 12.5rem;
+    ...
+  }
+</style>
+```
+
+We edit `src-svelte\src\routes\chat\Chat.svelte` to the same effect:
+
+```svelte
+<InfoBox title="Chat" fullHeight>
+  <div class="chat-container ... full-height">
+    ...
+  </div>
+</div>
+```
+
+Finally, we do the same for `src-svelte/src/routes/credits/Credits.svelte`, removing the `.credits-container` CSS block entirely and removing duplicate lines from `.container`:
+
+```svelte
+<div class="container full-height">
+  <div class="credits-container full-height">
+    ...
+  </div>
+
+  ...
+</div>
+
+<style>
+  .container {
+    ...
+  }
+
+  ...
+</style>
+```
+
+We add a test to `webdriver\test\specs\e2e.test.js`:
+
+```js
+describe("App", function () {
+  ...
+
+  it("should allow navigation to the API calls page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="API Calls"]');
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="API Calls"]');
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("api-calls", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  ...
+});
+```
+
+However, when trying to actually run the end-to-end test, we end up with the error
+
+```
+node:internal/event_target:1054
+  process.nextTick(() => { throw err; });
+                           ^
+Error: The following routes were marked as prerenderable, but were not prerendered because they were not found while crawling your app:
+  - /api-calls/[slug]
+```
+
+Trying to disable prerendering gives us
+
+```
+> Using @sveltejs/adapter-static
+  @sveltejs/adapter-static: all routes must be fully prerenderable, but found the following routes that are dynamic:
+    - src/routes/api-calls/[slug]
+
+  You have the following options:
+    - set the `fallback` option — see https://kit.svelte.dev/docs/single-page-apps#usage for more info.
+    - add `export const prerender = true` to your root `+layout.js/.ts` or `+layout.server.js/.ts` file. This will try to prerender all pages.
+    - add `export const prerender = true` to any `+server.js/ts` files that are not fetched by page `load` functions.
+    - adjust the `prerender.entries` config option (routes with parameters are not part of entry points by default) — see https://kit.svelte.dev/docs/configuration#prerender for more info.
+    - pass `strict: false` to `adapter-static` to ignore this error. Only do this if you are sure you don't need the routes in question in your final app, as they will be unavailable. See https://github.com/sveltejs/kit/tree/main/packages/adapter-static#strict for more info.
+
+  If this doesn't help, you may need to use a different adapter. @sveltejs/adapter-static can only be used for sites that don't need a server for dynamic rendering, and can run on just a static file server.
+  See https://kit.svelte.dev/docs/page-options#prerender for more details
+error during build:
+Error: Encountered dynamic routes
+    at adapt (file:///root/zamm/node_modules/@sveltejs/adapter-static/index.js:38:12)
+    at adapt (file:///root/zamm/node_modules/@sveltejs/kit/src/core/adapt/index.js:38:8)
+    at finalise (file:///root/zamm/node_modules/@sveltejs/kit/src/exports/vite/index.js:904:13)
+    ...
+```
+
+However, according to the official documentation [here](https://kit.svelte.dev/docs/page-options#prerender-when-not-to-prerender):
+
+> Note that you can still prerender pages that load data based on the page's parameters, such as a `src/routes/blog/[slug]/+page.svelte` route.
+
+Taking note of [the documentation](https://kit.svelte.dev/docs/configuration#prerender) on configuring SvelteKit, we edit `src-svelte/svelte.config.js`:
+
+```js
+/** @type {import('@sveltejs/kit').Config} */
+const config = {
+  ...,
+  kit: {
+    ...,
+    prerender: {
+      crawl: false,
+      entries: ["*", "/api-calls/[slug]"],
+    },
+  },
+};
+
+```
+
+Now the end-to-end screenshot can be taken, but the Storybook ones need some touch ups. We edit `src-svelte/src/routes/AnimationControl.svelte` to make use of the new `full-height` class:
+
+```svelte
+<div class="container full-height" ...>
+  ...
+</div>
+```
+
+and do the same for `src-svelte/src/lib/__mocks__/MockFullPageLayout.svelte`:
+
+```svelte
+<div class="storybook-wrapper full-height">
+  ...
+</div>
+```
+
+We edit the new tests in `src-svelte/src/routes/storybook.test.ts` to be a full body screenshot (not a full page one because we don't want to include Storybook elements):
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "individual"],
+    ...,
+    screenshotEntireBody: true,
+  },
+  {
+    path: ["screens", "llm-call", "list"],
+    ...,
+    screenshotEntireBody: true,
+  },
+];
+```
+
+Finally, the narrow individual LLM call is producing a screenshot with gray at the bottom due to Playwright clipping out anything that is outside the current viewport. We take inspiration from [this workaround](https://github.com/microsoft/playwright/issues/12962#issuecomment-1077674428), and edit `src-svelte/src/routes/storybook.test.ts`, where the value of 60 was chosen to reduce flakiness for both the screenshots that don't need resizing (resizing too much produces a line at the top of the screenshot) and the one that does need it, but sometimes doesn't get resized enough:
+
+```ts
+  const takeScreenshot = async (
+    frame: Frame,
+    page: Page,
+    screenshotEntireBody?: boolean,
+  ) => {
+    let locatorStr = screenshotEntireBody
+      ? "body"
+      : "#storybook-root > :first-child";
+    const elementClass = await frame.locator(locatorStr).getAttribute("class");
+    if (elementClass?.includes("storybook-wrapper")) {
+      locatorStr = ".storybook-wrapper > :first-child > :first-child";
+    }
+
+    const currentViewport = page.viewportSize();
+    if (currentViewport === null) {
+      throw new Error("Viewport is null");
+    }
+
+    const elementLocator = frame.locator(locatorStr);
+    await elementLocator.waitFor({ state: "visible"});
+    const elementHeight = await elementLocator.evaluate((el) => el.clientHeight);
+    const storybookHeight = 60; // height taken up by Storybook elements
+    const effectiveViewportHeight = currentViewport.height - storybookHeight;
+    const extraHeightNeeded = elementHeight - effectiveViewportHeight;
+
+    if (extraHeightNeeded > 0) {
+      await page.setViewportSize({
+        width: currentViewport.width,
+        height: currentViewport.height + extraHeightNeeded
+      })
+    }
+
+    return await elementLocator.screenshot();
+  };
+
+  ...
+
+  for (const config of components) {
+    ...
+          const screenshot = await takeScreenshot(
+            ...,
+            page,
+            ...,
+          );
+    ...
+          if (variantConfig.assertDynamic !== undefined) {
+            ...
+            const newScreenshot = await takeScreenshot(
+              ...,
+              page,
+              ...
+            );
+            ...
+          }
+    ...
+  }
+```
+
+Our CI tests are failing because the server localizes to a different timezone. We fix this by editing `src-svelte/src/routes/api-calls/ApiCalls.svelte` to allow specific locales and timezones to be passed in:
+
+```ts
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+  ...
+
+  const formatter = new Intl.DateTimeFormat(dateTimeLocale, {
+    ...,
+    timeZone,
+  });
+```
+
+We also edit `src-svelte/src/routes/api-calls/ApiCalls.stories.ts` to make use of these new options:
+
+```ts
+export const Small: StoryObj = Template.bind({}) as any;
+Small.args = {
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh"
+};
+...
+
+export const Full: StoryObj = Template.bind({}) as any;
+Full.args = {
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh"
+};
+...
+```
+
+We do the same thing for `src-svelte/src/routes/api-calls/[slug]/ApiCall.svelte`:
+
+```ts
+  export let id: string;
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+
+  const formatter = new Intl.DateTimeFormat(dateTimeLocale, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hour12: true,
+    timeZone,
+  });
+```
+
+and `src-svelte/src/routes/api-calls/[slug]/ApiCall.stories.ts`:
+
+```ts
+export const Narrow: StoryObj = Template.bind({}) as any;
+Narrow.args = {
+  ...,
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+...
+
+export const Wide: StoryObj = Template.bind({}) as any;
+Wide.args = {
+  ...,
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+...
+```
+
+It turns out that the screenshot for the static background is now also flaky on CI. We edit `src-svelte/src/routes/storybook.test.ts` to only do the window resizing when needed:
+
+```ts
+interface VariantConfig {
+  ...
+  resizeWindow?: boolean;
+  ...
+}
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      ...,
+      {
+        name: "full-message-width",
+        resizeWindow: true,
+        additionalAction: async (frame: Frame, page: Page) => {
+          await new Promise((r) => setTimeout(r, 1000));
+          // need to do a manual scroll because Storybook resize messes things up on CI
+          const scrollContents = frame.locator(".scroll-contents");
+          await scrollContents.focus();
+          await page.keyboard.press("End");
+        },
+      },
+      ...
+    ],
+    ...
+  },
+  ...,
+  {
+    path: ["screens", "llm-call", "individual"],
+    variants: [
+      {
+        name: "narrow",
+        resizeWindow: true,
+      },
+      "wide",
+    ],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+
+...
+
+describe.concurrent("Storybook visual tests", () => {
+  ...
+
+  const takeScreenshot = async (
+    ...,
+    resizeWindow: boolean,
+    ...
+  ) => {
+    ...
+    if (elementClass?.includes("storybook-wrapper")) {
+      ...
+    }
+    const elementLocator = frame.locator(locatorStr);
+    await elementLocator.waitFor({ state: "visible" });
+
+    if (resizeWindow) {
+      const currentViewport = page.viewportSize();
+      ...
+
+      if (extraHeightNeeded > 0) {
+        ...
+      }
+    }
+
+    return await elementLocator.screenshot();
+  };
+
+  ...
+
+  for (const config of components) {
+    ...
+          const screenshot = await takeScreenshot(
+            ...,
+            variantConfig.resizeWindow ?? false,
+            ...
+          );
+    ...
+            const newScreenshot = await takeScreenshot(
+              ...,
+              variantConfig.resizeWindow ?? false,
+              ...
+            );
+    ...
+  }
+});
+```
+
+Finally, we get a new failure with "new-message-sent", where the test is timing out because the Snackbar error message close button is no longer being shown. We see the error being logged
+
+```
+Uncaught (in promise) TypeError: message.includes is not a function
+    warn supress-warnings.js:7
+    snackbarError Snackbar.svelte:25
+    sendChatMessage Chat.svelte:65
+    ...
+```
+
+Upon further logging in `Chat.svelte`, we see the error
+
+```
+TypeError: playback is undefined
+    mockInvokeFn invoke.ts:19
+    chat bindings.ts:38
+    sendChatMessage Chat.svelte:61
+    submitChat Form.svelte:30
+    ...
+```
+
+We edit `src-svelte/src/routes/chat/Chat.stories.ts` to use the TauriInvokeDecorator. It is unclear how this was ever working before:
+
+```ts
+...
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+...
+
+export default {
+  component: ChatComponent,
+  title: "Screens/Chat/Conversation",
+  ...,
+  decorators: [
+    ...,
+    TauriInvokeDecorator,
+    ...
+  ],
+};
+```
+
+On CI, we also run into the pre-commit error
+
+```
+ESLint: 9.0.0
+
+Error: Could not find config file.
+    at locateConfigFileToUse (/home/runner/.cache/pre-commit/repothq_9gxk/node_env-system/lib/node_modules/eslint/lib/eslint/eslint.js:349:21)
+    at async calculateConfigArray (/home/runner/.cache/pre-commit/repothq_9gxk/node_env-system/lib/node_modules/eslint/lib/eslint/eslint.js:384:49)
+    at async ESLint.lintFiles (/home/runner/.cache/pre-commit/repothq_9gxk/node_env-system/lib/node_modules/eslint/lib/eslint/eslint.js:814:25)
+    at async Object.execute (/home/runner/.cache/pre-commit/repothq_9gxk/node_env-system/lib/node_modules/eslint/lib/cli.js:461:23)
+    at async main (/home/runner/.cache/pre-commit/repothq_9gxk/node_env-system/lib/node_modules/eslint/bin/eslint.js:165:22)
+```
+
+This is likely because we have a beta version of eslint set in the pre-commit config. However, even changing the `rev` doesn't automatically fix things. We edit `.pre-commit-config.yaml` to simply move the hook to the local repo:
+
+```yaml
+repos:
+  ...
+  - repo: local
+    hooks:
+      ...
+      - id: eslint
+        name: eslint
+        entry: yarn eslint --fix --max-warnings=0
+        language: system
+        types: [file]
+        files: \.(js|ts|svelte)$
+        exclude: src-svelte/src/lib/sample-call.ts
+      ...
 ```
