@@ -38,7 +38,7 @@ export XMODIFIERS=@im=ibus
 export QT_IM_MODULE=ibus
 ```
 
-Install some keyboard in Keyman (for example, `khmer_angkor`). Start the ibus daemon, and then in ibus preferences, pick the language for the Keyman keyboard you just installed. It will then ask you to pick from different available keyboards for that language, and the one you just installed on Keyman should be visible.
+Install some keyboard in Keyman (for example, `khmer_angkor`, but "Khmer (NIDA) Basic" `basic_kbdkni` is preferred for Anki specifically due to less interference with, e.g. ញុំ turning into ញុំញ៉ាំ once you add the final ា , or ញា turning into ញ៉ាំ once you add the final ុំ). Start the ibus daemon, and then in ibus preferences, pick the language for the Keyman keyboard you just installed. It will then ask you to pick from different available keyboards for that language, and the one you just installed on Keyman should be visible.
 
 We find that some applications don't recognize the new keyboard input until we restart the entire computer.
 
@@ -51,6 +51,10 @@ ibus-daemon --xim &
 ```
 
 This will run the ibus daemon in the background during the login process.
+
+### Firefox compatibility
+
+If the keyboard is Khmer and therefore requires the use of the Alt-key to write some characters such as ឱ or ឯ, you may need to disable the Alt-key in Firefox. To do this, go to `about:config` and set `ui.key.menuAccessKeyFocuses` to false, as described [here](https://support.mozilla.org/en-US/questions/1278533).
 
 ## Increasing swap size
 

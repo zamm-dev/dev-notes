@@ -224,6 +224,15 @@ Next, we edit `.pre-commit-config.yaml` to use the local version of prettier, re
         language: system
         types: [file]
         files: \.(json|yaml|html|js|ts|svelte)$
+        exclude: ^src-tauri/api/sample-database-writes/
+```
+
+Upon running pre-commit on all files again, we find that on Windows we need to actually add the same exclude as we do for `eslint`. There doesn't appear to be any better options for specifying multiple files or directories than simply [smushing](https://stackoverflow.com/a/75560858) them all together in a single regex:
+
+```yaml
+      - id: prettier
+        ...
+        exclude: ^(src-tauri/api/sample-database-writes/|src-svelte/src/lib/sample-call.ts$)
 ```
 
 Unfortunately, the `cargo-clippy` pre-commit check runs a Bash script that is not available on Windows, so you will get the message

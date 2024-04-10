@@ -1211,3 +1211,132 @@ let scrollDelay = 4.4 * $standardDuration + 1_000;
 ```
 
 in order to allow for a small pause after the credits box finishes playing its animation. This makes the credits feel less rushed.
+
+## Layout and icon nits
+
+We edit `src-svelte\src\routes\credits\Creditor.svelte` to have placeholder icons when projects don't have official icons, and to have all elements be the same width so that the credits page looks neat and orderly:
+
+```svelte
+<script lang="ts">
+  import IconPackage from "~icons/vaadin/package";
+  import IconPerson from "~icons/ion/person";
+  ...
+
+  export let isPerson = false;
+  ...
+</script>
+
+<div class="creditor atomic-reveal">
+  {#if logo}
+    <img class:person={isPerson} src={logoLink} alt={name} />
+  {:else if isPerson}
+    <div class="logo-placeholder">
+      <IconPerson />
+    </div>
+  {:else}
+    <div class="logo-placeholder">
+      <IconPackage />
+    </div>
+  {/if}
+  ...
+</div>
+
+<style>
+  .creditor {
+    padding: 0.5rem 0 0.5rem 1.5rem;
+    ...
+    width: 14rem;
+  }
+
+  @media (min-width: 46rem) {
+    .creditor {
+      padding: 0.75rem;
+    }
+  }
+
+  ...
+
+  img.person {
+    width: 2.5rem;
+    border-radius: var(--corner-roundness);
+  }
+
+  .logo-placeholder, .logo-placeholder :global(svg) {
+    width: 2rem;
+    height: 2rem;
+    color: var(--color-faded);
+  }
+
+  ...
+</style>
+```
+
+We edit `src-svelte\src\routes\credits\Creditor.stories.ts` as well to display a person icon for the person variant:
+
+```ts
+export const GithubContributor: StoryObj = Template.bind({}) as any;
+GithubContributor.args = {
+  ...,
+  isPerson: true,
+};
+```
+
+We edit `src-svelte\src\routes\credits\Grid.svelte` to have these new fixed-width elements look more centered in a responsive way:
+
+```css
+  ...
+
+  /* this takes sidebar width into account */
+  @media (min-width: 46rem) {
+    .credits-grid {
+      grid-template-columns: 1fr 1fr;
+      justify-items: end;
+    }
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 55rem) {
+    .credits-grid {
+      justify-items: center;
+    }
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 64rem) {
+    .credits-grid {
+      grid-template-columns: 1fr 1fr 1fr;
+      justify-items: center;
+    }
+  }
+```
+
+We edit `src-svelte\src\routes\credits\Credits.svelte` to feature the same thresholds, while always minimizing the bottom margin of the last row:
+
+```css
+  .credits-container :global(.sub-info-box:last-child .creditor:nth-last-child(1)) {
+    padding-bottom: 0;
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 46rem) {
+    .credits-container :global(.sub-info-box:last-child .creditor:nth-last-child(2)) {
+      padding-bottom: 0;
+    }
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 64rem) {
+    .credits-container :global(.sub-info-box:last-child .creditor:nth-last-child(3)) {
+      padding-bottom: 0;
+    }
+  }
+```
+
+Upon looking at this further, we realize that we do want more spacing between the subsection titles and the credits. We edit `src-svelte\src\routes\credits\Credits.svelte` again:
+
+```css
+  .credits-container :global(h3) {
+    margin-bottom: 0.75rem;
+  }
+```
+
