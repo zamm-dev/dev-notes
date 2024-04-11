@@ -1351,7 +1351,9 @@ We now create `src-svelte\src\routes\api-calls\ApiCalls.svelte`:
 
 ```
 
-Note that we make use of the `--color-hover` and the `EmptyPlaceholder` that we just refactored above. We also make use of the resize trick from the Chat component to size the message quote appropriately.
+Note that we make use of the `--color-hover` and the `EmptyPlaceholder` that we just refactored above. We also make use of the resize trick from the Chat component to size the message quote appropriately. We changed from `<table>` to `<div>` here in the course of experimenting with ways to get the columns to resize properly, although in the future we may want to change it back to a proper table layout.
+
+We eventually hardcode the `gap` style for the `.container` because the `--internal-spacing` variable isn't actually set anywhere in this component or its parents.
 
 We originally try refactoring the `src-svelte\src\routes\api-calls\[slug]\ApiCall.svelte` file to export the date format:
 
@@ -2516,4 +2518,1175 @@ repos:
         files: \.(js|ts|svelte)$
         exclude: src-svelte/src/lib/sample-call.ts
       ...
+```
+
+##### Column resize adjustment
+
+We realized that the fixed width of 12.5rem is sometimes not enough for some dates in some date formats. We edit `src-svelte\src\routes\api-calls\ApiCalls.svelte` to be more dynamically adjustable:
+
+```svelte
+<script lang="ts">
+  ...
+  const MIN_COLUMN_WIDTH = "5rem";
+
+  ...
+  let messageWidth = MIN_COLUMN_WIDTH;
+  let timeWidth = MIN_COLUMN_WIDTH;
+  let headerMessageWidth = MIN_COLUMN_WIDTH;
+
+  ...
+
+  function getWidths(selector: string) {
+    const elements = document.querySelectorAll(selector);
+    return Array.from(elements).map((el) => el.getBoundingClientRect().width).filter((width) => width > 0);
+  }
+
+  function resizeMessageWidth() {
+    messageWidth = MIN_COLUMN_WIDTH;
+    // time width doesn't need a reset because it never decreases
+
+    setTimeout(() => {
+      const textWidths = getWidths(".text-container");
+      const timeWidths = getWidths(".time");
+      const minTextWidth = Math.floor(Math.min(...textWidths));
+      messageWidth = `${minTextWidth}px`;
+      const maxTimeWidth = Math.ceil(Math.max(...timeWidths));
+      timeWidth = `${maxTimeWidth}px`;
+
+      headerMessageWidth = messageWidth;
+    }, 10);
+  }
+
+  function loadApiCalls() {
+    ...
+
+    llmCallsPromise = getApiCalls(llmCalls.length)
+      .then((newCalls) => {
+        ...
+
+        requestAnimationFrame(resizeMessageWidth);
+      })
+      ...;
+  }
+
+  ...
+
+  $: minimumWidths = `--message-width: ${messageWidth}; ` + `--header-message-width: ${headerMessageWidth}; ` + `--time-width: ${timeWidth}`;
+</script>
+
+<InfoBox title="LLM API Calls" fullHeight>
+  <div class="container full-height" style={minimumWidths}>
+    <div class="message header">
+      <div class="text-container">
+        <div class="text">Message</div>
+      </div>
+      ...
+    </div>
+  </div>
+</InfoBox>
+
+<style>
+  .container {
+    gap: 0.25rem;
+  }
+
+  ...
+
+  .message.header .text-container .text {
+    max-width: var(--header-message-width);
+  }
+
+  .message .time {
+    min-width: var(--time-width);
+    box-sizing: border-box;
+    ...
+  }
+</style>
+```
+
+Note that:
+
+- We're using `getBoundingClientRect` instead of `clientWidth` because the latter can be [rounded off](https://stackoverflow.com/a/48309564) in the opposite direction of what we want at any given time
+- We also have a separate `--header-message-width` to avoid the header column from flickering much when more content is loaded, because header flicker is much more visible than content flicker.
+
+Finally, as one more nit, we edit
+
+```css
+  .message.instance {
+    ...
+    height: 1.62rem;
+    box-sizing: border-box;
+  }
+```
+
+because we find that on Linux Mint, the rows with Khmer text are taller than the rows without.
+
+During testing, we find that the empty page now has a noticeably shrunken time column due to the lack of any time values. We therefore restore a different minimum width to the time column, and rename `MIN_COLUMN_WIDTH` back to `MIN_MESSAGE_WIDTH`:
+
+```ts
+  const MIN_MESSAGE_WIDTH = "5rem";
+  const MIN_TIME_WIDTH = "12.5rem";
+
+  ...
+  let messageWidth = MIN_MESSAGE_WIDTH;
+  let timeWidth = MIN_TIME_WIDTH;
+  let headerMessageWidth = MIN_MESSAGE_WIDTH;
+```
+
+## Restoring conversation
+
+### Refactoring Chat.svelte
+
+We want to make it possible to restore conversations from previous API calls. To do this, we first refactor `src-svelte\src\routes\chat\Chat.svelte` to use a Svelte store:
+
+```svelte
+<script lang="ts" context="module">
+  import { writable } from "svelte/store";
+
+  export const conversation = writable<ChatMessage[]>([
+    {
+      role: "System",
+      text: "You are ZAMM, a chat program. Respond in first person.",
+    },
+  ]);
+</script>
+
+<script lang="ts">
+  ...
+
+  function appendMessage(message: ChatMessage) {
+    conversation.update((messages) => [...messages, message]);
+    ...
+  }
+
+  async function sendChatMessage(message: string) {
+    ...
+
+    try {
+      let llmCall = await chat(..., $conversation);
+      ...
+    } ...
+  }
+</script>
+
+<InfoBox title="Chat" ...>
+  <div ...>
+    <Scrollable
+      ...
+    >
+      <div class="composite-reveal" role="list">
+        {#if $conversation.length > 1}
+          {#each $conversation.slice(1) as message, i (i)}
+            ...
+          {/each}
+          ...
+        {/if}
+      </div>
+    </Scrollable>
+
+    ...
+  </div>
+</InfoBox>
+
+...
+```
+
+We remove `src-svelte/src/routes/chat/PersistentChat.svelte` because it is no longer needed, and update `src-svelte/src/routes/chat/PersistentChatView.svelte` to use the regular `Chat` component instead:
+
+```svelte
+<script lang="ts">
+  import Chat from "./Chat.svelte";
+
+  ...
+</script>
+
+...
+
+{#if visible}
+  <Chat />
+{/if}
+
+```
+
+We delete `src-svelte/src/routes/chat/PersistentChat.test.ts` and move its code to `src-svelte\src\routes\chat\Chat.test.ts` instead:
+
+```ts
+...
+import PersistentChatView from "./PersistentChatView.svelte";
+...
+
+...
+
+describe("Chat conversation", () => {
+  ...
+
+  test("persists a conversation after returning to it", async () => {
+    render(PersistentChatView, {});
+    await sendChatMessage(
+      "Hello, does this work?",
+      "../src-tauri/api/sample-calls/chat-start-conversation.yaml",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Remount" }));
+    await waitFor(() => {
+      expect(screen.getByText("Hello, does this work?")).toBeInTheDocument();
+    });
+  });
+});
+
+```
+
+We get multiple failing tests:
+
+```
+ FAIL  src/routes/chat/Chat.test.ts > Chat conversation > persists a conversation after returning to it  
+TestingLibraryElementError: Found multiple elements with the text: Hello, does this work?
+
+Here are the matching elements:
+
+Ignored nodes: comments, script, style
+<p>
+  Hello, does this work?
+</p>
+
+Ignored nodes: comments, script, style
+<p>
+  Hello, does this work?
+</p>
+
+Ignored nodes: comments, script, style
+<p>
+  Hello, does this work?
+</p>
+
+(If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+...
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+Vitest caught 3 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: message.includes is not a function
+ ❯ Console.console.warn ../node_modules/svelte-markdown/src/supress-warnings.js:8:17
+ ❯ Module.snackbarError src/lib/snackbar/Snackbar.svelte:25:13
+     23|
+     24|   export function snackbarError(msg: string) {
+     25|     console.warn(msg);
+       |             ^
+     26|     animateDurationMs = baseAnimationDurationMs;
+     27|     const id = nextId++;
+ ❯ sendChatMessage src/routes/chat/Chat.svelte:69:7
+ ❯ HTMLFormElement.submitChat src/routes/chat/Form.svelte:30:7
+ ❯ HTMLFormElement.<anonymous> ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/.vitest/deps/chunk-X2XOW6IX.js:482:15
+ ❯ HTMLFormElement.callTheUserObjectsOperation ../node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30
+ ❯ innerInvokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:350:25    
+ ❯ invokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:286:3
+ ❯ HTMLFormElementImpl._dispatch ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:233:9
+ ❯ fireAnEvent ../node_modules/jsdom/lib/jsdom/living/helpers/events.js:18:36
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "won't send multiple messages at once". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: message.includes is not a function
+ ❯ Console.console.warn ../node_modules/svelte-markdown/src/supress-warnings.js:8:17
+ ❯ Module.snackbarError src/lib/snackbar/Snackbar.svelte:25:13
+     23|
+     24|   export function snackbarError(msg: string) {
+     25|     console.warn(msg);
+       |             ^
+     26|     animateDurationMs = baseAnimationDurationMs;
+     27|     const id = nextId++;
+ ❯ sendChatMessage src/routes/chat/Chat.svelte:69:7
+ ❯ HTMLFormElement.submitChat src/routes/chat/Form.svelte:30:7
+ ❯ HTMLFormElement.<anonymous> ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/.vitest/deps/chunk-X2XOW6IX.js:482:15
+ ❯ HTMLFormElement.callTheUserObjectsOperation ../node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30
+ ❯ innerInvokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:350:25    
+ ❯ invokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:286:3
+ ❯ HTMLFormElementImpl._dispatch ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:233:9 
+ ❯ fireAnEvent ../node_modules/jsdom/lib/jsdom/living/helpers/events.js:18:36
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "persists a conversation after returning to it". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: latestMessage?.resizeBubble is not a function
+ ❯ Timeout._onTimeout src/routes/chat/Chat.svelte:48:28
+     46|     setTimeout(async () => {
+     47|       const latestMessage = messageComponents[messageComponents.length - 1];
+     48|       await latestMessage?.resizeBubble(conversationWidthPx);
+       |                            ^
+     49|       growable?.scrollToBottom();
+     50|     }, 10);
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+     Errors  3 errors
+   Start at  15:58:44
+   Duration  3.21s
+```
+
+We realize that we don't reset the conversation for tests, so we edit `src-svelte\src\routes\chat\Chat.svelte`, changing where `ChatMessage` is imported for consistency:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+  import { type ChatMessage } from "$lib/bindings";
+
+  const initialMessage: ChatMessage = {
+    role: "System",
+    text: "You are ZAMM, a chat program. Respond in first person.",
+  };
+
+  export const conversation = writable<ChatMessage[]>([initialMessage]);
+
+  export function resetConversation() {
+    conversation.set([initialMessage]);
+  }
+</script>
+
+<script lang="ts">
+  ...
+  import { chat } from "$lib/bindings";
+  ...
+</script>
+```
+
+We edit `src-svelte\src\routes\chat\Chat.test.ts` as well to use this:
+
+```ts
+...
+import Chat, { resetConversation } from "./Chat.svelte";
+...
+
+describe("Chat conversation", () => {
+  ...
+
+  afterEach(() => {
+    ...
+    resetConversation();
+  });
+
+  ...
+});
+```
+
+Now our tests pass. During commit, we get the error
+
+```
+c:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-svelte\src\routes\chat\+page.svelte:2:30
+Error: Cannot find module './PersistentChat.svelte' or its corresponding type declarations. (ts)
+<script lang="ts">
+  import PersistentChat from "./PersistentChat.svelte";
+</script>
+```
+
+We edit `src-svelte\src\routes\chat\+page.svelte` as well to use the regular `Chat` component:
+
+```svelte
+<script lang="ts">
+  import Chat from "./Chat.svelte";
+</script>
+
+<Chat />
+```
+
+We try to add a test to `src-svelte\src\routes\chat\Chat.test.ts` to check that the store can be successfully controlled by another component:
+
+```ts
+...
+import ..., { conversation, ... } from "./Chat.svelte";
+...
+
+describe("Chat conversation", () => {
+  ...
+
+  test("listens for updates to conversation store", async () => {
+    render(Chat, {});
+    expect(screen.queryByText("Hello, does this work?")).not.toBeInTheDocument();
+    conversation.set([
+      {
+        "role": "System",
+        "text": "You are ZAMM, a chat program. Respond in first person."
+      },
+      {
+        "role": "Human",
+        "text": "Hello, does this work?"
+      },
+      {
+        "role": "AI",
+        "text": "Yes, it works. How can I assist you today?"
+      },
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText("Hello, does this work?")).toBeInTheDocument();
+    });
+    await sendChatMessage(
+      "Tell me something funny.",
+      "../src-tauri/api/sample-calls/chat-continue-conversation.yaml",
+    );
+  });
+});
+
+```
+
+It fails with two errors, one being that the last message from the AI is duplicated:
+
+```
+stderr | src/routes/chat/Chat.test.ts > Chat conversation > listens for updates to conversation store    
+No matching call found for ["chat",{"provider":"OpenAI","llm":"gpt-4","temperature":null,"prompt":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this work?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"Human","text":"Tell me something funny."}]}].    
+Candidates are ["chat",{"provider":"OpenAI","llm":"gpt-4","temperature":null,"prompt":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this work?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"Human","text":"Tell me something funny."}]}]
+```
+
+and the other being a problem with the mounting of the scrollable component:
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: growable?.scrollToBottom is not a function
+ ❯ Timeout._onTimeout src/routes/chat/Chat.svelte:55:17
+     53|       await latestMessage?.resizeBubble(conversationWidthPx);
+     54|       console.log(growable?.scrollToBottom);
+     55|       growable?.scrollToBottom();
+       |                 ^
+     56|     }, 10);
+     57|   }
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+The first problem only occurs when other tests are being run at the same time. After more debugging, it turns out that this is coming from the API callback from the previous test finally being executed. It is strange that `resetConversation();` in `afterEach` doesn't help to reset the conversation here, but it turns out it is because the previous test finishes before the API callback has had time to complete. We fix this test, which turns out to have never worked the way we expected because 1) it was simply waiting for the same `nextExpectedHumanPrompt` again instead of waiting for the next one, 2) it never even had the continue conversation playback added, and 3) it should've expected 2 successful API calls because the counter never gets reset here:
+
+```ts
+  test("won't send multiple messages at once", async () => {
+    ...
+    expect(screen.getByText(nextExpectedHumanPrompt)).toBeInTheDocument();
+    // this part differs from sendChatMessage
+    await waitFor(() => {
+      expect(screen.getByText("Yes, it works. How can I assist you today?")).toBeInTheDocument();
+    });
+
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/chat-continue-conversation.yaml",
+    );
+    await userEvent.type(chatInput, "Tell me something funny.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Tell me something funny.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/Because they make up everything/)).toBeInTheDocument();
+    });
+  });
+```
+
+This tackles the first problem. As for the second one, since it appears to only exist in the test environment, we add a guard for it in `src-svelte\src\routes\chat\Chat.svelte`:
+
+```ts
+  function appendMessage(...) {
+    ...
+    setTimeout(async () => {
+      ...
+      if (growable?.scrollToBottom) {
+        growable.scrollToBottom();
+      }
+    }, ...);
+  }
+```
+
+This demonstrates a danger to having false confidence in tests that don't actually check for what you think they check for.
+
+The Chat screenshot tests are failing now because this component no longer expects conversations to be passed in via arguments anymore. Instead, we update `src-svelte\src\lib\__mocks__\stores.ts`:
+
+```ts
+...
+import { conversation } from "../../routes/chat/Chat.svelte";
+import type { ..., ChatMessage } from "$lib/bindings";
+...
+
+interface Stores {
+  ...
+  conversation?: ChatMessage[];
+}
+
+...
+
+const SvelteStoresDecorator: Decorator = (
+  ...
+) => {
+  ...
+  conversation.set(stores?.conversation || []);
+
+  return story(...);
+};
+
+```
+
+Then we edit `src-svelte/src/routes/chat/Chat.stories.ts`, moving the conversation argument from story `args` to `parameters`:
+
+```ts
+...
+
+export const NotEmpty: StoryObj = Template.bind({}) as any;
+NotEmpty.parameters = {
+  stores: {
+    conversation,
+  },
+  ...
+};
+
+...
+
+export const TypingIndicator: StoryObj = Template.bind({}) as any;
+TypingIndicator.args = {
+  ...
+};
+TypingIndicator.parameters = {
+  stores: {
+    conversation: shortConversation,
+  },
+  ...
+};
+
+...
+```
+
+### Adding restore button on API call page
+
+We edit `src-svelte\src\lib\controls\Button.svelte` to allow for firing click events. We could also do this by passing in props, but we prefer the event syntax:
+
+```svelte
+<script lang="ts">
+  import { createEventDispatcher } from "svelte";
+
+  ...
+  const dispatchClickEvent = createEventDispatcher();
+
+  function handleClick() {
+    dispatchClickEvent("click");
+  }
+</script>
+
+{#if unwrapped}
+  <button ... on:click={handleClick}>
+    {text}
+  </button>
+{:else}
+  <button ... on:click={handleClick}>
+    <div class="cut-corners inner" class:right-end={rightEnd}>{text}</div>
+  </button>
+{/if}
+```
+
+Then, we edit `src-svelte\src\routes\api-calls\[slug]\ApiCall.svelte` to add a button that updates the conversation store with the contents of the API call:
+
+```svelte
+<script lang="ts">
+  ...
+  import { type LlmCall, getApiCall } from "$lib/bindings";
+  ...
+  import Button from "$lib/controls/Button.svelte";
+  import { conversation } from "../../chat/Chat.svelte";
+  import { goto } from "$app/navigation";
+
+  ...
+  let apiCall: LlmCall | undefined = undefined;
+  ...
+  let apiCallPromise = getApiCall(id)
+    .then((retrievedApiCall) => {
+      apiCall = retrievedApiCall;
+      ...
+    })
+    ...;
+
+  function restoreConversation() {
+    if (!apiCall) {
+      snackbarError("API call not yet loaded");
+      return;
+    }
+
+    const restoredConversation = [
+      ...apiCall.request.prompt.messages,
+      apiCall.response.completion,
+    ]
+    conversation.set(restoredConversation);
+
+    goto("/chat");
+  }
+</script>
+
+...
+
+<div class="actions-container">
+  <InfoBox title="Actions" childNumber={1}>
+    <div class="action-buttons">
+      <Button text="Restore conversation" on:click={restoreConversation} />
+    </div>
+  </InfoBox>
+</div>
+
+<style>
+  ...
+
+  .actions-container {
+    margin-top: 1rem;
+  }
+
+  .action-buttons {
+    width: fit-content;
+    margin: 0 auto;
+  }
+</style>
+
+```
+
+Note that this strategy of separating the second InfoBox from the first one is different from the one employed in `src-svelte\src\routes\credits\Credits.svelte` to use the `gap` property of the containing div. We like the look of this gap, so we edit that file to also feature a gap of `1rem` instead.
+
+We add a test, but at first we get the test error
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/api-calls/[slug]/ApiCall.test.ts [ src/routes/api-calls/[slug]/ApiCall.test.ts ]
+Error: Failed to resolve import "$app/navigation" from "src/routes/api-calls/[slug]/ApiCall.svelte". Does the file exist?
+ ❯ formatError ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/node_modules/vite/dist/node/chunks/dep-stQc5rCc.js:50500:46
+```
+
+We figure out that our `src-svelte\vitest.config.ts` says
+
+```ts
+export default defineConfig({
+  ...,
+  resolve: {
+    alias: {
+      ...,
+      $app: path.resolve("src/vitest-mocks"),
+    },
+  },
+  ...
+});
+```
+
+So we create a file at `src-svelte\src\vitest-mocks\navigation.ts`:
+
+```ts
+import { mockStores } from "./stores";
+
+export function goto(url: string) {
+  mockStores.page.set({
+    url: new URL(url, window.location.href),
+    params: {},
+  });
+}
+
+```
+
+and we modify `src-svelte\src\vitest-mocks\stores.ts`, which we originally created in the "Sound" section of [`sidebar.md`](/zamm-notes/sidebar.md), to be able to mock updates to the page store:
+
+```ts
+...
+
+export const mockStores = {
+  ...,
+  page: writable({ url: new URL("http://localhost"), params: {} }),
+  ...
+};
+
+export const page = {
+  subscribe(...) {
+    return mockStores.page.subscribe(fn);
+  },
+};
+
+```
+
+Now our test at `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts` works completely:
+
+```ts
+import { expect, test, vi, type Mock } from "vitest";
+import "@testing-library/jest-dom";
+
+import { render, screen, waitFor } from "@testing-library/svelte";
+import userEvent from "@testing-library/user-event";
+import { resetConversation } from "../../chat/Chat.svelte";
+import { TauriInvokePlayback } from "$lib/sample-call-testing";
+import { conversation } from "../../chat/Chat.svelte";
+import ApiCall from "./ApiCall.svelte";
+import { get } from "svelte/store";
+import { mockStores } from "../../../vitest-mocks/stores";
+
+describe("Individual API call", () => {
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    vi.stubGlobal("__TAURI_INVOKE__", tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetConversation();
+  });
+
+  test("can restore chat conversation", async () => {
+    playback.addSamples("../src-tauri/api/sample-calls/get_api_call-continue-conversation.yaml");
+    render(ApiCall, { id: "c13c1e67-2de3-48de-a34c-a32079c03316" });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    await waitFor(() => {
+      screen.getByText("Hello, does this work?");
+    });
+    expect(get(conversation)).toEqual([
+      { role: "System", text: "You are ZAMM, a chat program. Respond in first person." },
+    ]);
+    expect(get(mockStores.page).url.pathname).toEqual("/");
+
+    const restoreButton = await waitFor(() => screen.getByText("Restore conversation"));
+    userEvent.click(restoreButton);
+    await waitFor(() => {
+      expect(get(conversation)).toEqual([
+        { role: "System", text: "You are ZAMM, a chat program. Respond in first person." },
+        {
+          "role": "Human",
+          "text": "Hello, does this work?"
+        },
+        {
+          "role": "AI",
+          "text": "Yes, it works. How can I assist you today?"
+        },
+        {
+          "role": "Human",
+          "text": "Tell me something funny."
+        },
+        {
+          "role": "AI",
+          "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+        },
+      ]);
+    });
+    expect(get(mockStores.page).url.pathname).toEqual("/chat");
+  });
+});
+
+```
+
+#### Debugging overly short column widths
+
+We notice that sometimes the API calls page sets the column width for messages to be extraordinarily short, but that this gets fixed when you scroll down and more API calls load. Upon more debugging, it turns out that this happens when you already have some chats in the conversation view (perhaps by loading one from the list of API calls), and then switch over from that page to the API list page. Because both pages will exist at the same time during the Svelte transition period, the `.message` bubbles from `src-svelte\src\routes\chat\MessageUI.svelte` get included in the JS selector for `src-svelte\src\routes\api-calls\ApiCalls.svelte`. As such, we edit `src-svelte\src\routes\api-calls\ApiCalls.svelte` to get the JS selector to be specific to the items on that page:
+
+```svelte
+<script lang="ts">
+  ...
+
+  function getWidths(selector: string) {
+    ...
+    const results = Array.from(elements)
+      ...;
+    return results;
+  }
+
+  function resizeMessageWidth() {
+    ...
+
+    setTimeout(() => {
+      const textWidths = getWidths(".api-calls-page .text-container");
+      const timeWidths = getWidths(".api-calls-page .time");
+      ...
+    }, ...);
+  }
+
+  ...
+</script>
+
+<InfoBox title="LLM API Calls" ...>
+  <div class="container api-calls-page ..." ...>
+    ...
+  </div>
+</InfoBox>
+```
+
+Note that we save the results of `getWidths` to an intermediate variable first for easier debug logging.
+
+We manually check that the bug no longer appears. Reproducing this bug requires selecting a conversation that contains a short message, most likely from the human since ChatGPT is usually verbose in its responses. Testing this automatically would require writing an end-to-end test, as this is only triggered by navigation between pages. It would also require the API calls list and conversation view to be populated. We can leave this as a TODO for the future, but for now this would be too much effort for the payoff.
+
+#### Refactoring out actions InfoBox
+
+To be consistent with visual tests for other pages, we make it so that `src-svelte\src\routes\api-calls\[slug]\ApiCall.svelte` consists of components imported from two separate files instead:
+
+```svelte
+<script lang="ts">
+  import ApiCallDisplay from "./ApiCallDisplay.svelte";
+  import { type LlmCall, getApiCall } from "$lib/bindings";
+  import Actions from "./Actions.svelte";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+
+  export let id: string;
+  let apiCall: LlmCall | undefined = undefined;
+
+  getApiCall(id)
+    .then((retrievedApiCall) => {
+      apiCall = retrievedApiCall;
+    })
+    .catch((error) => {
+      snackbarError(error);
+    });
+</script>
+
+<div class="container">
+  <ApiCallDisplay {...$$restProps} bind:apiCall={apiCall} />
+  <Actions {apiCall} />
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+</style>
+
+```
+
+where now `src-svelte\src\routes\api-calls\[slug]\Actions.svelte` looks like
+
+```svelte
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import { type LlmCall } from "$lib/bindings";
+  import { conversation } from "../../chat/Chat.svelte";
+  import { goto } from "$app/navigation";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import Button from "$lib/controls/Button.svelte";
+
+  export let apiCall: LlmCall | undefined = undefined;
+
+  function restoreConversation() {
+    if (!apiCall) {
+      snackbarError("API call not yet loaded");
+      return;
+    }
+
+    const restoredConversation = [
+      ...apiCall.request.prompt.messages,
+      apiCall.response.completion,
+    ];
+    conversation.set(restoredConversation);
+
+    goto("/chat");
+  }
+</script>
+
+<InfoBox title="Actions" childNumber={1}>
+  <div class="action-buttons">
+    <Button text="Restore conversation" on:click={restoreConversation} />
+  </div>
+</InfoBox>
+
+<style>
+  .action-buttons {
+    width: fit-content;
+    margin: 0 auto;
+  }
+</style>
+
+```
+
+and `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` looks like
+
+```svelte
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import SubInfoBox from "$lib/SubInfoBox.svelte";
+  import { type LlmCall } from "$lib/bindings";
+  import Loading from "$lib/Loading.svelte";
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+  export let apiCall: LlmCall | undefined = undefined;
+
+  const formatter = new Intl.DateTimeFormat(dateTimeLocale, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hour12: true,
+    timeZone,
+  });
+
+  let humanTime: string | undefined = undefined;
+  let temperature: string | undefined = undefined;
+
+  function updateDisplayStrings(apiCall: LlmCall | undefined) {
+    if (!apiCall) {
+      return;
+    }
+
+    const timestamp = apiCall.timestamp + "Z";
+    const date = new Date(timestamp);
+    humanTime = formatter.format(date);
+
+    temperature = apiCall.request.temperature.toFixed(2);
+  }
+
+  $: updateDisplayStrings(apiCall);
+</script>
+
+<InfoBox title="API Call">
+  {#if apiCall}
+    <table>
+      <tr>
+        <td>ID</td>
+        <td>{apiCall?.id ?? "Unknown"}</td>
+      </tr>
+      <tr>
+        <td>Time</td>
+        <td>{humanTime ?? "Unknown"}</td>
+      </tr>
+      <tr>
+        <td>LLM</td>
+        <td>
+          {apiCall?.llm.requested ?? "Unknown"}
+          {#if apiCall?.llm.requested !== apiCall?.llm.name}
+            → {apiCall?.llm.name}
+          {/if}
+        </td>
+      </tr>
+      <tr>
+        <td>Temperature</td>
+        <td>
+          {temperature ?? "Unknown"}
+        </td>
+      </tr>
+      <tr>
+        <td>Tokens</td>
+        <td>
+          {apiCall?.tokens.prompt ?? "Unknown"} prompt +
+          {apiCall?.tokens.response ?? "Unknown"} response =
+          {apiCall?.tokens.total ?? "Unknown"} total tokens
+        </td>
+      </tr>
+    </table>
+
+    <SubInfoBox subheading="Prompt">
+      <div class="prompt">
+        {#each apiCall?.request.prompt.messages ?? [] as message}
+          <div class={"message " + message.role.toLowerCase()}>
+            <span class="role">{message.role}</span>
+            <pre>{message.text}</pre>
+          </div>
+        {/each}
+      </div>
+    </SubInfoBox>
+
+    <SubInfoBox subheading="Response">
+      <pre class="response">{apiCall?.response.completion.text ??
+          "Unknown"}</pre>
+    </SubInfoBox>
+  {:else}
+    <Loading />
+  {/if}
+</InfoBox>
+
+<style>
+  td:first-child {
+    color: var(--color-faded);
+    padding-right: 1rem;
+  }
+
+  .prompt {
+    margin-bottom: 1rem;
+  }
+
+  .message {
+    margin: 0.5rem 0;
+    padding: 0.5rem;
+    border-radius: var(--corner-roundness);
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .message.system {
+    background-color: var(--color-system);
+  }
+
+  .message.human {
+    background-color: var(--color-human);
+  }
+
+  .message.ai {
+    background-color: var(--color-ai);
+  }
+
+  .message .role {
+    color: var(--color-faded);
+    width: 4rem;
+    min-width: 4rem;
+    text-align: center;
+  }
+
+  pre {
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    margin: 0;
+    text-align: left;
+  }
+</style>
+
+```
+
+We rename `src-svelte/src/routes/api-calls/[slug]/ApiCall.stories.ts` to `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.stories.ts` and insert the API calls directly:
+
+```ts
+...
+
+const CONTINUE_CONVERSATION_CALL = {
+  "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+  "timestamp": "2024-01-16T09:50:19.738093890",
+  ...
+};
+
+const KHMER_CALL = {
+  "id": "92665f19-be8c-48f2-b483-07f1d9b97370",
+  "timestamp": "2024-04-10T07:22:12.752276900",
+  ...
+};
+
+...
+
+export const Narrow: StoryObj = Template.bind({}) as any;
+Narrow.args = {
+  apiCall: CONTINUE_CONVERSATION_CALL,
+  ...
+};
+...
+
+export const Wide: StoryObj = Template.bind({}) as any;
+Wide.args = {
+  apiCall: CONTINUE_CONVERSATION_CALL,
+  ...
+};
+...
+
+export const Khmer: StoryObj = Template.bind({}) as any;
+Khmer.args = {
+  apiCall: KHMER_CALL,
+  ...
+};
+...
+```
+
+This means we can now get rid of `src-tauri/api/sample-calls/get_api_call-khmer.yaml`, which was created only for visual test purposes anyway. We were using the visual tests as a proxy test that the API call logic works on mount, which we have now lost, so we instead edit `src-svelte/src/routes/api-calls/[slug]/ApiCall.test.ts` to test for that explicitly:
+
+```ts
+...
+import { ..., within } from "@testing-library/svelte";
+...
+
+describe("Individual API call", () => {
+  ...
+
+  function expectRowValue(key: string, expectedValue: string) {
+    const keyRegex = new RegExp(key);
+    const row = screen.getByRole("row", { name: keyRegex });
+    const rowValueCell = within(row).getAllByRole("cell")[1];
+    expect(rowValueCell).toHaveTextContent(expectedValue);
+  }
+
+  test("can load API call with correct details", async () => {
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_api_call-continue-conversation.yaml",
+    );
+    render(ApiCall, { id: "c13c1e67-2de3-48de-a34c-a32079c03316" });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+
+    // check that system message is displayed
+    await waitFor(() => {
+      expect(screen.getByText("You are ZAMM, a chat program. Respond in first person.")).toBeInTheDocument();
+    });
+    // check that human message is displayed
+    expect(screen.getByText("Hello, does this work?")).toBeInTheDocument();
+    // check that AI message is displayed
+    expect(screen.getByText(
+      "Sure, here's a joke for you: " + 
+      "Why don't scientists trust atoms? " +
+      "Because they make up everything!"
+    )).toBeInTheDocument();
+    // check that metadata is displayed
+    expectRowValue("LLM", "gpt-4 → gpt-4-0613");
+    expectRowValue("Temperature", "1.00");
+    expectRowValue("Tokens", "57 prompt + 22 response = 79 total tokens");
+  });
+
+  ...
+});
+```
+
+where the table trick is something we copied from `src-svelte\src\routes\components\Metadata.test.ts`.
+
+We add new stories for the actions component specifically at `src-svelte/src/routes/api-calls/[slug]/Actions.stories.ts`:
+
+```ts
+import ActionsComponent from "./Actions.svelte";
+import type { StoryObj } from "@storybook/svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+
+export default {
+  component: ActionsComponent,
+  title: "Screens/LLM Call/Individual/Actions",
+  argTypes: {},
+  decorators: [TauriInvokeDecorator],
+};
+
+const Template = ({ ...args }) => ({
+  Component: ActionsComponent,
+  props: args,
+});
+
+export const Wide: StoryObj = Template.bind({}) as any;
+Wide.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+
+export const Narrow: StoryObj = Template.bind({}) as any;
+Narrow.parameters = {
+  viewport: {
+    defaultViewport: "mobile2",
+  },
+};
+
+```
+
+We register these new stories in `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "individual", "actions"],
+    variants: ["narrow", "wide"],
+    screenshotEntireBody: true,
+  },
+  ...
+];
 ```
