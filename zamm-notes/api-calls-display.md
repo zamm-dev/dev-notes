@@ -3690,3 +3690,40 @@ const components: ComponentTestConfig[] = [
   ...
 ];
 ```
+
+## InfoBox reveal animation
+
+We add some classes to help the messages be revealed one at a time in `src-svelte/src/lib/SubInfoBox.svelte`:
+
+```svelte
+<section class="sub-info-box composite-reveal" ...>
+  ...
+  <div class="content composite-reveal">
+    ...
+  </div>
+</section>
+```
+
+We then edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte`:
+
+```svelte
+<InfoBox title="API Call">
+  {#if apiCall}
+    <table class="composite-reveal">
+      ...
+    </table>
+
+    <SubInfoBox subheading="Prompt">
+      <div class="prompt composite-reveal">
+        {#each ... as message}
+          <div class={"message atomic-reveal " + ...}>
+            ...
+          </div>
+        {/each}
+      </div>
+    </SubInfoBox>
+
+    ...
+  {/if}
+</InfoBox>
+```

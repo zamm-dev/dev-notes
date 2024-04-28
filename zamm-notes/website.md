@@ -380,3 +380,64 @@ updatedDate: 'February 20, 2024'
 
 ...
 ```
+
+## Blog post list
+
+### Showing items as a list of rows
+
+The default layout looks confusing for our screenshots. We edit `src/pages/blog/index.astro`:
+
+```astro
+<!doctype html>
+<html lang="en">
+	<head>
+		...
+		<style>
+			...
+			ul li {
+				width: 100%;
+			}
+			...
+			ul li .img-container {
+				width: 200px;
+			}
+			ul li img {
+				border-radius: 12px;
+				max-height: 100px;
+				max-width: 200px;
+				margin: 0 auto;
+			}
+			ul li a {
+				display: flex;
+				flex-direction: row;
+				gap: 1rem;
+				align-items: center;
+			}
+			...
+			.title {
+				...
+				flex: 1;
+			}
+			...
+		</style>
+
+		...
+	</head>
+	<body>
+		...
+					{
+						posts.map((post) => (
+							<li>
+								<a href={...}>
+									<div class="img-container">
+										<img src={...} alt={post.data.title} />
+									</div>
+									...
+								</a>
+							</li>
+						))
+					}
+		...
+	</body>
+</html>
+```

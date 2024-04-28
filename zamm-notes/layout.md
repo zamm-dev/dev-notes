@@ -834,3 +834,526 @@ We find that almost all of our screenshot tests now fail due to the body backgro
 ```
 
 Unfortunately, it seems Webdriver does not do a diff unless the difference in color is drastic enough, as our tests on CI pass despite the change. We update the gold screenshots anyway.
+
+## Matrix-style background animation
+
+For fun, we try editing the examples [here](https://medium.com/@javascriptacademy.dev/matrix-raining-code-effect-using-javascript-3da1e4cdf3da), [here](https://github.com/sumitKcs/matrix-effect), [here](https://github.com/jcubic/cmatrix), and [here](https://gist.github.com/kunaltyagi/eb8db625141b6b9d295a), and adapt it to our Svelte code by editing `src-svelte\src\routes\BackgroundUI.svelte` as such:
+
+```svelte
+<script lang="ts">
+  import { onMount } from "svelte";
+
+  const CHAR_EM = 20;
+  const CHAR_GAP = 5;
+  const BLOCK_SIZE = CHAR_EM + CHAR_GAP;
+  const RESPAWN_THRESHOLD = 0.975;
+  const ANIMATE_INTERVAL_MS = 75;
+  const CHAR_INTERVAL_MS = 200;
+  const ANIMATES_PER_CHAR = Math.round(CHAR_INTERVAL_MS / ANIMATE_INTERVAL_MS);
+  const DDJ = [
+    "道可道非常道",
+    "名可名非常名",
+    "無名天地之始",
+    "有名萬物之母",
+    "故常無欲以觀其妙",
+    "常有欲以觀其徼",
+    "此兩者同出而異名",
+    "同謂之玄",
+    "玄之又玄",
+    "眾妙之門",
+  ];
+  export let animated = false;
+  let animationState: string;
+  let background: HTMLDivElement | null = null;
+  let canvas: HTMLCanvasElement | null = null;
+  let ctx: CanvasRenderingContext2D | null = null;
+  let animateInterval: NodeJS.Timeout | undefined = undefined;
+  let dropsPosition: number[] = [];
+  let dropsAnimateCounter: number[] = [];
+  let numColumns = 0;
+
+  function stopAnimating() {
+    clearInterval(animateInterval);
+    animateInterval = undefined;
+  }
+
+  function startAnimating() {
+    if (animateInterval) {
+      console.warn("Animation already running");
+      return;
+    }
+
+    animateInterval = setInterval(draw, ANIMATE_INTERVAL_MS);
+  }
+
+  function resizeCanvas() {
+    if (!canvas || !background) {
+      return;
+    }
+
+    stopAnimating();
+
+    canvas.width = background.clientWidth;
+    canvas.height = background.clientHeight;
+    numColumns = Math.ceil((canvas.width - CHAR_GAP) / BLOCK_SIZE);
+
+    ctx = canvas.getContext("2d");
+    if (!ctx) {
+      console.warn("Canvas context not available");
+      return;
+    }
+    ctx.fillStyle = "#FAF9F6";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    dropsPosition = Array(numColumns).fill(1);
+    dropsAnimateCounter = Array(numColumns).fill(0);
+
+    startAnimating();
+  }
+
+  function draw() {
+    if (!ctx || !canvas || numColumns === 0) {
+      console.warn("Canvas not ready for drawing");
+      return;
+    }
+
+    ctx.fillStyle = "#FAF9F633";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#D5CDB4C0";
+    ctx.font = CHAR_EM + "px sans-serif";
+    
+    for (var column = 0; column < dropsPosition.length; column++) {
+      const textLine = DDJ[column % DDJ.length];
+      const textCharacter = textLine[dropsPosition[column] % textLine.length];
+      ctx.fillText(textCharacter, CHAR_GAP + column * BLOCK_SIZE, dropsPosition[column] * BLOCK_SIZE);
+
+      if (dropsPosition[column] * BLOCK_SIZE > canvas.height && Math.random() > RESPAWN_THRESHOLD)
+        dropsPosition[column] = 0;
+
+      if (dropsAnimateCounter[column]++ % ANIMATES_PER_CHAR === 0) {
+        dropsPosition[column]++;
+      }
+    }
+  }
+
+  onMount(() => {
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+
+    return () => {
+      stopAnimating();
+      window.removeEventListener("resize", resizeCanvas);
+    };
+  });
+
+  $: animationState = animated ? "running" : "paused";
+</script>
+
+<div class="background" bind:this={background}>
+  <canvas bind:this={canvas}></canvas>
+</div>
+
+<style>
+  .background {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: -100;
+    overflow: hidden;
+  }
+</style>
+
+```
+
+using lines from the beginning of the [Dao De Jing](https://www.gutenberg.org/files/49965/49965-h/49965-h.htm).
+
+The animation is a bit blocky at low speeds, so we try to see if animating it more smoothly would help. However, a little while later:
+
+```ts
+  ...
+  const DROP_SPEED = 2;
+  const TRAIL_LENGTH = 5;
+  ...
+  let dropsCharIndex: number[] = [];
+  ...
+
+  function resizeCanvas() {
+    ...
+    dropsCharIndex = Array(numColumns).fill(0);
+    ...
+  }
+
+  function draw() {
+    ...
+    ctx.fillStyle = "#FAF9F6";
+    ...
+
+    for (var column = 0; column < dropsPosition.length; column++) {
+      const textLine = DDJ[...];
+      for (var i = dropsCharIndex[column]; dropsCharIndex[column] - i < TRAIL_LENGTH; i--) {
+        const textCharacter = textLine[i % textLine.length];
+        ctx.fillText(
+          textCharacter,
+          CHAR_GAP + column * BLOCK_SIZE,
+          dropsPosition[column] + (i * BLOCK_SIZE),
+        );
+      }
+
+      if (dropsPosition[column] > canvas.height && Math.random() > RESPAWN_THRESHOLD)
+        dropsPosition[column] = 0;
+
+      dropsPosition[column] += DROP_SPEED;
+
+      if (dropsAnimateCounter[column]++ % ANIMATES_PER_CHAR === 0) {
+        dropsCharIndex[column]++;
+      }
+    }
+  }
+```
+
+we realize that the sudden addition of the next character is going to look chunky no matter what anyways. We revert the changes and keep the original version.
+
+Note that the way this works is that the entire canvas gets painted over as a transparent layer every frame; this is what causes previously painted text to appear to fade out. The new text is then painted on the screen. We choose the transparency so that the text gradually fades in over multiple frames, and gradually fades back out again.
+
+Note that the beginning features a row of characters flowing down across the screen. We edit the respawn logic according to how it's done [here](https://codepen.io/riazxrazor/pen/Gjomdp), so that we don't have to keep regenerating a random number every time it goes past the canvas, and so that the text starts out random:
+
+```ts
+  ...
+  let numRows = 0;
+  ...
+
+  function resizeCanvas() {
+    ...
+    numRows = Math.ceil(canvas.height / BLOCK_SIZE);
+
+    ...
+
+    dropsPosition = Array(numColumns)
+      .fill(0)
+      .map(() => Math.ceil(Math.random() * -numRows));
+    ...
+  }
+
+  function draw() {
+    ...
+
+    for (var column = 0; column < dropsPosition.length; column++) {
+      ...
+
+      if (dropsPosition[column] > numRows) {
+        dropsPosition[column] = Math.ceil(Math.random() * -numRows);
+      }
+
+      ...
+    }
+  }
+```
+
+In order to test this out better in the browser, we add the background to full page layouts in `src-svelte/src/lib/__mocks__/MockFullPageLayout.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import BackgroundUi from "../../routes/BackgroundUI.svelte";
+</script>
+
+<div id="mock-full-page-layout" ...>
+  <div class="bg">
+    <BackgroundUi />
+  </div>
+  ...
+</div>
+
+<style>
+  .bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+  }
+
+  ...
+</style>
+```
+
+To make the effects more visible even when the info boxes take up most of the screen, we edit `src-svelte/src/lib/InfoBox.svelte` to feature more transparency:
+
+```css
+  .border-box {
+    ...
+    opacity: 0.85;
+  }
+```
+
+We try to see if we can edit this to have a blurred background, which would allow us to provide even more transparency while keeping the foreground layer readable:
+
+```svelte
+<section ...>
+  ...
+  <div class="border-container">
+    <div class="border-box" in:revealOutline|global={timing.borderBox}>
+      <div class="blur"></div>
+      <div class="cut-corners"></div>
+    </div>
+
+    ...
+  </div>
+</section>
+
+<style>
+  ...
+
+  .border-box {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    --cut: 5rem;
+  }
+
+  .blur {
+    --cut-depth: calc(15rem * cos(45deg));
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    clip-path: polygon(
+      0% var(--cut-depth),
+      var(--cut-depth) 0%,
+      100% 0%,
+      100% calc(100% - var(--cut-depth)),
+      calc(100% - var(--cut-depth)) 100%,
+      0% 100%
+    );
+    backdrop-filter: blur(4px);
+  }
+
+  .cut-corners {
+    ...
+    opacity: 0.7;
+  }
+
+  ...
+</style>
+```
+
+where the former styles for `.border-box` are changed to `.cut-corners`.
+
+While this CSS doesn't *quite* do what we want, once we set `cut-corners` to `display: none`, it does enough to demonstrate to us that while Firefox successfully applies the background blur to only the area defined by the clip-path, WebKit applies the blur to the entire rectangular area. We see from [this](https://stackblitz.com/edit/js-dljkdj?file=index.js) and [this](https://codepen.io/thebabydino/pen/zbjBqL) example (which apparently comes from [this post](https://css-tricks.com/blurred-borders-in-css/)) that the idea of applying the blur effect to a clipped area should be technically feasible. We [modify](https://codepen.io/amosjyng-the-reactor/pen/GRLePGq) the last example a little:
+
+```html
+<div class="background"></div>
+
+<div class="blur"></div>
+
+<div class="text">Blurred border box with the backdrop-filter + a single pseudo approach. Doesn't work in Firefox (no backdrop-filter support) or in Edge (no clip-path support). Needs the Experimental Web Platform features flag enabled in chrome://flags in order to work in Chrome.</div>
+```
+
+and
+
+```scss
+$url: url(https://images.unsplash.com/photo-1544070078-a212eda27b49?ixlib=rb-1.2.1&q=85&fm=jpg&crop=entropy&cs=srgb&ixid=eyJhcHBfaWQiOjE0NTg5fQ);
+$b: 1.5em; // border-width
+
+div {
+	position: absolute;
+	width: 600px;
+	height: 400px;
+	box-sizing: border-box;
+	margin: 50px;
+	--cut: 50px;
+}
+
+div.background {
+	margin: 0;
+	width: 700px;
+	height: 500px;
+	background: $url center/cover;
+}
+
+div.text {
+	color: #000;
+	padding: calc(var(--cut));
+	font: 600 1.5em/ 1.375 segoe script, comic sans ms, cursive;
+	text-shadow: 1px 1px #fff;
+}
+
+div.blur {	
+	&:before {
+		position: absolute;
+		/* zero all offsets */
+		top: 0; right: 0; bottom: 0; left: 0;
+		background: rgba(#FFF, .7);
+		/* doesn't work in Firefox */
+		backdrop-filter: blur(9px);
+		/* doesn't work in Edge */
+		--cut-depth: calc(2 * var(--cut) * cos(45deg));
+		--poly: polygon(
+      0% var(--cut-depth),
+      var(--cut-depth) 0%,
+      100% 0%,
+      100% calc(100% - var(--cut-depth)),
+      calc(100% - var(--cut-depth)) 100%,
+      0% 100%
+    );;
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: ''
+	}
+}
+```
+
+to see that it is in fact possible to separate the layers out to apply a clipped blur in both Firefox and Chrome. Now we can try to figure out what is causing the clipped blur to not work in ZAMM.
+
+We edit it a little further, to add in our round filter:
+
+```html
+<svg ...>
+  <defs>
+    <filter id="round">
+      ...
+    </filter>
+  </defs>
+  ...
+</svg>
+```
+
+and apply it and the drop shadow to the background layer
+
+```scss
+div.blur {
+  filter: url(#round) drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.4));
+
+  ...
+}
+```
+
+We find that [this](https://codepen.io/amosjyng-the-reactor/pen/OJGGVwZ) does not work in Firefox or Chrome. Applying the filter to the `::before` pseudo element doesn't work either. This may be because of the [backdrop root](https://stackoverflow.com/questions/63907743/parent-element-backdrop-filter-does-not-apply-for-its-child/63954144#63954144).
+
+We add another div for the border, and add it on top of the background blur:
+
+```html
+<div class="border"></div>
+```
+
+We then edit the styling, moving the filters out of the blur layer and into the border box layer:
+
+```scss
+div {
+	...
+	--cut: 50px;
+	--cut-depth: calc(...);
+		--poly: polygon(
+      ...
+    );;
+}
+
+...
+
+div.blur {
+	&:before {
+		--offset: 0px;
+		...
+		top: var(--offset); right: var(--offset); bottom: var(--offset); left: var(--offset);
+    ...
+  }
+}
+
+div.border {
+	filter: url(#round) drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.4));
+	opacity: 0.5;
+	
+	&:before {
+		position: absolute;
+		/* zero all offsets */
+		top: 0; right: 0; bottom: 0; left: 0;
+		background: #FFF;
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: '';
+	}
+}
+```
+
+The opacity needs to be applied to the border element itself and not its pseudo element, or else the round filter won't work. The blur filter originally has a non-zero offset due to initial worries over the sharp edges of the blur causing the rounded corners to be distorted, but it appears the spillover is visually negligible.
+
+Now that we have a proof-of-concept working in both Firefox and Chrome, we try to see if it's possible to fit this into ZAMM, which is rendered using an older version of WebKit. We try editing `src-svelte\src\lib\InfoBox.svelte` again:
+
+```svelte
+<section
+  ...
+>
+  ...
+  <div class="border-container">
+    <div class="border-box" ...>
+      <div class="blur"></div>
+      <div class="background"></div>
+    </div>
+    ...
+  </div>
+</section>
+
+<style>
+  ...
+
+  .border-box, .border-box div, .border-box div::before {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+  }
+
+  .border-box {
+    z-index: 1;
+    --cut-depth: calc(2 * var(--cut) * cos(45deg));
+		--poly: polygon(
+      0% var(--cut-depth),
+      var(--cut-depth) 0%,
+      100% 0%,
+      100% calc(100% - var(--cut-depth)),
+      calc(100% - var(--cut-depth)) 100%,
+      0% 100%
+    );
+  }
+
+  .border-box .blur::before {
+		backdrop-filter: blur(9px);		
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: "";
+  }
+
+  .border-box .background {
+    filter: url(#round) drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.4));
+	  opacity: 0.5;
+  }
+
+  .border-box .background::before {
+    background: #FFF;
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: '';
+  }
+
+  ...
+</style>
+```
+
+This works fine in Firefox, but on Chrome we see that for some reason, the blur is not clipped by the `clip-path`.
+
+While debugging this, we notice that the "Reusable > InfoBox > Mount Transition" story is no longer correctly animating the reveal of the text content. Rather than debug what change caused this, we edit `src-svelte/src/lib/InfoBoxView.svelte` to ensure that `atomic-reveal` is applied to the entire paragraph:
+
+```svelte
+<div ...>
+  <InfoBox ...>
+    <p class="atomic-reveal">
+      ...
+    </p>
+  </InfoBox>
+</div>
+```

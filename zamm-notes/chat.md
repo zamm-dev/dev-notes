@@ -7488,6 +7488,22 @@ Note that contrary to what [the documentation](https://marked.js.org/using_pro#r
 }
 ```
 
+Later on we add more languages, but we import HTML from `svelte-highlight/languages/xml` because it appears `svelte-highlight` does not export HTML as a language, even though HighlightJS itself supports it. We also lowercase the language string for consistency:
+
+```ts
+  ...
+  import html from "svelte-highlight/languages/xml";
+  import css from "svelte-highlight/languages/css";
+  ...
+
+  function getLanguageStr() {
+    if (lang) {
+      return lang...toLowerCase();
+    }
+    ...
+  }
+```
+
 Now we just have to edit `src-svelte/src/routes/chat/Message.svelte` to use this new component:
 
 ```svelte
@@ -9087,6 +9103,256 @@ and refactoring all our tests to use this new function. This appears to solve th
 ```
 
 Note that we name the argument `switchElement` instead of `switch` because "switch" is a reserved keyword, and naming it that results in arcane parsing errors such as "Argument expression expected" or "Cannot find name 'async'".
+
+## Fixing filled conversation reveal
+
+After we make it possible to populate the chat view with a pre-existing conversation via the API call restoration button, we find that if that's the first time the chat view is loaded, the InfoBox reveal does not happen properly. While debugging, we find that some Storybook stories are now also inadequate for our debugging. We edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` so that mocked page transition stories don't produce a scrollbar:
+
+```css
+  :global(.storybook-wrapper.full-height) {
+    margin: -1rem;
+  }
+```
+
+We export the conversations and move the `FullPage` story out of `src-svelte/src/routes/chat/Chat.stories.ts`:
+
+```ts
+export const shortConversation: ChatMessage[] = [
+  ...
+];
+
+export const conversation: ChatMessage[] = [
+  ...
+];
+```
+
+We create `src-svelte/src/routes/chat/Chat.reveal.stories.ts`:
+
+```ts
+import ChatComponent from "./Chat.svelte";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import MockPageTransitions from "$lib/__mocks__/MockPageTransitions.svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+import { conversation } from "./Chat.stories";
+
+export default {
+  component: ChatComponent,
+  title: "Screens/Chat/Conversation",
+  argTypes: {},
+  decorators: [
+    SvelteStoresDecorator,
+    TauriInvokeDecorator,
+    (story: StoryFn) => {
+      return {
+        Component: MockPageTransitions,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: ChatComponent,
+  props: args,
+});
+
+export const FullPage: StoryObj = Template.bind({}) as any;
+
+export const FullPageConversation: StoryObj = Template.bind({}) as any;
+FullPageConversation.parameters = {
+  stores: {
+    conversation,
+  },
+};
+
+```
+
+Somehow, the existing Storybook tests look wrong now. To help debug, we edit `src-svelte/src/lib/__mocks__/MockAppLayout.svelte` to include an ID:
+
+```svelte
+<div id="mock-app-layout" class="storybook-wrapper">
+  ...
+</div>
+```
+
+We do the same for `src-svelte/src/lib/__mocks__/MockFullPageLayout.svelte`:
+
+```svelte
+<div id="mock-full-page-layout" class="storybook-wrapper ...">
+  ...
+</div>
+```
+
+And we do the same for `src-svelte/src/routes/AnimationControl.svelte`:
+
+```svelte
+<div
+  id="animation-control"
+  ...
+>
+  ...
+</div>
+
+<style>
+  #animation-control {
+    ...
+  }
+
+  #animation-control.animations-disabled :global(*) {
+    ...
+  }
+</style>
+
+```
+
+This gives us failing tests:
+
+```
+ FAIL  src/routes/AnimationControl.test.ts > AnimationControl > will enable animations by default
+TypeError: Cannot read properties of null (reading 'classList')
+ ❯ src/routes/AnimationControl.test.ts:17:29
+     15| 
+     16|     const animationControl = document.querySelector(".container") as E…
+     17|     expect(animationControl.classList).not.toContainEqual(
+       |                             ^
+     18|       "animations-disabled",
+     19|     );
+```
+
+As such, we edit `src-svelte/src/routes/AnimationControl.test.ts` to have
+
+```ts
+  const animationControl = document.getElementById("animation-control") as Element;
+```
+
+instead in each test.
+
+Next, it turns out all exports from `src-svelte/src/routes/chat/Chat.stories.ts`, even the non-story exports, get listed as a story in Storybook. So, we create `src-svelte/src/routes/chat/Chat.mock-data.ts`:
+
+```ts
+import type { ChatMessage } from "$lib/bindings";
+
+export const shortConversation: ChatMessage[] = [
+  ...
+];
+
+export const conversation: ChatMessage[] = [
+  ...
+];
+
+```
+
+and import them in `src-svelte/src/routes/chat/Chat.stories.ts`:
+
+```ts
+import { conversation, shortConversation } from "./Chat.mock-data";
+```
+
+and ditto in `src-svelte/src/routes/chat/Chat.reveal.stories.ts`.
+
+Finally, it turns out that the global style we applied in `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` is interfering with other tests. So we edit that file:
+
+```svelte
+<div id="mock-transitions">
+  <MockFullPageLayout>
+    ...
+  </MockFullPageLayout>
+</div>
+
+<style>
+  #mock-transitions {
+    margin: -1rem;
+  }
+</style>
+
+```
+
+Now we can finally consistently reproduce the problem. We start solving it by first editing `src-svelte/src/lib/InfoBox.svelte` to make the problem less severe, for now and for if it ever crops up again in the future:
+
+```ts
+  function revealInfoBox(node: Element, timing: InfoBoxTiming) {
+    ...
+
+    const getChildKickoffFraction = (...) => {
+      ...
+      const delayFraction = Math.max(
+        0,
+        adjustedYProgress * theoreticalTotalKickoffFraction,
+      );
+      ...
+    };
+
+    ...
+  }
+```
+
+We edit `src-svelte/src/routes/chat/Chat.svelte`, following the advice [here](https://dev.to/mohamadharith/workaround-for-bubbling-custom-events-in-svelte-3khk) to use our own custom event dispatcher:
+
+```svelte
+<script lang="ts">
+  ...
+  let chatContainer: HTMLDivElement | undefined = undefined;
+  ...
+
+  async function onScrollableResized(e: ResizedEvent) {
+    ...
+    if (!chatContainer) {
+      console.warn("Chat container not initialized");
+      return;
+    }
+    chatContainer.dispatchEvent(
+      new CustomEvent("info-box-update", { bubbles: true }),
+    );
+  }
+
+  ...
+</script>
+
+<InfoBox title="Chat" fullHeight>
+  <div
+    class="chat-container ..."
+    bind:this={chatContainer}
+  >
+    ...
+  </div>
+</InfoBox>
+```
+
+Note that we can't reuse the existing `growable` variable in this component because it gets bound as a `Scrollable`, and therefore doesn't have the `dispatchEvent` function. If we try it, we get
+
+```
+TypeError: growable.dispatchEvent is not a function
+```
+
+Now edit `src-svelte/src/lib/InfoBox.svelte` again to now listen for and act on this event, refactoring the original MutationObserver callback function into a `recalculateReveals` function that can be reused for the new event:
+
+```ts
+  function revealInfoBox(node: Element, timing: InfoBoxTiming) {
+    ...
+    const recalculateReveals = () => {
+      revealAnimations = getNodeAnimations(node);
+      ...
+    };
+    const mutationObserver = new MutationObserver(recalculateReveals);
+    mutationObserver.observe(node, config);
+    node.addEventListener("info-box-update", recalculateReveals);
+
+    return {
+      ...,
+      tick: (tGlobalFraction: number) => {
+        ...
+
+        if (tGlobalFraction === 1) {
+          mutationObserver.disconnect();
+          node.removeEventListener("info-box-update", recalculateReveals);
+        }
+      },
+    };
+  }
+```
+
+We leave as a TODO moving this code to the `Scrollable` component, to fire whenever a resize happens.
 
 ## Persisting and resuming conversations
 
