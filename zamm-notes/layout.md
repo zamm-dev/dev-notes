@@ -1357,3 +1357,1378 @@ While debugging this, we notice that the "Reusable > InfoBox > Mount Transition"
   </InfoBox>
 </div>
 ```
+
+We realize that this applies to `src-svelte\src\routes\PageTransitionView.svelte` too, so we edit that as well, also moving the "Toggle route" button outside of the MockAppLayout because new changes to CSS means that otherwise, the button will be below the info box layer and unclickable:
+
+```svelte
+<button class="route-toggle" ...>Toggle route</button>
+
+<MockAppLayout>
+  ...
+      <InfoBox title="Simulation">
+        <p class="atomic-reveal">
+          ...
+        </p>
+      </InfoBox>
+```
+
+While debugging this, we find that removing the definition for `--corner-roundness` in `src-svelte\src\routes\styles.css` fixes the issue in the Tauri app, but not in the Storybook story in Chrome. Further debugging reveals that disabling the rule
+
+```css
+  #main-container {
+    border-radius: 1px;
+  }
+```
+
+in `src-svelte\src\routes\AppLayout.svelte` produces the same effect. It's unclear why border-radius would have such effects far downstream of the parent element.
+
+As for Chrome, even copying the rendered HTML into the codepen:
+
+```html
+
+<div class="background"></div>
+
+<section class="container s-BIEZu5ODCI1i"><svg width="0" height="0" xmlns="http://www.w3.org/2000/svg" version="1.1" style="visibility: hidden; position: absolute;"><defs><filter id="round"><feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"></feGaussianBlur><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9" result="goo"></feColorMatrix><feComposite in="SourceGraphic" in2="goo" operator="atop"></feComposite></filter></defs></svg><!--<RoundDef>--> <div class="border-container s-BIEZu5ODCI1i"><div class="border-box s-BIEZu5ODCI1i"><div class="blur s-BIEZu5ODCI1i"></div></div></div></section>
+```
+
+and editing the SCSS to be regular CSS:
+
+```css
+div.background, section {
+	--w: 800px;
+	--h: 800px;
+	position: absolute;
+	width: var(--w);
+	height: var(--h);
+	box-sizing: border-box;
+	margin: 50px;
+	--cut: 100px;
+	--cut-depth: calc(2 * var(--cut) * cos(45deg));
+		--poly: polygon(
+      0% var(--cut-depth),
+      var(--cut-depth) 0%,
+      100% 0%,
+      100% calc(100% - var(--cut-depth)),
+      calc(100% - var(--cut-depth)) 100%,
+      0% 100%
+    );;
+}
+
+div.blur {
+  width: 100%;
+    height: 100%;
+    position: absolute;
+}
+
+div.blur::before {
+		--offset: 0px;
+		position: absolute;
+		top: var(--offset); right: var(--offset); bottom: var(--offset); left: var(--offset);
+		backdrop-filter: blur(9px);
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: ''
+}
+
+div.background {
+	margin: 0;
+	width: calc(var(--w) + 100px);
+	height: calc(var(--h) + 100px);
+	background: url(https://images.unsplash.com/photo-1544070078-a212eda27b49?ixlib=rb-1.2.1&q=85&fm=jpg&crop=entropy&cs=srgb&ixid=eyJhcHBfaWQiOjE0NTg5fQ) center/cover;
+}
+
+```
+
+so that `src-svelte\src\lib\InfoBox.svelte` can contain exactly the same CSS:
+
+```css
+<script lang="ts">
+  import getComponentId from "./label-id";
+  import RoundDef from "./RoundDef.svelte";
+  import { cubicInOut, cubicOut, linear } from "svelte/easing";
+  import { animationSpeed, animationsOn } from "./preferences";
+  import { fade, type TransitionConfig } from "svelte/transition";
+  import { firstAppLoad, firstPageLoad } from "./firstPageLoad";
+  import { SubAnimation, PropertyAnimation } from "$lib/animation-timing";
+
+  export let title = "";
+  export let childNumber = 0;
+  export let preDelay = $firstAppLoad ? 0 : 100;
+  export let maxWidth: string | undefined = undefined;
+  export let fullHeight = false;
+</script>
+
+<div class="background"></div>
+
+<section class="container">
+  <RoundDef />
+
+  <div class="border-container">
+    <div class="border-box">
+      <div class="blur"></div>
+    </div>
+  </div>
+</section>
+
+<style>
+  div.background, section {
+	--w: 800px;
+	--h: 800px;
+	position: absolute;
+	width: var(--w);
+	height: var(--h);
+	box-sizing: border-box;
+	margin: 50px;
+	--cut: 100px;
+	--cut-depth: calc(2 * var(--cut) * cos(45deg));
+		--poly: polygon(
+      0% var(--cut-depth),
+      var(--cut-depth) 0%,
+      100% 0%,
+      100% calc(100% - var(--cut-depth)),
+      calc(100% - var(--cut-depth)) 100%,
+      0% 100%
+    );;
+}
+
+div.blur {
+  width: 100%;
+    height: 100%;
+    position: absolute;
+}
+
+div.blur::before {
+		--offset: 0px;
+		position: absolute;
+		top: var(--offset); right: var(--offset); bottom: var(--offset); left: var(--offset);
+		backdrop-filter: blur(9px);
+		-webkit-clip-path: var(--poly);
+						clip-path: var(--poly);
+		content: ''
+}
+
+div.background {
+	margin: 0;
+	width: calc(var(--w) + 100px);
+	height: calc(var(--h) + 100px);
+	background: url(https://images.unsplash.com/photo-1544070078-a212eda27b49?ixlib=rb-1.2.1&q=85&fm=jpg&crop=entropy&cs=srgb&ixid=eyJhcHBfaWQiOjE0NTg5fQ) center/cover;
+}
+</style>
+
+```
+
+doesn't make a difference. We edit the Storybook iframe to have a `<head>` that only contains the exact styles above, and edit the Storybook `<body>` to only contain the exact HTML above, but the problem persists. It goes away when we edit the entire document's head and body that way. It appears that *something* about being put into the Storybook iframe breaks things in Chrome, even if it renders fine outside of it.
+
+Further experimentation with the Tauri app reveals that this problem is only triggered when `border-radius` is combined with `overflow-y` or `overflow-x`. This particular combination does not appear to trigger any problems on the latest Chrome.
+
+We finally realize while trying to mitigate this problem that the rounded corners on the main element have been painted over by the background canvas. To keep the fix simple, we edit `src-svelte\src\routes\BackgroundUI.svelte`:
+
+```css
+  .background {
+    ...
+    border-radius: var(--main-corners);
+  }
+```
+
+Finally, we edit `src-svelte\src\routes\AppLayout.svelte` so that `border-radius` and `overflow` attributes are no longer on the same node, by moving the overflow attributes from `#main-container` (where they're actually accidentally duplicated) to `main`:
+
+```css
+  main {
+    ...
+    overflow-y: auto;
+    overflow-x: hidden;
+    ...
+  }
+```
+
+In the course of manually testing all the different pages, we now notice that there's an errant scroll bar for some reason on the LLM API calls page. Upon further debugging, it appears to be yet another  instance of `clientHeight` rounding causing our calculations to be off. (The first instance was in the ["Initial implementation > Frontend"](/zamm-notes/api-calls-display.md) section.) We edit `src-svelte/src/lib/Scrollable.svelte`:
+
+```ts
+  export function resizeScrollable() {
+    ...
+    requestAnimationFrame(() => {
+      if (!container || !scrollable) {
+        ...
+      }
+
+      const newHeight = Math.floor(container.getBoundingClientRect().height);
+      scrollableHeight = `${newHeight}px`;
+      ...
+    });
+  }
+```
+
+### Supporting the background animation setting
+
+We want to support having background animations turned off, but we also want to keep testing the background with Playwright screenshots. As such, we'll have to use a random seed for determinism, but it turns out that there's [no built-in support](https://stackoverflow.com/questions/521295/seeding-the-random-number-generator-in-javascript) for this. As such, we pick a [popular JS library](https://www.npmjs.com/package/pure-rand), and use the console to generate a random seed for its RNG. We use all the [available bits](https://stackoverflow.com/a/53842060) for the seed:
+
+```js
+Math.random() * Number.MAX_SAFE_INTEGER 
+```
+
+Then we edit `src-svelte/src/routes/BackgroundUI.svelte`:
+
+```ts
+  ...
+  import prand from "pure-rand";
+
+  const rng = prand.xoroshiro128plus(8650539321744612);
+  ...
+  const STATIC_INITIAL_DRAWS = 100;
+
+  ...
+
+  function nextColumnPosition() {
+    return prand.unsafeUniformIntDistribution(-numRows, 0, rng);
+  }
+
+  function resizeCanvas() {
+    ...
+
+    dropsPosition = Array(numColumns).fill(0).map(nextColumnPosition);
+    ...
+
+    if (animated) {
+      startAnimating();
+    } else {
+      for (let i = 0; i < STATIC_INITIAL_DRAWS; i++) {
+        draw();
+      }
+    }
+  }
+
+  function draw() {
+    ...
+      if (dropsPosition[...] > ...) {
+        dropsPosition[column] = nextColumnPosition();
+      }
+    ...
+  }
+
+  function updateAnimationState(nowAnimating: boolean) {
+    if (nowAnimating) {
+      startAnimating();
+    } else {
+      stopAnimating();
+    }
+  }
+
+  ...
+
+  $: updateAnimationState(animated);
+```
+
+And we edit `src-svelte/src/lib/__mocks__/MockFullPageLayout.svelte` to mock the new setting properly by importing `Background` instead of `BackgroundUi`:
+
+```svelte
+<script lang="ts">
+  ...
+  import Background from "../../routes/Background.svelte";
+</script>
+
+<div id="mock-full-page-layout" ...>
+  <div class="bg">
+    <Background />
+  </div>
+  ...
+</div>
+```
+
+Now we can temporarily try this out in other stories.
+
+When committing these changes, we get the error
+
+```
+[error] src-svelte/src/routes/BackgroundUI.svelte: Error: unknown node type: Script
+[error]     at Object.print (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:1452:11)
+[error]     at callPluginPrintFunction (/root/zamm/node_modules/prettier/index.js:8601:26)
+[error]     at mainPrintInternal (/root/zamm/node_modules/prettier/index.js:8550:22)
+```
+
+We see that we've already encountered this problem before [here](/zamm-notes/chat.md), so we follow the solution there and do
+
+```bash
+$ yarn install --frozen-lockfile
+```
+
+again. It appears a more permanent solution would be to set constraints on the various versions in `package.json` themselves.
+
+### Supporting animation speed setting
+
+We edit `src-svelte/src/routes/BackgroundUI.svelte` again, simplifying the `ANIMATES_PER_CHAR` logic in the meantime:
+
+```ts
+  ...
+  import { standardDuration } from "$lib/preferences";
+  ...
+
+  const ANIMATES_PER_CHAR = 2;
+  ...
+  $: animateIntervalMs = $standardDuration / 2;
+
+  ...
+
+  function startAnimating() {
+    ...
+
+    animateInterval = setInterval(draw, animateIntervalMs);
+  }
+
+  ...
+
+  function updateAnimationSpeed(_newSpeed: number) {
+    stopAnimating();
+    startAnimating();
+  }
+
+  ...
+
+  $: updateAnimationSpeed(animateIntervalMs);
+```
+
+### Adding support for disabling transparency
+
+Because the blur effect doesn't work on certain versions of WebKit on Linux (which makes the foreground text that much harder to read), and because the text shadows render incorrectly on a transparent background on other versions of WebKit on Linux, we add a setting to disable transparency.
+
+#### Frontend impermanent setting
+
+We start on the frontend by adding an impermanent setting to `src-svelte/src/lib/preferences.ts`:
+
+```ts
+export const transparencyOn = writable(false);
+```
+
+We expose that in `src-svelte/src/routes/settings/Settings.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import {
+    ...,
+    transparencyOn,
+    ...
+  } from "$lib/preferences";
+
+  ...
+</script>
+
+<InfoBox title="Settings">
+  ...
+
+  <div class="container">
+    <SubInfoBox subheading="Other visual effects">
+      <SettingsSwitch
+        label="Transparency"
+        bind:toggledOn={$transparencyOn}
+      />
+    </SubInfoBox>
+  </div>
+
+  ...
+</div>
+```
+
+We then make use of this in `src-svelte/src/lib/InfoBox.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import { ..., transparencyOn } from "./preferences";
+  ...
+</script>
+
+<section
+  ...
+>
+  ...
+
+  <div class="border-container">
+    <div class="border-box" class:transparent={$transparencyOn} ...>
+      ...
+    </div>
+    ...
+  </div>
+</section>
+
+<style>
+  ...
+
+  .border-box .blur {
+    display: none;
+  }
+
+  .border-box.transparent .blur {
+    display: block;
+  }
+
+  ...
+
+  .border-box .background {
+    filter: url(#round) drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.4));
+  }
+
+  .border-box.transparent .background {
+    filter: url(#round) drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.8));
+    opacity: 0.5;
+  }
+
+  ...
+</style>
+```
+
+This toggle helps us realize that the transparency effect affects the info box shadow as well, so we up the shadow opacity to 0.8 when transparency is on to compensate.
+
+We realize that it's possible to not generate null values for the Tauri API response by [marking](https://stackoverflow.com/a/53900684) the Serde fields as skipping serialization, so we do that refactor first by editing `src-tauri/src/commands/preferences/models.rs` as such to add the new tag in to every field:
+
+```rs
+#[derive(Debug, ...)]
+pub struct Preferences {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    animations_on: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background_animation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    animation_speed: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sound_on: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume: Option<f64>,
+}
+```
+
+`src-svelte/src/lib/bindings.ts` got updated automatically. As such, we then edit all the `get_preference` sample API calls, such as `src-tauri/api/sample-calls/get_preferences-animation-speed-override.yaml`, to match by not including undefined fields:
+
+```yaml
+request: ["get_preferences"]
+response:
+  message: >
+    {
+      "animation_speed": 0.9
+    }
+
+```
+
+This means that `src-tauri/api/sample-calls/get_preferences-no-file.yaml` now looks like this:
+
+```yaml
+request: ["get_preferences"]
+response:
+  message: >
+    {}
+sideEffects:
+  disk:
+    startStateDirectory: empty
+    endStateDirectory: empty
+
+```
+
+The AppLayout tests are now failing, so we edit `src-svelte/src/routes/AppLayout.svelte` to check instead that the values are [not nullish](https://stackoverflow.com/a/5515385) instead of merely exactly not null:
+
+```ts
+  onMount(async () => {
+    ...
+    if (prefs.sound_on != null) {
+      ...
+    }
+
+    if (prefs.volume != null) {
+      ...
+    }
+
+    if (prefs.animations_on != null) {
+      ...
+    }
+
+    if (prefs.background_animation == null) {
+      ...
+    } else {
+      ...
+    }
+
+    if (prefs.animation_speed != null) {
+      ...
+    }
+
+    ...
+  });
+```
+
+We go on to edit all of the `set_preference` API calls, such as `src-tauri/api/sample-calls/set_preferences-sound-on.yaml`, to not include `null`'s anymore:
+
+```yaml
+request:
+  - set_preferences
+  - >
+    {
+      "preferences": {
+        "sound_on": true
+      }
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: preferences/sound-off-extra-settings
+    endStateDirectory: preferences/sound-on-extra-settings
+
+```
+
+The Settings tests fail now, so we edit `src-svelte/src/routes/settings/Settings.svelte` to remove all the instances of `...NullPreferences,` that add in the `null`'s, and we edit `src-svelte/src/lib/preferences.ts` to remove the now-unneeded `NullPreferences`.
+
+Now we can cleanly add a new preference. We start by editing `src-tauri/src/commands/preferences/models.rs`:
+
+```rs
+#[derive(Debug, ...)]
+pub struct Preferences {
+    ...,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transparency_on: Option<bool>,
+    ...
+}
+```
+
+We create the sample preference file `src-tauri/api/sample-disk-writes/preferences/transparency-on/preferences.toml`:
+
+```toml
+transparency_on = true
+
+```
+
+and a similar one at `src-tauri/api/sample-disk-writes/preferences/transparency-off/preferences.toml` for the opposite condition.
+
+We also create `src-tauri/api/sample-calls/get_preferences-transparency-on.yaml`:
+
+```yaml
+request: ["get_preferences"]
+response:
+  message: >
+    {
+      "transparency_on": true
+    }
+sideEffects:
+  disk:
+    startStateDirectory: preferences/transparency-on
+    endStateDirectory: preferences/transparency-on
+
+```
+
+and `src-tauri/api/sample-calls/get_preferences-transparency-off.yaml`.
+
+We can now test for this in `src-tauri/src/commands/preferences/read.rs`:
+
+```rs
+    #[tokio::test]
+    async fn test_get_preferences_with_transparency_off() {
+        check_get_preferences_sample(
+            function_name!(),
+            "./api/sample-calls/get_preferences-transparency-off.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_get_preferences_with_transparency_on() {
+        check_get_preferences_sample(
+            function_name!(),
+            "./api/sample-calls/get_preferences-transparency-on.yaml",
+        )
+        .await;
+    }
+```
+
+We should test the preference writing as well, so we create `src-tauri/api/sample-calls/set_preferences-transparency-on.yaml`:
+
+```yaml
+request:
+  - set_preferences
+  - >
+    {
+      "preferences": {
+        "transparency_on": true
+      }
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: preferences/transparency-on
+
+```
+
+and the corresponding `src-tauri/api/sample-calls/set_preferences-transparency-off.yaml`. We then check these new sample calls with new tests in `src-tauri/src/commands/preferences/write.rs`:
+
+```rs
+    #[tokio::test]
+    async fn test_set_preferences_transparency_on() {
+        check_set_preferences_sample(
+            function_name!(),
+            "./api/sample-calls/set_preferences-transparency-on.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_set_preferences_transparency_off() {
+        check_set_preferences_sample(
+            function_name!(),
+            "./api/sample-calls/set_preferences-transparency-off.yaml",
+        )
+        .await;
+    }
+```
+
+As usual, `src-svelte/src/lib/bindings.ts` gets updated automatically. We now check that these same API calls are consumed correctly on the frontend, first with preference reading at `src-svelte/src/routes/AppLayout.svelte`:
+
+```ts
+  ...
+  import {
+    ...,
+    transparencyOn,
+    ...
+  } from "$lib/preferences";
+
+  ...
+
+  onMount(async () => {
+    ...
+
+    if (prefs.transparency_on != null) {
+      transparencyOn.set(prefs.transparency_on);
+    }
+
+    ...
+  });
+```
+
+We add a corresponding test to `src-svelte/src/routes/AppLayout.test.ts`:
+
+```ts
+...
+import {
+  ...,
+  transparencyOn,
+} from "$lib/preferences";
+...
+
+  test("will set transparency if transparency preference overridden", async () => {
+    expect(get(transparencyOn)).toBe(false);
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_preferences-transparency-on.yaml",
+    );
+
+    render(AppLayout, { currentRoute: "/" });
+    await waitFor(() => {
+      expect(get(transparencyOn)).toBe(true);
+    });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+  });
+```
+
+Then, we implement preference writing at `src-svelte/src/routes/settings/Settings.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+
+  const onTransparencyToggle = (newValue: boolean) => {
+    setPreferences({
+      transparency_on: newValue,
+    });
+  };
+
+  ...
+</script>
+
+<InfoBox title="Settings">
+  ...
+
+  <div class="container">
+    <SubInfoBox subheading="Other visual effects">
+      <SettingsSwitch label="Transparency" ... onToggle={onTransparencyToggle} />
+    </SubInfoBox>
+  </div>
+
+  ...
+</InfoBox>
+```
+
+We test this in `src-svelte/src/routes/settings/Settings.test.ts`, where we find that we have to reset the global stores after previous test cases run:
+
+```ts
+...
+import { ..., transparencyOn } from "$lib/preferences";
+...
+
+describe("Settings", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+
+    soundOn.set(true);
+    volume.set(1);
+    transparencyOn.set(false);
+  });
+
+  ...
+
+  test("can toggle transparency on and off while saving setting", async () => {
+    render(Settings, {});
+    expect(get(transparencyOn)).toBe(false);
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+
+    const otherVisualsRegion = screen.getByRole("region", { name: "Other visual effects" });
+    const transparencySwitch = getByLabelText(otherVisualsRegion, "Transparency");
+    playback.addCalls(playSwitchSoundCall);
+    playback.addSamples("../src-tauri/api/sample-calls/set_preferences-transparency-on.yaml");
+    await act(() => userEvent.click(transparencySwitch));
+    expect(get(transparencyOn)).toBe(true);
+    expect(tauriInvokeMock).toHaveReturnedTimes(2);
+    expect(playback.unmatchedCalls.length).toBe(0);
+
+    playback.addCalls(playSwitchSoundCall);
+    playback.addSamples("../src-tauri/api/sample-calls/set_preferences-transparency-off.yaml");
+    await act(() => userEvent.click(transparencySwitch));
+    expect(get(transparencyOn)).toBe(false);
+    expect(tauriInvokeMock).toHaveReturnedTimes(4);
+    expect(playback.unmatchedCalls.length).toBe(0);
+  });
+});
+
+```
+
+In the course of writing these tests, we ended up creating a typo when specifying the directories to read from. As such, we edit `src-tauri/src/test_helpers/api_testing.rs` to add clearer error messages to the unwrap:
+
+```rs
+fn copy_dir_all(...) -> io::Result<()> {
+    fs::create_dir_all(&dst).unwrap_or_else(|_| panic!("Error creating directory at {:?}", dst.as_ref()));
+    for entry in fs::read_dir(&src).unwrap_or_else(|_| panic!("Error reading from directory at {:?}", src.as_ref())) {
+      ...
+    }
+    ...
+}
+```
+
+#### Default transparency on Windows
+
+We want to enable transparency by default, but only on Windows. We find out that we can indeed [selectively apply macros](https://users.rust-lang.org/t/how-do-i-apply-macros-only-on-release/48757).
+
+At first we try `#[cfg_attr(target_os = "windows", serde(default = "Some(true)"))]`, but with that we get the error
+
+```
+error: failed to parse path: "Some(true)"
+  --> src\commands\preferences\models.rs:23:55
+   |
+23 |     #[cfg_attr(target_os = "windows", serde(default = "Some(true)"))]
+   |                                                       ^^^^^^^^^^^^
+```
+
+We see that the correct way to do it is actually [with a function call](https://stackoverflow.com/a/65973982). We finally get it compiling with
+
+```rs
+fn default_true() -> Option<bool> {
+    Some(true)
+}
+
+#[derive(...)]
+pub struct Preferences {
+    ...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(target_os = "windows", serde(default = "default_true"))]
+    transparency_on: Option<bool>,
+    ...
+}
+```
+
+but this also changes the output when writing the preferences file, which we don't want. As such, we edit only `src-tauri\src\commands\preferences\read.rs`. Note that we add a `#[allow(unused_mut)]` to avoid compilation warnings on Linux.
+
+```rs
+fn get_preferences_happy_path(
+    ...
+) -> ZammResult<Preferences> {
+    ...
+    #[allow(unused_mut)]
+    let mut found_preferences = if preferences_path.exists() {
+        ...
+        preferences
+    } else {
+        ...
+        Preferences::default()
+    };
+    #[cfg(target_os = "windows")]
+    if (found_preferences.transparency_on.is_none()) {
+        found_preferences.transparency_on = Some(true);
+    }
+    Ok(found_preferences)
+}
+```
+
+To do this, we have to make the `transparency_on` public in `src-tauri\src\commands\preferences\models.rs`. If we do that, we might as well make it public for the rest of the fields:
+
+```rs
+#[derive(...)]
+pub struct Preferences {
+    #[serde(...)]
+    pub animations_on: Option<bool>,
+    #[serde(...)]
+    pub background_animation: Option<bool>,
+    #[serde(...)]
+    pub animation_speed: Option<f64>,
+    #[serde(...)]
+    pub transparency_on: Option<bool>,
+    #[serde(...)]
+    pub sound_on: Option<bool>,
+    #[serde(...)]
+    pub volume: Option<f64>,
+}
+```
+
+Some tests are failing now, as expected, so we edit `src-tauri\src\commands\preferences\read.rs` further:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_get_preferences_without_file() {
+        ...
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn test_get_preferences_without_file() {
+        check_get_preferences_sample(
+            function_name!(),
+            "./api/sample-calls/get_preferences-no-file-windows.yaml",
+        )
+        .await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_get_preferences_with_sound_override() {
+        ...
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_get_preferences_with_volume_override() {
+        ...
+    }
+
+    ...
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_get_preferences_with_extra_settings() {
+        ...
+    }
+}
+```
+
+We create a new file at `src-tauri/api/sample-calls/get_preferences-no-file-windows.yaml`, just for the API call return on Windows:
+
+```rs
+request: ["get_preferences"]
+response:
+  message: >
+    {
+      "transparency_on": true
+    }
+sideEffects:
+  disk:
+    startStateDirectory: empty
+    endStateDirectory: empty
+
+```
+
+#### Removing transparency for default screenshot tests
+
+We move our changes from `MockFullPageLayout` to `src-svelte\src\lib\__mocks__\MockPageTransitions.svelte` instead:
+
+```svelte
+<script lang="ts">
+  ...
+  import { ..., transparencyOn, backgroundAnimation } from "$lib/preferences";
+  import Background from "../../routes/Background.svelte";
+
+  ...
+  transparencyOn.set(true);
+  backgroundAnimation.set(true);
+</script>
+
+<div id="mock-transitions">
+  <MockFullPageLayout>
+    <div class="bg">
+      <Background />
+    </div>
+
+  ...
+</div>
+
+<style>
+  ...
+
+  .bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+  }
+</style>
+```
+
+This way, only the "full-page" stories will have transparency and background effects applied to them, whereas all other screenshots should remain the same.
+
+#### Adding Chinese font for end-to-end tests
+
+We find that the end-to-end tests are rendering squares in the background. We realize that we should add a Chinese font. We pick Zhi Mang Xing for its stylism:
+
+```bash
+$  yarn add @fontsource/zhi-mang-xing
+```
+
+We import it in `src-svelte/src/routes/styles.css`:
+
+```css
+@import "@fontsource/zhi-mang-xing";
+```
+
+We edit `src-svelte/src/routes/BackgroundUI.svelte` to convert all the text to Simplified Chinese, which the font is for, and to update the font family and font size:
+
+```ts
+  const CHAR_EM = 26;
+  const CHAR_GAP = 2;
+  ...
+  const DDJ = [
+    "道可道非常道",
+    "名可名非常名",
+    "无名天地之始",
+    "有名万物之母",
+    "故常无欲以观其妙",
+    "常有欲以观其徼",
+    "此两者同出而异名",
+    "同谓之玄",
+    "玄之又玄",
+    "众妙之门",
+  ];
+
+  ...
+
+  function draw() {
+    ...
+    ctx.font = CHAR_EM + "px 'Zhi Mang Xing', sans-serif";
+    ...
+  }
+
+  ...
+```
+
+Unfortunately, sometimes the font does not load in time for the characters to be rendered for the Storybook screenshot.
+
+It turns out that fonts generally [don't load](https://stackoverflow.com/a/52763507) until they're needed. There are ways to put text [inside a div](https://stackoverflow.com/a/29248183) to trigger the load, or to [base-64 encode](https://stackoverflow.com/a/23794798) the font, or to [preload it](https://fontsource.org/docs/getting-started/preload) with FontSource, but that last one appears as if it might be complicated with Vite's bundling. First, we'll try
+
+```bash
+$ yarn add fontfaceobserver
+$ yarn add -D @types/fontfaceobserver
+```
+
+We then edit `src-svelte\src\routes\BackgroundUI.svelte`, noting that the animation speed update also triggers the animation even when it's turned off, so we add an extra guard there:
+
+```ts
+  ...
+  import FontFaceObserver from "fontfaceobserver";
+  
+  ...
+  const TEXT_FONT = CHAR_EM + "px 'Zhi Mang Xing', sans-serif";
+  ...
+
+  function ensureChineseFontLoaded(callback: () => void) {
+    var zhiMangXing = new FontFaceObserver('Zhi Mang Xing');
+    zhiMangXing.load("中文字").then(callback).catch(function (err) {
+      console.warn("Could not load Chinese font for background animation:", err);
+    });
+  }
+
+  function startAnimating() {
+    if (!animated) { // this is possible from the animation speed change trigger
+      console.warn("Animation not enabled");
+      return;
+    }
+
+    ensureChineseFontLoaded(function () {
+      if (animateInterval) {
+        console.warn("Animation already running");
+        return;
+      }
+
+      animateInterval = setInterval(draw, animateIntervalMs);
+    });
+  }
+
+  ...
+
+  function resizeCanvas() {
+    ...
+
+    if (animated) {
+      ...
+    } else {
+      ensureChineseFontLoaded(function () {
+        for (let i = 0; i < STATIC_INITIAL_DRAWS; i++) {
+          draw();
+        }
+      });
+    }
+  }
+
+  function draw() {
+    ...
+
+    ctx.font = TEXT_FONT;
+
+    ...
+  }
+```
+
+It is unclear if this is working completely, since the Playwright screenshots appear to render some characters not in that font. We try copying the font file to `src-svelte\static\public-fonts\zhi-mang-xing.ttf` and editing `src-svelte\src\routes\BackgroundUI.svelte` further:
+
+```ts
+  onMount(() => {
+    const fontFile = new FontFace(
+      "Zhi Mang Xing",
+      "url(/public-fonts/zhi-mang-xing.ttf)",
+    );
+    document.fonts.add(fontFile);
+
+    fontFile.load().then(
+      () => {
+        ...
+      },
+      (err) => {
+        console.error(err);
+      },
+    );
+
+    return () => {
+      ...
+    };
+  });
+```
+
+Unfortunately, this now causes tests in `src-svelte\src\routes\AppLayout.test.ts` to fail:
+
+```
+ FAIL  src/routes/AppLayout.test.ts > AppLayout > will set transparency if transparency preference overridden
+ReferenceError: FontFace is not defined
+ ❯ src/routes/BackgroundUI.svelte:154:11
+    152|
+    153|   onMount(() => {
+    154|     const fontFile = new FontFace(
+       |           ^
+    155|       "Zhi Mang Xing",
+    156|       "url(/public-fonts/zhi-mang-xing.ttf)",
+```
+
+We mock `FontFace`, using [this](https://stackoverflow.com/a/71545957) as a way to :
+
+```ts
+vi.stubGlobal("FontFace", function () {
+  return {
+    load: () => Promise.resolve(),
+  };
+});
+Object.defineProperty(document, "fonts", {
+  value: {
+    add: vi.fn(),
+    load: vi.fn(),
+  },
+});
+```
+
+Now we get the error
+
+```
+Could not load Chinese font for background animation: TypeError: b.context.document.fonts.load is not a function
+    at h (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\fontfaceobserver\fontfaceobserver.standalone.js:5:292)
+    at C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\fontfaceobserver\fontfaceobserver.standalone.js:5:376
+    ...
+```
+
+We remove the code we added previously to `src-svelte\src\routes\BackgroundUI.svelte` for this, as it appears the `fontFile.load()` fix works well. We also remove the dependencies `fontfaceobserver`, `@types/fontfaceobserver`, and `@fontsource/zhi-mang-xing` via `yarn remove`, and remove the import from `src-svelte\src\routes\styles.css`. Now vitest on Windows successfully runs that test file, but then exits ungracefully at the end with
+
+```
+error Command failed with exit code 3221225477.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+It appears that this is a [Windows-specific problem](https://stackoverflow.com/a/58959576) with NodeJS, but as it turns out, NodeJS on Linux exits too with a segfault with exit code 139. It appears that this has no effect on CI tests. Upgrading to Node v22 on Windows fixes this issue.
+
+#### Scrollbar fix on main content
+
+We discover that the scrollbar is now appearing in the middle of the screen, because we've changed the scroll to be on the `main` element instead, which is centered in the middle. To fix this, we edit `src-svelte\src\routes\AppLayout.svelte` again:
+
+```svelte
+<div id="app">
+  <AnimationControl>
+    ...
+
+    <div id="main-container">
+      ...
+
+      <div class="content-container">
+        <main>
+          ...
+        </main>
+      </div>
+    </div>
+  </AnimationControl>
+</div>
+
+<style>
+  ...
+
+  .content-container {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  main {
+    position: relative;
+    max-width: 70rem;
+    margin: 0 auto;
+  }
+</style>
+```
+
+We wrap `main` in another div that handles all the overflow, but it turns out the scrollbars are being drawn over by the background. As such, we set `position: relative;`, which appears to trigger the `z-index` such that the scrollbar gets drawn over the animated background once more.
+
+#### Storybook test
+
+We edit `src-svelte\src\lib\InfoBox.stories.ts` to add a new story demonstrating the InfoBox with transparency on:
+
+```ts
+...
+import MockPageTransitions from "./__mocks__/MockPageTransitions.svelte";
+
+...
+
+export const Transparent: StoryObj = Template.bind({}) as any;
+Transparent.args = {
+  title: "Simulation",
+  maxWidth: "50rem",
+};
+Transparent.parameters = {
+  preferences: {
+    animationsOn: false,
+    backgroundAnimation: false,
+    transparencyOn: true,
+  },
+};
+Transparent.decorators = [
+  SvelteStoresDecorator,
+  (story: StoryFn) => {
+    return {
+      Component: MockPageTransitions,
+      slot: story,
+    };
+  },
+];
+
+```
+
+We realize that `src-svelte\src\lib\__mocks__\MockPageTransitions.svelte` is overridding the `backgroundAnimation` setting on mount, so we remove that from that Svelte component.
+
+Finally, we edit `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+import {
+  ...,
+  firefox,
+  ...
+} from "@playwright/test";
+
+...
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "infobox"],
+    variants: [..., "transparent"],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+
+...
+
+describe.concurrent("Storybook visual tests", () => {
+  ...
+
+  beforeAll(async () => {
+    browser = await firefox.launch({ headless: false });
+    console.log(`Running tests with Firefox version ${browser.version()}`);
+
+  ...
+});
+```
+
+Unfortunately, it turns out that even though Firefox is clearly correctly rendering the blur in headed mode, the screenshot captured does not include the blur. However, it works with Chromium. As such, we'll have to add an extra option for the browser.
+
+First, we edit `src-svelte/src/lib/InfoBoxView.svelte` to have a container that includes the InfoBox shadow:
+
+```svelte
+<div class="screenshot-container" ...>
+  <InfoBox ...>
+    ...
+  </InfoBox>
+</div>
+
+<style>
+  .screenshot-container {
+    padding: 1rem;
+    margin: -1rem;
+  }
+</style>
+
+```
+
+We then edit `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+import {
+  ...
+  chromium,
+  webkit,
+  ...
+} from "@playwright/test";
+
+...
+
+interface VariantConfig {
+  ...
+  browser?: "webkit" | "chromium";
+  selector?: string;
+  ...
+}
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "infobox"],
+    variants: [
+      ...,
+      {
+        name: "transparent",
+        browser: "chromium",
+        selector: ".screenshot-container",
+      },
+    ],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+
+...
+
+describe.concurrent("Storybook visual tests", () => {
+  let webkitBrowser: Browser;
+  let webkitBrowserContext: BrowserContext;
+  let chromiumBrowser: Browser;
+  let chromiumBrowserContext: BrowserContext;
+
+  beforeAll(async () => {
+    webkitBrowser = await webkit.launch({ headless: true });
+    webkitBrowserContext = await webkitBrowser.newContext();
+    webkitBrowserContext.setDefaultTimeout(DEFAULT_TIMEOUT);
+
+    chromiumBrowser = await chromium.launch({ headless: true });
+    chromiumBrowserContext = await chromiumBrowser.newContext();
+    chromiumBrowserContext.setDefaultTimeout(DEFAULT_TIMEOUT);
+
+    console.log(`Running tests with Webkit v${webkitBrowser.version()} and ` + `Chromium v${chromiumBrowser.version()}`);
+
+    ...
+  });
+
+  afterAll(async () => {
+    await webkitBrowserContext.close();
+    await webkitBrowser.close();
+    await chromiumBrowserContext.close();
+    await chromiumBrowser.close();
+  });
+
+  beforeEach(async (context) => {
+    context.expect.extend(...);
+  });
+
+  const takeScreenshot = async (
+    frame: Frame,
+    page: Page,
+    resizeWindow: boolean,
+    selector?: string,
+    screenshotEntireBody?: boolean,
+  ) => {
+    let locatorStr;
+    if (selector) {
+      locatorStr = selector;
+    } else {
+      locatorStr = screenshotEntireBody
+        ? ...
+        : ...;
+      ...
+    }
+
+    ...
+  }
+
+  ...
+      test(
+        `${testName} should render the same`,
+        async ({ expect }) => {
+          const page = variantConfig.browser === "chromium" ? await chromiumBrowserContext.newPage() : await webkitBrowserContext.newPage();
+
+          ...
+
+          const screenshot = await takeScreenshot(
+            ...,
+            variantConfig.selector,
+            ...
+          );
+
+          ...
+
+          if (variantConfig.assertDynamic !== undefined) {
+            ...
+            const newScreenshot = await takeScreenshot(
+              ...,
+              variantConfig.selector,
+              ...,
+            );
+
+            ...
+          }
+
+          await page.close();
+        },
+        {
+          retry: 1,
+          ...
+        },
+      );
+  ...
+};
+```
+
+Note that we no longer set the `page` in `beforeEach` because we don't know the browser beforehand, which means we no longer need `StorybookTestContext`. We also manually do the `afterEach` action with `page.close` at the end of the test.
+
+Finally, we commit the new screenshot at `src-svelte\screenshots\baseline\reusable\infobox\transparent.png`.
