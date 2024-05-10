@@ -753,3 +753,174 @@ Dynamic.args = {
   currentRoute: "/",
 };
 ```
+
+### Animating based on type of route change
+
+After individual API call pages can now be viewed, we want to change the page transitions from the list page to the individual page. We edit `src-svelte/src/routes/PageTransition.svelte` to add in this new logic while also removing the unused code around transition timing, such as `getTransitionTiming` and `getTransitions`:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  export enum TransitionType {
+    // user is going leftward -- meaning both incoming and outgoing are moving right
+    Left,
+    // user is going rightward -- meaning both incoming and outgoing are moving left
+    Right,
+    // incoming goes left, outgoing goes right
+    Swap,
+  }
+
+  ...
+
+  export function getTransitionType(
+    oldRoute: string,
+    newRoute: string,
+  ): TransitionType {
+    if (oldRoute === "/" || newRoute === "/") {
+      return TransitionType.Swap;
+    }
+
+    if (newRoute.startsWith(oldRoute)) {
+      // e.g. we're drilling down from /path/ to /path/subpath/
+      return TransitionType.Right;
+    }
+
+    if (oldRoute.startsWith(newRoute)) {
+      // e.g. we're moving back up from /path/subpath/ to /path/
+      return TransitionType.Left;
+    }
+
+    return TransitionType.Swap;
+  }
+</script>
+
+<script lang="ts">
+  ...
+
+  let oldRoute = currentRoute;
+  ...
+  let transitions: Transitions = getTransitions(TransitionType.Swap);
+
+  function getTransitions(transitionType: TransitionType) {
+    const baseSlideTransition = {
+      duration: $standardDuration,
+      easing: cubicIn,
+      delay: 0,
+    };
+
+    switch (transitionType) {
+      case TransitionType.Right:
+        return {
+          out: {
+            ...baseSlideTransition,
+            x: "-100%",
+          },
+          in: {
+            ...baseSlideTransition,
+            x: "100%",
+          },
+        };
+      case TransitionType.Left:
+        return {
+          out: {
+            ...baseSlideTransition,
+            x: "100%",
+          },
+          in: {
+            ...baseSlideTransition,
+            x: "-100%",
+          },
+        };
+      case TransitionType.Swap:
+        return {
+          out: {
+            x: "-20%",
+            duration: $standardDuration,
+            easing: cubicIn,
+            delay: 0,
+          },
+          in: {
+            x: "-20%",
+            duration: $standardDuration,
+            easing: backOut,
+            delay: $standardDuration,
+          },
+        };
+    }
+  }
+
+  function updateFlyDirection(route: string) {
+    if (!ready) {
+      return;
+    }
+
+    const direction = getTransitionType(oldRoute, route);
+    transitions = getTransitions(direction);
+    oldRoute = route;
+  }
+
+  ...
+  $: updateFlyDirection(currentRoute);
+</script>
+```
+
+We test this in `src-svelte/src/routes/PageTransition.test.ts`, removing the previous tests for transition timing:
+
+```ts
+import { getTransitionType, TransitionType } from "./PageTransition.svelte";
+...
+
+describe("Screen during transition", () => {
+  it("should move towards the right if new route is subpath", () => {
+    expect(getTransitionType("/parent", "/parent/child")).toEqual(
+      TransitionType.Right,
+    );
+  });
+
+  it("should move towards the left if new route is super-path", () => {
+    expect(getTransitionType("/parent/child", "/parent")).toEqual(
+      TransitionType.Left,
+    );
+  });
+
+  it("should swap if both routes are different", () => {
+    expect(getTransitionType("/some-page", "/other-page")).toEqual(
+      TransitionType.Swap,
+    );
+  });
+
+  it("should swap for root path", () => {
+    expect(getTransitionType("/", "/some-page")).toEqual(TransitionType.Swap);
+
+    expect(getTransitionType("/some-page", "/")).toEqual(TransitionType.Swap);
+  });
+});
+
+```
+
+We edit `src-svelte/src/routes/PageTransitionView.svelte` to allow the changed route to be passed in:
+
+```ts
+  ...
+  export let routeBAddress = "/b/";
+
+  ...
+
+  $: currentRoute = routeA ? "/a/" : routeBAddress;
+```
+
+and edit `src-svelte/src/routes/PageTransition.stories.ts` to add a new story that makes use of this argument:
+
+```ts
+export const Subpath: StoryObj = Template.bind({}) as any;
+Subpath.args = {
+  routeBAddress: "/a/subpath",
+};
+Subpath.parameters = {
+  preferences: {
+    animationSpeed: 0.1,
+  },
+};
+
+```

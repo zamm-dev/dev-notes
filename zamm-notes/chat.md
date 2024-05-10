@@ -7909,6 +7909,193 @@ We notice that there is more whitespace than we'd like to see, because of the ma
   }
 ```
 
+### Getting the "Send" chat button to be at full height
+
+We realize that on Linux, the "Send" button isn't reaching the full height of the chat input. We [find out](https://stackoverflow.com/a/32466333) that this is because we're supposed to use `align-items` instead of `height` for that. We edit `src-svelte/src/routes/chat/Form.svelte` to change `align-items` from `center` to `stretch`:
+
+```css
+  form {
+    align-items: stretch;
+  }
+```
+
+We also remove `height: 100%;` from this `src-svelte/src/lib/controls/Button.svelte` selector:
+
+```css
+  .outer.right-end,
+  .inner.right-end {
+    ...
+  }
+```
+
+Unfortunately, upon closer inspection, it turns out that the input text is no longer vertically centered in `src-svelte/src/routes/chat/Form.svelte`. As such, we try to make the vertical margin "auto" instead:
+
+```css
+  textarea {
+    margin: auto 0.75rem;
+    ...
+  }
+```
+
+### Using an icon for the send symbol
+
+We'd like to try using an icon for the send symbol. However, we must first edit `src-svelte/src/lib/controls/Button.svelte` to take in a slot instead of a prop for the content. We remove the `text` prop:
+
+```svelte
+<script lang="ts">
+  ...
+</script>
+
+{#if unwrapped}
+  <button
+    ...
+  >
+    <slot />
+  </button>
+{:else}
+  <button
+    ...
+  >
+    <div class="cut-corners ..." ...>
+      <slot />
+    </div>
+  </button>
+{/if}
+
+```
+
+We edit files such as `src-svelte/src/routes/api-calls/[slug]/Actions.svelte` next:
+
+```svelte
+<InfoBox title="Actions" ...>
+  <div ...>
+    <Button ...>Restore conversation</Button>
+  </div>
+</InfoBox>
+```
+
+As it turns out, the button screenshot test is now failing because the Storybook story can't pass in any args. This is likely why the component was made with args in the first place. We create `src-svelte/src/lib/controls/ButtonView.svelte`:
+
+```svelte
+<script lang="ts">
+  import Button from "./Button.svelte";
+
+  export let text: string;
+</script>
+
+<Button>{text}</Button>
+
+```
+
+and edit `src-svelte/src/lib/controls/Button.stories.ts` to import from `ButtonView.svelte` instead of `Button.svelte`:
+
+```ts
+import Button from "./ButtonView.svelte";
+...
+```
+
+Now, we check the existing dimensions of the "Send" button. They're at 73.58 px wide by 35 px tall. We convert this into 4 rem by 2 rem, and edit `src-svelte/src/routes/chat/Form.svelte` accordingly:
+
+```svelte
+<script lang="ts">
+  ...
+  import IconSend from "~icons/gravity-ui/arrow-right";
+  ...
+</script>
+
+<form
+  ...
+>
+  ...
+  <Button ...><IconSend /></Button>
+</form>
+
+<style>
+  ...
+
+  form :global(button) {
+    width: 4rem;
+    min-height: 2rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+</style>
+```
+
+This now looks much more in line with the sleek retrofuturistic look of most of the rest of the UI. We add a new entry to `src-svelte/src/routes/credits/Credits.svelte`:
+
+```svelte
+              <Creditor
+                name="Gravity UI"
+                logo="gravity-ui.png"
+                url="https://gravity-ui.com/"
+              />
+```
+
+and download the logo to `src-svelte/static/logos/gravity-ui.png`. Unfortunately, this logo is completely square and doesn't fit in well with the existing credit images. As such, we edit `src-svelte/src/routes/credits/Creditor.svelte` to move the `border-radius: var(--corner-roundness);` from `img.person` to the generic `img`. This produces ever so slight changes in the screenshot for the credits page, but they are not really perceptible to the naked eye.
+
+We find that the test `src-svelte/src/routes/chat/Chat.test.ts` is failing now. We edit `src-svelte/src/lib/controls/Button.svelte` to add ARIA labeling:
+
+```svelte
+<script lang="ts">
+  ...
+  export let ariaLabel: string | undefined = undefined;
+  ...
+</script>
+
+{#if unwrapped}
+  <button
+    ...
+    aria-label={ariaLabel}
+    ...
+  >
+    ...
+  </button>
+{:else}
+  <button
+    ...
+    aria-label={ariaLabel}
+    ...
+  >
+    ...
+  </button>
+{/if}
+```
+
+We make use of this option in `src-svelte/src/routes/chat/Form.svelte`:
+
+```svelte
+<form ...>
+  ...
+  <Button ariaLabel="Send" ...><IconSend /></Button>
+</form>
+```
+
+and now the test passes. We also have to edit `src-svelte/src/routes/storybook.test.ts` to use a new way of clicking on the Send button:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "chat", "conversation"],
+    variants: [
+      ...,
+      {
+        name: "new-message-sent",
+        prefix: "extra-long-input",
+        additionalAction: async (frame: Frame) => {
+          await frame.click('button[aria-label="Send"]');
+          ...
+        },
+      },
+    ],
+    ...
+  },
+  ...
+];
+```
+
 ## Adding a type field for variant API calls
 
 In case we ever add incompatible LLM calls (for example, to non-chat models), we'll make use of Serde's [enum representations](https://serde.rs/enum-representations.html) in order to add a `type` field to our API calls. We first edit the models in `src-tauri/src/models/llm_calls.rs`:
