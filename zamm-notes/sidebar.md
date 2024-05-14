@@ -754,3 +754,132 @@ As done with the [switch](./switch.md), we use `transform` instead of `top` to m
   ...
 </style>
 ```
+
+## Spacer
+
+We decide to add a spacer between the top three and the bottom two (settings, credits) icons. We edit `src-svelte/src/routes/SidebarUI.svelte` as such, changing `indicatorPosition` to a number instead of a string and renaming `setIndicatorPosition` to `getIndicatorPosition`:
+
+```svelte
+<script lang="ts">
+  ...
+  let indicatorPosition: number;
+  ...
+
+  function getIndicatorPosition(newRoute: string) {
+    const routeIndex = routes.findIndex((r) => routeMatches(r.path, newRoute));
+    const routeName = routes[routeIndex].name.toLowerCase();
+    const routeElementId = `nav-${routeName}`;
+    const iconElement = document.getElementById(routeElementId);
+    if (!iconElement) {
+      // possible before element has mounted
+      return 0;
+    }
+    indicatorPosition = iconElement.offsetTop;
+    return indicatorPosition;
+  }
+
+  ...
+  $: indicatorPosition = getIndicatorPosition(currentRoute);
+</script>
+
+<header>
+  ...
+  <nav>
+    <div class="indicator" style="--top: {indicatorPosition}px;"></div>
+    {#each routes.slice(0, routes.length - 2) as route (route.path)}
+      <a
+        ...
+      >
+        ...
+      </a>
+    {/each}
+    <div class="spacer"></div>
+    {#each routes.slice(routes.length - 2, routes.length) as route (route.path)}
+      <a
+        ...
+      >
+        ...
+      </a>
+    {/each}
+  </nav>
+</header>
+
+<style>
+  header {
+    ...
+    padding: var(--icons-top-offset) 0 var(--icons-top-offset) var(--sidebar-left-padding);
+    ...
+  }
+
+  nav {
+    ...
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  nav .spacer {
+    flex: 1;
+  }
+
+  ...
+}
+```
+
+We realize that this doesn't truly work for window resizing, or if the initial path is something other than "/", so we edit `src-svelte/src/routes/SidebarUI.svelte`, removing the `--animation-duration` definition from the CSS:
+
+```svelte
+<script lang="ts">
+  ...
+  import { onMount } from "svelte";
+  ...
+
+  const REGULAR_TRANSITION_DURATION = "calc(2 * var(--standard-duration))";
+  ...
+  let transitionDuration = REGULAR_TRANSITION_DURATION;
+
+  ...
+
+  onMount(() => {
+    const updateIndicator = () => {
+      transitionDuration = "0";
+      indicatorPosition = getIndicatorPosition(currentRoute);
+      setTimeout(() => {
+        transitionDuration = REGULAR_TRANSITION_DURATION;
+      }, 10);
+    };
+    updateIndicator();
+    window.addEventListener("resize", updateIndicator);
+
+    return () => {
+      window.removeEventListener("resize", updateIndicator);
+    };
+  })
+
+  ...
+</script>
+
+<header style={`--animation-duration: ${transitionDuration};`}>
+  ...
+</header>
+
+<style>
+  header {
+    ...
+  }
+
+  ...
+</style>
+```
+
+### Credits page scrollbars
+
+We find out later from git bisect that commit `f640b06` introduced scrollbars to the credits page. It appeaers that there are perhaps pixel rounding issues with `offsetTop` for the indicator position, because either reducing `--top` by one pixel or removing the bottom inverse rounded corner shadow fixes the issue. Always subtracting one makes the icons look off-center, so instead we edit `src-svelte\src\routes\SidebarUI.svelte` to enforce the visual dimensions:
+
+```css
+header {
+    ...
+    overflow: hidden;
+    ...
+  }
+```

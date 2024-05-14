@@ -9541,6 +9541,41 @@ Now edit `src-svelte/src/lib/InfoBox.svelte` again to now listen for and act on 
 
 We leave as a TODO moving this code to the `Scrollable` component, to fire whenever a resize happens.
 
+## Recording continuation of API calls
+
+We want to record instances where one API call is a continuation of another because it is part of the same conversation chain. We create a new Diesel migration:
+
+```bash
+$ xclip -o
+diesel migration generate add_api_call_continuations
+Creating migrations/2024-05-13-135101_add_api_call_continuations/up.sql
+Creating migrations/2024-05-13-135101_add_api_call_continuations/down.sql
+```
+
+We define `src-tauri/migrations/2024-05-13-135101_add_api_call_continuations/up.sql` as:
+
+```sql
+CREATE TABLE llm_call_continuations (
+  previous_call_id VARCHAR NOT NULL,
+  next_call_id VARCHAR NOT NULL,
+  PRIMARY KEY (previous_call_id, next_call_id)
+)
+
+```
+
+and `src-tauri/migrations/2024-05-13-135101_add_api_call_continuations/down.sql` as:
+
+```sql
+DROP TABLE llm_call_continuations
+
+```
+
+Then we do
+
+```bash
+$ diesel migration run --database-url /root/.local/share/zamm/zamm.sqlite3
+```
+
 ## Persisting and resuming conversations
 
 We create a new migration to introduce the concept of *conversations* that LLM calls are related to:

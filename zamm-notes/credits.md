@@ -1339,4 +1339,3 @@ Upon looking at this further, we realize that we do want more spacing between th
     margin-bottom: 0.75rem;
   }
 ```
-

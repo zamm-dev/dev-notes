@@ -1237,6 +1237,134 @@ We see that the fault does indeed lie with Apple and not Tauri, and that the pro
 
 Although certainly [doable](https://jeannot.hashnode.dev/publishing-a-tauri-app-to-mac-app-store), there are [known](https://github.com/tauri-apps/tauri/issues/4415) [difficulties](https://github.com/tauri-apps/tauri/issues/3716) with [publishing](https://github.com/tauri-apps/tauri-docs/issues/691) Tauri apps to the Mac app store. Seeing as app store apps don't seem to be [allowed](https://developer.apple.com/forums/thread/681647) to execute [arbitrary](https://developer.apple.com/forums/thread/685544) terminal commands, which we'll eventually want, we will skip this part. After all, even VS Code is not available on the Mac app store, presumably for this reason.
 
+#### Handling canvas build error
+
+Despite our build script working for several releases, it now fails with the error
+
+```
+[4/4] Building fresh packages...
+error /Users/runner/work/zamm/zamm/node_modules/canvas: Command failed.
+info Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.
+Exit code: 1
+Command: node-pre-gyp install --fallback-to-build --update-binary
+Arguments: 
+Directory: /Users/runner/work/zamm/zamm/node_modules/canvas
+Output:
+node-pre-gyp info it worked if it ends with ok
+node-pre-gyp info using node-pre-gyp@1.0.11
+node-pre-gyp info using node@20.5.1 | darwin | arm64
+node-pre-gyp http GET https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v115-darwin-unknown-arm64.tar.gz
+node-pre-gyp ERR! install response status 404 Not Found on https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v115-darwin-unknown-arm64.tar.gz 
+node-pre-gyp WARN Pre-built binaries not installable for canvas@2.11.2 and node@20.5.1 (node-v115 ABI, unknown) (falling back to source compile with node-gyp) 
+node-pre-gyp WARN Hit error response status 404 Not Found on https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v115-darwin-unknown-arm64.tar.gz 
+gyp info it worked if it ends with ok
+gyp info using node-gyp@9.4.0
+gyp info using node@20.5.1 | darwin | arm64
+gyp info ok 
+...
+Traceback (most recent call last):
+  File "/Users/runner/hostedtoolcache/node/20.5.1/arm64/lib/node_modules/npm/node_modules/node-gyp/gyp/gyp_main.py", line 42, in <module>
+    import gyp  # noqa: E402
+    ^^^^^^^^^^
+  File "/Users/runner/hostedtoolcache/node/20.5.1/arm64/lib/node_modules/npm/node_modules/node-gyp/gyp/pylib/gyp/__init__.py", line 9, in <module>
+    import gyp.input
+  File "/Users/runner/hostedtoolcache/node/20.5.1/arm64/lib/node_modules/npm/node_modules/node-gyp/gyp/pylib/gyp/input.py", line 19, in <module>
+    from distutils.version import StrictVersion
+ModuleNotFoundError: No module named 'distutils'
+gyp ERR! configure error 
+gyp ERR! stack Error: `gyp` failed with exit code: 1
+gyp ERR! stack     at ChildProcess.onCpExit (/Users/runner/hostedtoolcache/node/20.5.1/arm64/lib/node_modules/npm/node_modules/node-gyp/lib/configure.js:325:16)
+gyp ERR! stack     at ChildProcess.emit (node:events:514:28)
+gyp ERR! stack     at ChildProcess._handle.onexit (node:internal/child_process:294:12)
+gyp ERR! System Darwin 23.4.0
+...
+```
+
+It seems that this might be because `distutils` has been [removed](https://stackoverflow.com/a/77638742) from the latest versions of Python, which was probably triggered by a Mac OS update. We try editing `.github\workflows\publish.yaml` as such:
+
+```yaml
+...
+
+jobs:
+  ...
+  mac:
+    ...
+    steps:
+      ...
+      - name: Setup Python setuptools for Node gyp
+        run: python3 -m pip install setuptools
+      ...
+  ...
+```
+
+This doesn't work:
+
+```
+error: externally-managed-environment
+× This environment is externally managed
+╰─> To install Python packages system-wide, try brew install
+    xyz, where xyz is the package you are trying to
+    install.
+    
+    If you wish to install a Python library that isn't in Homebrew,
+    use a virtual environment:
+    
+    python3 -m venv path/to/venv
+    source path/to/venv/bin/activate
+    python3 -m pip install xyz
+    ...
+```
+
+It appears homebrew is already installed on the Mac on CI, so we change it instead to
+
+```yaml
+      - name: Setup Python setuptools for Node gyp
+        run: brew install python-setuptools
+```
+
+Now we encounter the error
+
+```
+Package pangocairo was not found in the pkg-config search path.
+Perhaps you should add the directory containing `pangocairo.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'pangocairo' found
+gyp: Call to 'pkg-config pangocairo --libs' returned exit status 1 while in binding.gyp. while trying to load binding.gyp
+gyp ERR! configure error 
+gyp ERR! stack Error: `gyp` failed with exit code: 1
+gyp ERR! stack     at ChildProcess.onCpExit (/Users/runner/hostedtoolcache/node/20.5.1/arm64/lib/node_modules/npm/node_modules/node-gyp/lib/configure.js:325:16)
+gyp ERR! stack     at ChildProcess.emit (node:events:514:28)
+gyp ERR! stack     at ChildProcess._handle.onexit (node:internal/child_process:294:12)
+...
+```
+
+After looking at [this issue](https://github.com/Automattic/node-canvas/issues/599#issuecomment-377043217) and [this answer](https://stackoverflow.com/a/56250063), we finally settle on
+
+```yaml
+      - name: Prepare remaining dependencies
+        run: |
+          brew install python-setuptools cairo pango
+          pkg-config --atleast-version=1.12.2 cairo
+          export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:/usr/X11/lib/pkgconfig/"
+          npm install -g pnpm
+          rustup target add aarch64-apple-darwin
+      - name: Build frontend and backend
+        run: make svelte rust
+```
+
+where all steps after `export PKG_CONFIG_PATH` were originally part of `Build frontend and backend`.
+
+Next, we get the error
+
+```
+       Error failed to build x86_64-apple-darwin binary: Target x86_64-apple-darwin is not installed (installed targets: aarch64-apple-darwin). Please run `rustup target add x86_64-apple-darwin`.
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+Error: Command failed with exit code 1: yarn tauri build --target universal-apple-darwin
+```
+
+It appears that GitHub CI is running on different Macs now. So, we add `rustup target add x86_64-apple-darwin`.
+
 ### Building on Linux
 
 `tauri-apps/tauri-action@v0` must run on a more recent version of NodeJS that requires a more recent version of GLIBC provided by a more recent version of Ubuntu than our Docker image. Even though we can support older operating systems, we decide not to do so because Ubuntu 18.04 is no longer supported by Canonical anyways.
