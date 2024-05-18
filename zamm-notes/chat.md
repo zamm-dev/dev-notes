@@ -9546,8 +9546,7 @@ We leave as a TODO moving this code to the `Scrollable` component, to fire whene
 We want to record instances where one API call is a continuation of another because it is part of the same conversation chain. We create a new Diesel migration:
 
 ```bash
-$ xclip -o
-diesel migration generate add_api_call_continuations
+$ diesel migration generate add_api_call_continuations
 Creating migrations/2024-05-13-135101_add_api_call_continuations/up.sql
 Creating migrations/2024-05-13-135101_add_api_call_continuations/down.sql
 ```
@@ -9558,7 +9557,9 @@ We define `src-tauri/migrations/2024-05-13-135101_add_api_call_continuations/up.
 CREATE TABLE llm_call_continuations (
   previous_call_id VARCHAR NOT NULL,
   next_call_id VARCHAR NOT NULL,
-  PRIMARY KEY (previous_call_id, next_call_id)
+  PRIMARY KEY (previous_call_id, next_call_id),
+  FOREIGN KEY (previous_call_id) REFERENCES llm_calls (id) ON DELETE CASCADE,
+  FOREIGN KEY (next_call_id) REFERENCES llm_calls (id) ON DELETE CASCADE
 )
 
 ```
@@ -9574,6 +9575,1373 @@ Then we do
 
 ```bash
 $ diesel migration run --database-url /root/.local/share/zamm/zamm.sqlite3
+```
+
+`src-tauri/src/schema.rs` gets automatically updated for us with this new table:
+
+```rs
+diesel::table! {
+    llm_call_continuations (previous_call_id, next_call_id) {
+        previous_call_id -> Text,
+        next_call_id -> Text,
+    }
+}
+```
+
+We wish to edit `src-tauri/src/models/llm_calls.rs` to add these fields to the higher-level `LlmCall` struct:
+
+```rs
+#[derive(...)]
+pub struct LlmCall {
+    ...,
+    pub previous_call_id: Option<EntityId>,
+    pub next_call_id: Option<EntityId>,
+}
+```
+
+But this means that we must now do some joins to populate these new fields. We look at the documentation on aliasing tables in Diesel [here](https://docs.rs/diesel/latest/diesel/macro.alias.html), and try editing `src-tauri/src/commands/llms/get_api_call.rs`:
+
+```rs
+...
+use crate::models::llm_calls::{..., LlmCallJoinQueryRow};
+use crate::schema::{..., llm_call_continuations};
+...
+
+async fn get_api_call_helper(
+    ...
+) -> ZammResult<LlmCall> {
+    ...
+
+    let (previous_calls, next_calls) = diesel::alias!(
+        llm_call_continuations as previous_call,
+        llm_call_continuations as next_call
+    );
+
+    let result: LlmCallJoinQueryRow = llm_calls::table
+        .left_join(
+            previous_calls.on(
+                llm_calls::id.eq(
+                    previous_calls.field(llm_call_continuations::next_call_id),
+                ),
+            ),
+        )
+        .left_join(
+            next_calls.on(
+                llm_calls::id.eq(
+                    next_calls.field(llm_call_continuations::previous_call_id),
+                ),
+            ),
+        )
+        .select((
+            llm_calls::all_columns,
+            previous_calls.fields(llm_call_continuations::previous_call_id).nullable(),
+            next_calls.fields(llm_call_continuations::previous_call_id).nullable(),
+        ))
+        .filter(llm_calls::id.eq(parsed_uuid))
+        .first::<LlmCallJoinQueryRow>(conn)?;
+    Ok(result.into())
+}
+
+...
+```
+
+where `src-tauri/src/models/llm_calls.rs` in turn has been further edited as such:
+
+```rs
+pub type LlmCallJoinQueryRow = (LlmCallRow, Option<EntityId>, Option<EntityId>);
+
+impl From<LlmCallJoinQueryRow> for LlmCall {
+    fn from(joined_row: LlmCallJoinQueryRow) -> Self {
+        let (llmCallRow, previous_call_id, next_call_id) = joined_row;
+
+        let id = llmCallRow.id;
+        let timestamp = llmCallRow.timestamp;
+        ...
+        LlmCall {
+            ...
+            previous_call_id,
+            next_call_id,
+        }
+    }
+}
+
+```
+
+We then edit `src-tauri/src/commands/llms/chat.rs`:
+
+```rs
+...
+use crate::schema::{llm_calls, llm_call_continuations};
+...
+use diesel::prelude::*;
+
+async fn chat_helper(
+    ...,
+    prompt: ...,
+    previous_call_id: Option<Uuid>,
+    http_client: ...,
+) -> ZammResult<LlmCall> {
+    ...
+    let llm_call = LlmCall {
+        ...,
+        previous_call_id: previous_call_id.map(|id| EntityId { uuid: id }),
+        next_call_id: None,
+    };
+
+    if let Some(conn) = db.as_mut() {
+        diesel::insert_into(llm_calls::table)
+            ...;
+        
+        if let Some(previous_call_uuid) = llm_call.previous_call_id.as_ref() {
+            diesel::insert_into(llm_call_continuations::table)
+                .values((
+                    llm_call_continuations::dsl::previous_call_id.eq(previous_call_uuid),
+                    llm_call_continuations::dsl::next_call_id.eq(llm_call.id.clone()),
+                ))
+                .execute(conn)?;
+        }
+    } // todo: warn users if DB write unsuccessful
+
+    ...
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn chat(
+    ...
+    prompt: ...,
+    previous_call_id: Option<Uuid>,
+) -> ZammResult<LlmCall> {
+    ...
+    chat_helper(
+        ...,
+        previous_call_id,
+        ...,
+    )
+    .await
+}
+```
+
+"is not an iterator" errors come up if we fail to use the `dsl` and `prelude` imports, which can be seen in the comment thread [here](https://lemmy.technosorcery.net/post/8718).
+
+We realize that this is actually a one-to-many relationship, and so we need to change the `next_call_id` field to be `Vec<EntityId>` in `src-tauri/src/models/llm_calls.rs`. We decide to wrap these fields in a conversation metadata struct:
+
+```rs
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ConversationMetadata {
+    pub previous_call_id: Option<EntityId>,
+    pub next_call_ids: Vec<EntityId>,
+}
+
+#[derive(...)]
+pub struct LlmCall {
+    ...,
+    pub conversation: ConversationMetadata,
+}
+
+...
+
+pub type LlmCallLeftJoinResult = (LlmCallRow, Option<EntityId>);
+pub type LlmCallQueryResults = (LlmCallLeftJoinResult, Vec<EntityId>);
+
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        let ((llmCallRow, previous_call_id), next_call_ids) = query_results;
+        ...
+        let conversation_metadata = ConversationMetadata {
+            previous_call_id,
+            next_call_ids,
+        };
+        LlmCall {
+            ...,
+            conversation: conversation_metadata,
+        }
+    }
+}
+```
+
+Now, we can edit `src-tauri/src/commands/llms/get_api_call.rs` again, where we don't even need the table aliasing anymore:
+
+```rs
+...
+use crate::models::llm_calls::{..., LlmCallLeftJoinResult};
+...
+
+async fn get_api_call_helper(
+    ...
+) -> ZammResult<LlmCall> {
+    ...
+
+    let previous_call_result: LlmCallLeftJoinResult = llm_calls::table
+        .left_join(
+            llm_call_continuations::dsl::llm_call_continuations.on(
+                llm_calls::id.eq(
+                    llm_call_continuations::next_call_id,
+                ),
+            ),
+        )
+        .select((
+            llm_calls::all_columns,
+            llm_call_continuations::previous_call_id.nullable(),
+        ))
+        .filter(llm_calls::id.eq(&parsed_uuid))
+        .first::<LlmCallLeftJoinResult>(conn)?;
+    let next_calls_result = llm_call_continuations::table
+        .select(llm_call_continuations::next_call_id)
+        .filter(llm_call_continuations::previous_call_id.eq(parsed_uuid))
+        .load::<EntityId>(conn)?;
+    Ok((previous_call_result, next_calls_result).into())
+}
+```
+
+`src-tauri/src/commands/llms/chat.rs` is largely the same:
+
+```rs
+async fn chat_helper(
+    ...
+) -> ZammResult<LlmCall> {
+    ...
+    let conversation_metadata = ConversationMetadata {
+        previous_call_id: previous_call_id.map(|id| EntityId { uuid: id }),
+        next_call_ids: [].to_vec(),
+    };
+    ...
+    let llm_call = LlmCall {
+      ...,
+      conversation: conversation_metadata,
+    };
+
+    if let Some(conn) = db.as_mut() {
+        ...
+        
+        if let Some(previous_call_uuid) = llm_call.conversation.previous_call_id.as_ref() {
+            diesel::insert_into(llm_call_continuations::table)
+                ...;
+        }
+    } // todo: warn users if DB write unsuccessful
+
+    Ok(llm_call)
+}
+}
+```
+
+Next, we have to edit `src-tauri/src/test_helpers/database_contents.rs` and `src-tauri/src/commands/llms/get_api_calls.rs`. The latter will require a change to provide a list of condensed API call data, only containing information necessary for the table view. But doing so will require changes to that API. We commit the current changes, and do that refactor first in a different branch.
+
+Before doing that refactor, we realize that the `src-tauri/src/models/llm_calls.rs` file is already bloated, so we refactor out its components into a module folder with a `src-tauri\src\models\llm_calls\mod.rs` that looks like this:
+
+```rs
+mod chat_message;
+mod entity_id;
+mod llm_call;
+mod prompt;
+mod row;
+mod various;
+
+pub use chat_message::ChatMessage;
+pub use entity_id::EntityId;
+pub use llm_call::LlmCall;
+pub use prompt::{ChatPrompt, Prompt};
+#[allow(unused_imports)]
+pub use row::{LlmCallRow, NewLlmCallRow};
+pub use various::{Llm, Request, Response, TokenMetadata};
+```
+
+The `unused_imports` refers to `NewLlmCallRow`, which right now is only explicitly referenced in test code.
+
+We then create our lightweight LLM call at `src-tauri\src\models\llm_calls\lightweight_llm_call.rs`:
+
+```rs
+use crate::models::llm_calls::chat_message::ChatMessage;
+use crate::models::llm_calls::entity_id::EntityId;
+use crate::models::llm_calls::llm_call::LlmCall;
+use crate::models::llm_calls::row::LlmCallRow;
+use chrono::naive::NaiveDateTime;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct LightweightLlmCall {
+    pub id: EntityId,
+    pub timestamp: NaiveDateTime,
+    pub response_message: ChatMessage,
+}
+
+impl From<LlmCall> for LightweightLlmCall {
+    fn from(value: LlmCall) -> Self {
+        LightweightLlmCall {
+            id: value.id,
+            timestamp: value.timestamp,
+            response_message: value.response.completion,
+        }
+    }
+}
+
+impl From<LlmCallRow> for LightweightLlmCall {
+    fn from(value: LlmCallRow) -> Self {
+        LightweightLlmCall {
+            id: value.id,
+            timestamp: value.timestamp,
+            response_message: value.completion,
+        }
+    }
+}
+
+```
+
+and then expose this in `src-tauri\src\models\llm_calls\mod.rs`:
+
+```rs
+...
+mod lightweight_llm_call;
+...
+
+...
+pub use lightweight_llm_call::LightweightLlmCall;
+...
+```
+
+We can now make use of this in `src-tauri\src\commands\llms\get_api_calls.rs`:
+
+```rs
+...
+use crate::models::llm_calls::{LightweightLlmCall, LlmCallRow};
+...
+
+async fn get_api_calls_helper(
+    ...
+) -> ZammResult<Vec<LightweightLlmCall>> {
+    ...
+    let result: Vec<LlmCallRow> = llm_calls::table
+        ...;
+    let calls: Vec<LightweightLlmCall> =
+        result.into_iter().map(|row| row.into()).collect();
+    Ok(calls)
+}
+
+...
+```
+
+Everything else is similarly a straightforward find-and-replace of `LlmCall` to `LightweightLlmCall`, including the tests in that file.
+
+We edit `src-tauri\api\sample-database-writes\many-api-calls\generate.py`:
+
+```py
+def generate_api_call_json(i: int) -> str:
+    return """      {
+        "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a{0:02d}",
+        "timestamp": "2024-01-16T08:{0:02d}:50.738093890",
+        "response_message": {
+          "role": "AI",
+          "text": "Mocking number {0}."
+        }
+      }""".replace(
+        ...
+    )...
+```
+
+and run it, which generates `src-tauri/api/sample-calls/get_api_calls-full.yaml` and `src-tauri/api/sample-calls/get_api_calls-offset.yaml`. `src-tauri/api/sample-calls/get_api_calls-small.yaml` we manually edit ourselves:
+
+```yaml
+request:
+  - get_api_calls
+  - >
+    {
+      "offset": 0
+    }
+response:
+  message: >
+    [
+      {
+        "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+        "timestamp": "2024-01-16T09:50:19.738093890",
+        "response_message": {
+          "role": "AI",
+          "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+        }
+      },
+      {
+        "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+        "timestamp": "2024-01-16T08:50:19.738093890",
+        "response_message": {
+          "role": "AI",
+          "text": "Yes, it works. How can I assist you today?"
+        }
+      }
+    ]
+sideEffects:
+  database:
+    startStateDump: conversation-continued
+    endStateDump: conversation-continued
+
+```
+
+We then edit `src-tauri/src/commands/llms/chat.rs` in a similar fashion, replacing `LlmCall` with `LightweightLlmCall` in most places, except that we still construct the `LlmCall` in order to seamlessly convert it to a `NewLlmCallRow` and then into `LlmCall`.
+
+```rs
+...
+use crate::models::llm_calls::{
+    ..., LightweightLlmCall, ...
+};
+...
+
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    let llm_call = LlmCall {
+        ...
+    };
+    ...
+
+    Ok(llm_call.into())
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn chat(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+}
+```
+
+We manually edit `src-tauri/api/sample-calls/chat-start-conversation.yaml`:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+      "timestamp": "2024-01-16T08:50:19.738093890",
+      "response_message": {
+        "role": "AI",
+        "text": "Yes, it works. How can I assist you today?"
+      }
+    }
+...
+```
+
+and `src-tauri\api\sample-calls\chat-continue-conversation.yaml`:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+      "timestamp": "2024-01-16T09:50:19.738093890",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+      }
+    }
+...
+```
+
+Specta auto-updates `src-svelte/src/lib/bindings.ts`, which for some reason does not generate a clean diff this time. We then edit `src-svelte/src/routes/api-calls/ApiCalls.svelte` to use these new bindings:
+
+```svelte
+<script lang="ts">
+  import { ..., type LightweightLlmCall } from "$lib/bindings";
+  ...
+
+  let llmCalls: LightweightLlmCall[] = [];
+  ...
+</script>
+
+<InfoBox ...>
+  ...
+                  <div class="text">{call.response_message.text}</div>
+  ...
+</InfoBox>
+```
+
+and `src-svelte/src/routes/chat/Chat.svelte`:
+
+```ts
+  async function sendChatMessage(message: string) {
+    ...
+    try {
+      let llmCall = await chat(...);
+      appendMessage(llmCall.response_message);
+    } ...
+  }
+```
+
+and `src-svelte/src/routes/chat/Chat.test.ts`:
+
+```ts
+...
+import type { ..., LightweightLlmCall } from "$lib/bindings";
+...
+
+  async function sendChatMessage(
+    ...
+  ) {
+    ...
+    const lastResult: LightweightLlmCall =
+      ...;
+    const aiResponse = lastResult.response_message.text;
+    ...
+  }
+```
+
+We then rebase our previous changes onto this refactor, which is largely straightforward. The main change is that we also edit the test code in `src-tauri/src/commands/llms/chat.rs`:
+
+```rs
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[derive(...)]
+    struct ChatRequest {
+        ...
+        previous_call_id: Option<Uuid>,
+    }
+
+    ...
+
+    impl SampleCallTestCase<ChatRequest, ZammResult<LightweightLlmCall>> for ChatTestCase {
+        ...
+
+        async fn make_request(
+            ...
+        ) -> ZammResult<LightweightLlmCall> {
+            ...
+
+            chat_helper(
+                ...,
+                actual_args.previous_call_id,
+                ...
+            )
+            .await
+        }
+
+        ...
+    }
+
+    ...
+}
+```
+
+Then, in `src-tauri/src/test_helpers/database_contents.rs`, we try to read in the database:
+
+```rs
+pub async fn get_database_contents(
+    zamm_db: &ZammDatabase,
+) -> ZammResult<DatabaseContents> {
+    let db_mutex: &mut MutexGuard<'_, Option<SqliteConnection>> =
+        &mut zamm_db.0.lock().await;
+    let db = ...;
+    let api_keys = ...;
+    let llm_call_left_joins = llm_calls::table
+        .left_join(
+            llm_call_continuations::dsl::llm_call_continuations
+                .on(llm_calls::id.eq(llm_call_continuations::next_call_id)),
+        )
+        .select((
+            llm_calls::all_columns,
+            llm_call_continuations::previous_call_id.nullable(),
+        ))
+        .get_results::<LlmCallLeftJoinResult>(db)?;
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins.into_iter().map(|lf| {
+        let (llm_call_row, previous_call_id) = lf;
+        let next_calls_result = llm_call_continuations::table
+            .select(llm_call_continuations::next_call_id)
+            .filter(llm_call_continuations::previous_call_id.eq(previous_call_id))
+            .load::<EntityId>(db)?;
+        Ok(((llm_call_row, previous_call_id), next_calls_result).into())
+    }).collect();
+    Ok(DatabaseContents {
+        api_keys,
+        llm_calls: llm_calls_result?,
+    })
+}
+
+```
+
+Unfortunately this results in quite a few errors:
+
+```
+error[E0277]: the trait bound `std::option::Option<EntityId>: diesel::Expression` is not satisfied
+  --> src/test_helpers/database_contents.rs:50:62
+   |
+50 | ...ions::previous_call_id.eq(previous_call_id))
+   |                           ^^ the trait `diesel::Expression` is not implemented for `std::option::Option<EntityId>`
+   |
+   = help: the following other types implement trait `diesel::Expression`:
+             Box<T>
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star
+             schema::llm_calls::columns::completion
+             schema::llm_calls::columns::prompt
+             schema::llm_calls::columns::total_tokens
+             schema::llm_calls::columns::response_tokens
+           and 98 others
+   = note: required for `std::option::Option<EntityId>` to implement `AsExpression<diesel::sql_types::Text>`
+
+error[E0277]: the trait bound `std::option::Option<EntityId>: ValidGrouping<()>` is not satisfied
+  --> src/test_helpers/database_contents.rs:50:14
+   |
+50 |             .filter(llm_call_continuations::previous_call_id.eq...
+   |              ^^^^^^ the trait `ValidGrouping<()>` is not implemented for `std::option::Option<EntityId>`
+   |
+   = help: the following other types implement trait `ValidGrouping<GroupByClause>`:
+             <Box<T> as ValidGrouping<GB>>
+             <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on as ValidGrouping<()>>
+             <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on as ValidGrouping<__GB>>
+             <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version as ValidGrouping<()>>
+             <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version as ValidGrouping<__GB>>
+             <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star as ValidGrouping<__GB>>
+             <schema::llm_calls::columns::completion as ValidGrouping<()>>
+             <schema::llm_calls::columns::completion as ValidGrouping<__GB>>
+           and 117 others
+   = note: required for `Eq<previous_call_id, Option<EntityId>>` to implement `ValidGrouping<()>`
+   = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-15765192543693787375.txt'
+   = note: required for `Grouped<Eq<previous_call_id, ...>>` to implement `NonAggregate`
+   = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-1346938644422633050.txt'
+   = note: required for `SelectStatement<FromClause<table>, ...>` to implement `FilterDsl<expression::grouped::Grouped<expression::operators::Eq<llm_call_continuations::columns::previous_call_id, std::option::Option<EntityId>>>>`
+   = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-7654985430760998731.txt'
+
+error[E0277]: the trait bound `std::option::Option<EntityId>: diesel::Expression` is not satisfied
+  --> src/test_helpers/database_contents.rs:50:14
+   |
+50 |             .filter(llm_call_continuations::previous_call_id.eq...
+   |              ^^^^^^ the trait `diesel::Expression` is not implemented for `std::option::Option<EntityId>`
+   |
+   = help: the following other types implement trait `diesel::Expression`:
+             Box<T>
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version
+             diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star
+             schema::llm_calls::columns::completion
+             schema::llm_calls::columns::prompt
+             schema::llm_calls::columns::total_tokens
+             schema::llm_calls::columns::response_tokens
+           and 98 others
+   = note: required for `Eq<previous_call_id, Option<EntityId>>` to implement `diesel::Expression`
+   = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-15765192543693787375.txt'
+   = note: required for `SelectStatement<FromClause<table>, ...>` to implement `FilterDsl<expression::grouped::Grouped<expression::operators::Eq<llm_call_continuations::columns::previous_call_id, std::option::Option<EntityId>>>>`
+   = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-7654985430760998731.txt'
+
+error[E0277]: the trait bound `std::option::Option<EntityId>: AppearsOnTable<llm_call_continuations::table>` is not satisfied
+    --> src/test_helpers/database_contents.rs:51:31
+     |
+51   |             .load::<EntityId>(db)?;
+     |              ----             ^^ the trait `AppearsOnTable<llm_call_continuations::table>` is not implemented for `std::option::Option<EntityId>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = help: the following other types implement trait `AppearsOnTable<QS>`:
+               <Box<T> as AppearsOnTable<QS>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on as AppearsOnTable<QS>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version as AppearsOnTable<QS>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star as AppearsOnTable<diesel_migrations::migration_harness::__diesel_schema_migrations::table>>
+               <schema::llm_calls::columns::completion as AppearsOnTable<QS>>
+               <schema::llm_calls::columns::prompt as AppearsOnTable<QS>>
+               <schema::llm_calls::columns::total_tokens as AppearsOnTable<QS>>
+               <schema::llm_calls::columns::response_tokens as AppearsOnTable<QS>>
+             and 98 others
+     = note: required for `Eq<previous_call_id, Option<EntityId>>` to implement `AppearsOnTable<llm_call_continuations::table>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-15765192543693787375.txt'
+     = note: 1 redundant requirement hidden
+     = note: required for `Grouped<Eq<previous_call_id, ...>>` to implement `AppearsOnTable<llm_call_continuations::table>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-1346938644422633050.txt'
+     = note: required for `WhereClause<Grouped<Eq<..., ...>>>` to implement `diesel::query_builder::where_clause::ValidWhereClause<FromClause<llm_call_continuations::table>>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6945533729776045286.txt'
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `Query`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `LoadQuery<'_, _, EntityId>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+note: required by a bound in `diesel::RunQueryDsl::load`
+    --> /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/query_dsl/mod.rs:1543:15
+     |
+1541 |     fn load<'query, U>(self, conn: &mut Conn) -> QueryResult<...
+     |        ---- required by a bound in this associated function
+1542 |     where
+1543 |         Self: LoadQuery<'query, Conn, U>,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RunQueryDsl::load`
+
+error[E0277]: the trait bound `std::option::Option<EntityId>: QueryId` is not satisfied
+    --> src/test_helpers/database_contents.rs:51:31
+     |
+51   |             .load::<EntityId>(db)?;
+     |              ----             ^^ the trait `QueryId` is not implemented for `std::option::Option<EntityId>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = help: the following other types implement trait `QueryId`:
+               Box<T>
+               diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on
+               diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version
+               diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star
+               diesel_migrations::migration_harness::__diesel_schema_migrations::table
+               DeleteStatement<T, U, Ret>
+               FromClause<F>
+               diesel::query_builder::insert_statement::insert_with_default_for_sqlite::SqliteBatchInsertWrapper<V, T, QId, STATIC_QUERY_ID>
+             and 193 others
+     = note: required for `Eq<previous_call_id, Option<EntityId>>` to implement `QueryId`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-15765192543693787375.txt'
+     = note: 3 redundant requirements hidden
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `QueryId`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `LoadQuery<'_, _, EntityId>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+note: required by a bound in `diesel::RunQueryDsl::load`
+    --> /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/query_dsl/mod.rs:1543:15
+     |
+1541 |     fn load<'query, U>(self, conn: &mut Conn) -> QueryResult<...
+     |        ---- required by a bound in this associated function
+1542 |     where
+1543 |         Self: LoadQuery<'query, Conn, U>,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RunQueryDsl::load`
+
+error[E0277]: the trait bound `EntityId: QueryFragment<Sqlite>` is not satisfied
+    --> src/test_helpers/database_contents.rs:51:31
+     |
+51   |             .load::<EntityId>(db)?;
+     |              ----             ^^ the trait `QueryFragment<Sqlite>` is not implemented for `EntityId`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = help: the following other types implement trait `QueryFragment<DB, SP>`:
+               <Box<T> as QueryFragment<DB>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::run_on as QueryFragment<DB>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::version as QueryFragment<DB>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::columns::star as QueryFragment<DB>>
+               <diesel_migrations::migration_harness::__diesel_schema_migrations::table as QueryFragment<DB>>
+               <DeleteStatement<T, U, Ret> as QueryFragment<DB>>
+               <FromClause<F> as QueryFragment<DB>>
+               <diesel::query_builder::insert_statement::insert_with_default_for_sqlite::SqliteBatchInsertWrapper<Vec<diesel::query_builder::insert_statement::ValuesClause<V, Tab>>, Tab, QId, STATIC_QUERY_ID> as QueryFragment<Sqlite>>
+             and 232 others
+     = note: required for `std::option::Option<EntityId>` to implement `QueryFragment<Sqlite>`
+     = note: 8 redundant requirements hidden
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `QueryFragment<Sqlite>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `LoadQuery<'_, _, EntityId>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+note: required by a bound in `diesel::RunQueryDsl::load`
+    --> /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/query_dsl/mod.rs:1543:15
+     |
+1541 |     fn load<'query, U>(self, conn: &mut Conn) -> QueryResult<...
+     |        ---- required by a bound in this associated function
+1542 |     where
+1543 |         Self: LoadQuery<'query, Conn, U>,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RunQueryDsl::load`
+
+error[E0271]: type mismatch resolving `<Sqlite as SqlDialect>::SelectStatementSyntax == NotSpecialized`
+    --> src/test_helpers/database_contents.rs:51:31
+     |
+51   |             .load::<EntityId>(db)?;
+     |              ----             ^^ expected `NotSpecialized`, found `AnsiSqlSelectStatement`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `QueryFragment<Sqlite>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+     = note: required for `SelectStatement<FromClause<...>, ..., ..., ...>` to implement `LoadQuery<'_, _, EntityId>`
+     = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3040bd9d14ab4a72.long-type-6635517348700182216.txt'
+note: required by a bound in `diesel::RunQueryDsl::load`
+    --> /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/query_dsl/mod.rs:1543:15
+     |
+1541 |     fn load<'query, U>(self, conn: &mut Conn) -> QueryResult<...
+     |        ---- required by a bound in this associated function
+1542 |     where
+1543 |         Self: LoadQuery<'query, Conn, U>,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RunQueryDsl::load`
+```
+
+It turns out that all those errors was just to say that we shouldn't do a SQL query on an `Option`. Instead, we change the code to:
+
+```rs
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins.into_iter().map(|lf| {
+        let (llm_call_row, previous_call_id) = lf;
+        let next_calls_result = match previous_call_id.as_ref() {
+            Some(previous_id) =>
+                llm_call_continuations::table
+                .select(llm_call_continuations::next_call_id)
+                .filter(llm_call_continuations::previous_call_id.eq(previous_id))
+                .load::<EntityId>(db)?,
+            None => Vec::new(),
+        };
+        Ok(((llm_call_row, previous_call_id), next_calls_result).into())
+    }).collect();
+```
+
+We do the same variable rename in `src-tauri/src/models/llm_calls/llm_call.rs` as well, from `llmCallRow` to `llm_call_row`, so that that file now has this function:
+
+```rs
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        let ((llm_call_row, previous_call_id), next_call_ids) = query_results;
+        ...
+    }
+}
+```
+
+We need to write this to the database too, so we create `src-tauri/src/models/llm_calls/linkage.rs`:
+
+```rs
+use crate::models::llm_calls::entity_id::EntityId;
+use crate::schema::llm_call_continuations;
+use diesel::prelude::*;
+
+#[derive(Insertable)]
+#[diesel(table_name = llm_call_continuations)]
+pub struct NewLlmCallContinuation<'a> {
+    pub previous_call_id: &'a EntityId,
+    pub next_call_id: &'a EntityId,
+}
+
+```
+
+We expose that in `src-tauri/src/models/llm_calls/mod.rs`, using `#[cfg(test)]` to prevent it from being removed as part of linting:
+
+```rs
+...
+mod linkage;
+...
+
+#[cfg(test)]
+pub use linkage::NewLlmCallContinuation;
+...
+```
+
+and make use of this in `src-tauri/src/models/llm_calls/llm_call.rs`:
+
+```rs
+...
+use crate::models::llm_calls::linkage::NewLlmCallContinuation;
+...
+
+impl LlmCall {
+    ...
+
+    pub fn as_continuation(&self) -> Option<NewLlmCallContinuation> {
+        self.conversation.previous_call_id.as_ref().map(|id| NewLlmCallContinuation {
+            previous_call_id: id,
+            next_call_id: &self.id,
+        })
+    }
+}
+```
+
+Finally, we can modify `src-tauri/src/test_helpers/database_contents.rs`:
+
+```rs
+...
+use crate::models::llm_calls::{
+    ..., NewLlmCallContinuation,
+};
+...
+use crate::schema::{..., llm_call_continuations, ...};
+...
+
+impl DatabaseContents {
+    ...
+
+    pub fn insertable_call_continuations(&self) -> Vec<NewLlmCallContinuation> {
+        self.llm_calls.iter().filter_map(|k| k.as_continuation()).collect()
+    }
+}
+
+...
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+    db.transaction::<(), diesel::result::Error, _>(|conn| {
+        ...
+        diesel::insert_into(llm_call_continuations::table)
+            .values(&db_contents.insertable_call_continuations())
+            .execute(conn)?;
+        Ok(())
+    })?;
+    ...
+}
+```
+
+Tests are failing because serialization/deserialization is failing. We edit `src-tauri/src/models/llm_calls/various.rs` to make the conversation metadata fields optional:
+
+```rs
+#[derive(...)]
+pub struct ConversationMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_call_id: Option<EntityId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_call_ids: Vec<EntityId>,
+}
+```
+
+We then edit `src-tauri/src/models/llm_calls/llm_call.rs` to make the conversation metadata itself optional:
+
+```rs
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct LlmCall {
+    ...,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationMetadata>,
+}
+
+impl LlmCall {
+    ...
+
+    pub fn as_continuation(&self) -> Option<NewLlmCallContinuation> {
+        self.conversation.as_ref().and_then(|c| {
+            c.previous_call_id
+                .as_ref()
+                .map(|id| NewLlmCallContinuation {
+                    previous_call_id: id,
+                    next_call_id: &self.id,
+                })
+        })
+    }
+}
+
+...
+
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        ...
+        let conversation_metadata =
+            if previous_call_id.is_some() || !next_call_ids.is_empty() {
+                Some(ConversationMetadata {
+                    previous_call_id,
+                    next_call_ids,
+                })
+            } else {
+                None
+            };
+        ...
+    }
+}
+```
+
+Next, we edit `src-tauri/src/commands/llms/chat.rs`:
+
+```rs
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    let conversation_metadata = previous_call_id.map(|id| ConversationMetadata {
+        previous_call_id: Some(EntityId { uuid: id }),
+        next_call_ids: [].to_vec(),
+    });
+    ...
+    if let Some(conn) = db.as_mut() {
+        ...
+        if let Some(previous_call_uuid) = llm_call
+            .conversation
+            .as_ref()
+            .and_then(|c| c.previous_call_id.as_ref())
+        {
+            ...
+        }
+    }
+    ...
+}
+```
+
+The tests pass for now because we aren't triggering any of the new functionality yet. However, we can't quite commit yet because of the warning
+
+```
+warning: method `as_continuation` is never used
+  --> src/models/llm_calls/llm_call.rs:39:12
+   |
+22 | impl LlmCall {
+   | ------------ method in this implementation
+...
+39 |     pub fn as_continuation(&self) -> Option<NewLlmCallContinuation> {
+   |            ^^^^^^^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(dead_code)]`
+```
+
+We edit `src-tauri/src/commands/llms/chat.rs` to reuse the functionality instead of inserting the row directly:
+
+```rs
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    if let Some(conn) = db.as_mut() {
+        ...
+
+        if llm_call.conversation.as_ref().and_then(|c| c.previous_call_id.as_ref()).is_some()
+        {
+            diesel::insert_into(llm_call_continuations::table)
+                .values(llm_call.as_continuation())
+                .execute(conn)?;
+        }
+    } // todo: warn users if DB write unsuccessful
+
+    ...
+}
+```
+
+Finally, we have the warning
+
+```
+warning: this function has too many arguments (8/7)
+  --> src/commands/llms/chat.rs:20:1
+   |
+20 | / async fn chat_helper(
+21 | |     zamm_api_keys: &ZammApiKeys,
+22 | |     zamm_db: &ZammDatabase,
+23 | |     provider: Service,
+...  |
+28 | |     http_client: reqwest_middleware::ClientWithMiddleware,
+29 | | ) -> ZammResult<LightweightLlmCall> {
+   | |___________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+   = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+warning: `zamm` (bin "zamm") generated 2 warnings
+warning: `zamm` (bin "zamm" test) generated 1 warning (1 duplicate)
+```
+
+As such, we edit `src-tauri/src/commands/llms/chat.rs` to put all arguments into a single struct:
+
+```rs
+...
+use serde::{Deserialize, Serialize};
+...
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct ChatArgs {
+    provider: Service,
+    llm: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    prompt: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_call_id: Option<Uuid>,
+}
+
+async fn chat_helper(
+    zamm_api_keys: &ZammApiKeys,
+    zamm_db: &ZammDatabase,
+    args: ChatArgs,
+    http_client: reqwest_middleware::ClientWithMiddleware,
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    let config = match args.provider {
+        ...
+    };
+    ...
+    let messages: Vec<ChatCompletionRequestMessage> =
+        args.prompt.clone()...;
+    ...
+    let conversation_metadata = args.previous_call_id.map(...);
+    ...
+    let llm_call = LlmCall {
+        ...
+        request: Request {
+            ...,
+            prompt: Prompt::Chat(ChatPrompt {
+                messages: args.prompt,
+            }),
+        },
+        ...
+    };
+    ...
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn chat(
+    api_keys: State<'_, ZammApiKeys>,
+    database: State<'_, ZammDatabase>,
+    args: ChatArgs,
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    chat_helper(&api_keys, &database, args, client_with_middleware).await
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[derive(...)]
+    struct ChatRequest {
+        args: ChatArgs,
+    }
+
+    ...
+
+    impl SampleCallTestCase<ChatRequest, ZammResult<LightweightLlmCall>> for ChatTestCase {
+        ...
+
+        async fn make_request(
+            &mut self,
+            args: &Option<ChatRequest>,
+            ...
+        ) -> ZammResult<LightweightLlmCall> {
+            let actual_request = args.as_ref().unwrap().clone();
+            ...
+
+            chat_helper(
+                ...,
+                actual_request.args,
+                ...
+            )
+            .await
+        }
+    
+        ...
+    }
+
+    ...
+}
+```
+
+Now test cases finally fail, so we edit `src-tauri/api/sample-calls/chat-start-conversation.yaml` to be the same as before but wrapped in an `args` key:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        ...
+      }
+    }
+response:
+  ...
+...
+```
+
+We edit `src-tauri/api/sample-calls/chat-continue-conversation.yaml` similarly:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        ...
+      }
+    }
+...
+```
+
+Now we can commit with all backend tests passing. We edit `src-tauri/api/sample-calls/chat-continue-conversation.yaml` to actually make use of the new functionality:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        ...,
+        "previous_call_id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+        "prompt": ...
+      }
+    }
+...
+```
+
+Predictably, tests start failing now. We find out that the generated database dump is not quite what we want, because the "next_call_ids" is ending up in the wrong place. We edit `src-tauri/src/test_helpers/database_contents.rs` to fix the filter condition, and to dump the new table:
+
+```rs
+pub async fn get_database_contents(
+    ...
+) -> ZammResult<DatabaseContents> {
+    ...
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins
+        .into_iter()
+        .map(|lf| {
+            let (llm_call_row, previous_call_id) = lf;
+            let next_calls_result = llm_call_continuations::table
+                .select(llm_call_continuations::next_call_id)
+                .filter(llm_call_continuations::previous_call_id.eq(&llm_call_row.id))
+                .load::<EntityId>(db)?;
+            Ok(((llm_call_row, previous_call_id), next_calls_result).into())
+        })
+        .collect();
+    ...
+}
+
+...
+
+pub fn dump_sqlite_database(...) {
+    let dump_output = std::process::Command::new("sqlite3")
+        ...
+        .arg(".dump api_keys llm_calls llm_call_continuations")
+        ...;
+    ...
+}
+```
+
+We update `src-tauri/api/sample-database-writes/conversation-continued/dump.yaml`:
+
+```yaml
+api_keys: []
+llm_calls:
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+  ...
+  conversation:
+    next_call_ids:
+    - c13c1e67-2de3-48de-a34c-a32079c03316
+- id: c13c1e67-2de3-48de-a34c-a32079c03316
+  ...
+  conversation:
+    previous_call_id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+```
+
+and update `src-tauri/api/sample-database-writes/conversation-continued/dump.sql` with the line
+
+```sql
+INSERT INTO llm_call_continuations VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a74','c13c1e67-2de3-48de-a34c-a32079c03316');
+```
+
+Now other tests fail with
+
+```
+---- commands::llms::get_api_calls::tests::test_get_api_calls_less_than_10 stdout ----
+Test will use temp directory at /tmp/zamm/tests/get_api_calls/test_get_api_calls_less_than_10
+thread 'commands::llms::get_api_calls::tests::test_get_api_calls_less_than_10' panicked at src/test_helpers/api_testing.rs:335:26:
+called `Result::unwrap()` on an `Err` value: Serde { source: Yaml { source: Error("llm_calls[1].conversation: missing field `next_call_ids`", line: 57, column: 5) } }
+```
+
+It [turns out](https://github.com/dtolnay/serde-yaml/issues/32#issuecomment-257743613) we can use serde's `default` attribute to mark how a field should be deserialized if it isn't present. So, we edit `src-tauri/src/models/llm_calls/various.rs`:
+
+```rs
+#[derive(...)]
+pub struct ConversationMetadata {
+    ...,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub next_call_ids: Vec<EntityId>,
+}
+```
+
+Finally, we edit `src-tauri/api/sample-calls/get_api_call-start-conversation.yaml`:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74"
+    }
+response:
+  message: >
+    {
+      ...,
+      "conversation": {
+        "next_call_ids": [
+          "c13c1e67-2de3-48de-a34c-a32079c03316"
+        ]
+      }
+    }
+...
+```
+
+and `src-tauri/api/sample-calls/get_api_call-continue-conversation.yaml`:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316"
+    }
+response:
+  message: >
+    {
+      ...,
+      "conversation": {
+        "previous_call_id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74"
+      }
+    }
+...
+```
+
+Now all the backend tests pass.
+
+Now that we know this is a possibility, we can edit `src-tauri/src/models/llm_calls/various.rs` again to simplify things:
+
+```rs
+#[derive(..., Default, ...)]
+pub struct ConversationMetadata {
+    ...
+}
+
+impl ConversationMetadata {
+    pub fn is_default(&self) -> bool {
+        self.previous_call_id.is_none() && self.next_call_ids.is_empty()
+    }
+}
+
+```
+
+Then, we edit `src-tauri\src\models\llm_calls\llm_call.rs` to use `default` instead and avoid nested Options:
+
+```rs
+#[derive(...)]
+pub struct LlmCall {
+    ...,
+    #[serde(skip_serializing_if = "ConversationMetadata::is_default", default)]
+    pub conversation: ConversationMetadata,
+}
+
+impl LlmCall {
+    ...
+
+    pub fn as_continuation(&self) -> Option<NewLlmCallContinuation> {
+        self.conversation.previous_call_id
+            .as_ref()
+            .map(|id| NewLlmCallContinuation {
+                ...
+            })
+    }
+}
+
+...
+
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        ...
+        let conversation_metadata = ConversationMetadata {
+            previous_call_id,
+            next_call_ids,
+        };
+        ...
+    }
+}
+```
+
+Finally, we update `src-tauri/src/commands/llms/chat.rs` to use the updated schema:
+
+```rs
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+    let previous_call_id = args.previous_call_id.map(|id| EntityId { uuid: id });
+    let conversation_metadata = ConversationMetadata {
+        previous_call_id,
+        next_call_ids: [].to_vec(),
+    };
+    ...
+    if let Some(conn) = db.as_mut() {
+        ...
+
+        if llm_call.conversation.previous_call_id.is_some()
+        {
+            ...
+        }
+    }
+
+    ...
+}
 ```
 
 ## Persisting and resuming conversations
