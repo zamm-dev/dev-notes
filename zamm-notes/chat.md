@@ -6873,6 +6873,77 @@ and we add a new test to `src-svelte/src/routes/chat/Chat.test.ts` where we make
   });
 ```
 
+We later "fix" this test without realizing its intended purpose, by having the second call actually go through. We revert it to its original purpose by increasing the delay, and also documenting its intended purpose for next time:
+
+```ts
+  test("won't send multiple messages at once", async () => {
+    ...
+    playback.callPauseMs = 2_000; // this line differs from sendChatMessage
+    ...
+    // this part differs from sendChatMessage
+    await userEvent.type(chatInput, "Tell me something funny.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    // remember, we're intentionally delaying the first return here, so the mock won't be called
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(nextExpectedHumanPrompt)).toBeInTheDocument();
+  });
+```
+
+We've actually noticed that the chat message gets lost (even if it doesn't get sent), so we edit `src-svelte\src\routes\chat\Chat.test.ts` to go further and make sure the user's chat message is preserved:
+
+```ts
+  async function sendChatMessage(
+    ...
+  ) {
+    ...
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          ...,
+        ),
+      ).toBeInTheDocument();
+    });
+    expect(chatInput).toHaveValue("");
+    ...
+  }
+
+  ...
+
+  test("won't send multiple messages at once", async () => {
+    ...
+    // remember, we're intentionally delaying the first return here,
+    // so the mock won't be called
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    ...
+    expect(chatInput).toHaveValue("Tell me something funny.");
+  });
+```
+
+We edit `src-svelte/src/routes/chat/Form.svelte` to not clear the form and trigger a send if the chat is currently busy:
+
+```ts
+  ...
+  export let chatBusy = false;
+  ...
+
+  function submitChat() {
+    const message = ...;
+    if (message && !chatBusy) {
+      ...
+    }
+  }
+```
+
+Then we pass the state of the chat down in `src-svelte\src\routes\chat\Chat.svelte`:
+
+```svelte
+    <Form
+      {sendChatMessage}
+      chatBusy={expectingResponse}
+      ...
+    />
+```
+
 ### Widening the message bubble size
 
 We edit `src-svelte\src\routes\chat\MessageUI.svelte` to change the default message size:
@@ -10943,6 +11014,823 @@ async fn chat_helper(
     ...
 }
 ```
+
+### Built-in Diesel associations
+
+We try to see if we can use Diesel's built-in [associations](https://docs.rs/diesel/latest/diesel/associations/index.html) functionality here. We edit `src-tauri\src\models\llm_calls\row.rs` to manually implement `Identifiable` for `LlmCallRow` because at first it was giving us errors:
+
+```rs
+...
+use diesel::associations::HasTable;
+...
+
+impl HasTable for LlmCallRow {
+    type Table = llm_calls::table;
+
+    fn table() -> Self::Table {
+        llm_calls::table
+    }
+}
+
+impl Identifiable for LlmCallRow {
+    type Id = EntityId;
+
+    fn id(self) -> Self::Id {
+        self.id
+    }
+}
+```
+
+However, we later find that the errors are not reproduceable anymore if we automatically derive the class:
+
+```rs
+#[derive(..., Identifiable)]
+#[diesel(table_name = llm_calls)]
+pub struct LlmCallRow {
+    ...
+}
+```
+
+and we edit `src-tauri\src\models\llm_calls\entity_id.rs` to fit the requirements for identifiability:
+
+```rs
+#[derive(
+    ..., PartialEq, Eq, Hash, ...
+)]
+...
+pub struct EntityId {
+    pub uuid: Uuid,
+}
+```
+
+We find out that what we're trying to do [is](https://github.com/diesel-rs/diesel/issues/2613) not [possible](https://github.com/diesel-rs/diesel/issues/2142) with Diesel's built-in functionality. If we want to, this is as far as we can possibly take this by editing `src-tauri\src\models\llm_calls\linkage.rs`:
+
+```rs
+...
+use crate::models::llm_calls::llm_call::LlmCall;
+use diesel::associations::Associations;
+...
+
+#[derive(Associations)]
+#[diesel(belongs_to(LlmCall, foreign_key = previous_call_id))]
+#[diesel(table_name = llm_call_continuations)]
+pub struct ConversationMetadata {
+    pub previous_call_id: EntityId,
+    pub next_call_id: EntityId,
+}
+
+...
+```
+
+### Returning display data
+
+We realize that returning just the ID of the linked calls won't be sufficient for displaying links to them in the frontend, so we have to do extra joins. It appears that selecting from joins on [subqueries](https://www.reddit.com/r/rust/comments/17qgdki/dieselrs_join_with_subquery/) is not supported at this point in time. However, it appears that there is a [view trick](https://deterministic.space/diesel-view-table-trick.html) we can use. We modify `src-tauri/migrations/2024-05-13-135101_add_api_call_continuations/up.sql`, adding a semicolon to the previous statement:
+
+```sql
+CREATE TABLE llm_call_continuations (
+  ...
+);
+
+CREATE VIEW llm_call_named_continuations AS
+  SELECT
+    llm_call_continuations.previous_call_id AS previous_call_id,
+    previous_call.completion AS previous_call_completion,
+    llm_call_continuations.next_call_id AS next_call_id,
+    next_call.completion AS next_call_completion
+  FROM
+    llm_call_continuations
+    JOIN llm_calls AS previous_call ON llm_call_continuations.previous_call_id = previous_call.id
+    JOIN llm_calls AS next_call ON llm_call_continuations.next_call_id = next_call.id;
+
+```
+
+and we edit `src-tauri/migrations/2024-05-13-135101_add_api_call_continuations/down.sql` as well:
+
+```sql
+DROP TABLE llm_call_continuations;
+DROP VIEW llm_call_named_continuations;
+
+```
+
+Then we can manually create `src-tauri/src/views.rs`:
+
+```rs
+use crate::schema::llm_calls;
+
+diesel::table! {
+    llm_call_named_continuations (previous_call_id, next_call_id) {
+        previous_call_id -> Text,
+        previous_call_completion -> Text,
+        next_call_id -> Text,
+        next_call_completion -> Text,
+    }
+}
+
+diesel::allow_tables_to_appear_in_same_query!(llm_call_named_continuations, llm_calls);
+
+```
+
+and note it in `src-tauri/src/main.rs`:
+
+```rs
+...
+mod views;
+...
+```
+
+Next, we make use of this new schema in `src-tauri\src\models\llm_calls\various.rs`, where we set the snippet to be a truncated form of the message. We may want to let the frontend handle this logic in the future, but right now it seems best to avoid having too much redundancy in the exported YAML files:
+
+```rs
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct LlmCallReference {
+    pub id: EntityId,
+    pub snippet: String,
+}
+
+impl From<(EntityId, ChatMessage)> for LlmCallReference {
+    fn from((id, message): (EntityId, ChatMessage)) -> Self {
+        let text = match message {
+            ChatMessage::System { text } => text,
+            ChatMessage::Human { text } => text,
+            ChatMessage::AI { text } => text,
+        };
+        let truncated_text = text
+            .split_whitespace()
+            .take(10)
+            .collect::<Vec<&str>>()
+            .join(" ");
+        let snippet = if text == truncated_text {
+            text
+        } else {
+            format!("{}...", truncated_text)
+        };
+        Self { id, snippet }
+    }
+}
+
+#[derive(...)]
+pub struct ConversationMetadata {
+    #[serde(...)]
+    pub previous_call: Option<LlmCallReference>,
+    #[serde(...)]
+    pub next_calls: Vec<LlmCallReference>,
+}
+
+impl ConversationMetadata {
+    pub fn is_default(&self) -> bool {
+        self.previous_call.is_none() && self.next_calls.is_empty()
+    }
+}
+
+```
+
+We then edit `src-tauri\src\models\llm_calls\llm_call.rs`, marking some things as test-only because they're no longer accessed from regular code paths:
+
+```rs
+use crate::models::llm_calls::chat_message::ChatMessage;
+...
+#[cfg(test)]
+use crate::models::llm_calls::{NewLlmCallContinuation, NewLlmCallRow};
+...
+
+#[cfg(test)]
+impl LlmCall {
+    ...
+
+    pub fn as_continuation(&self) -> Option<NewLlmCallContinuation> {
+        self.conversation
+            .previous_call
+            .as_ref()
+            .map(|call| NewLlmCallContinuation {
+                previous_call_id: &call.id,
+                next_call_id: &self.id,
+            })
+    }
+}
+
+pub type LlmCallLeftJoinResult = (LlmCallRow, Option<EntityId>, Option<ChatMessage>);
+pub type LlmCallQueryResults = (LlmCallLeftJoinResult, Vec<(EntityId, ChatMessage)>);
+
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        let ((llm_call_row, previous_call_id, previous_call_completion), next_calls) =
+            query_results;
+        
+        ...
+
+        let previous_call: Option<LlmCallReference> =
+            if let (Some(id), Some(completion)) =
+                (previous_call_id, previous_call_completion)
+            {
+                Some((id, completion).into())
+            } else {
+                None
+            };
+        let conversation_metadata = ConversationMetadata {
+            previous_call,
+            next_calls: next_calls
+                .into_iter()
+                .map(|(id, completion)| (id, completion).into())
+                .collect(),
+        };
+        ...
+    }
+}
+```
+
+We continue using the new models in `src-tauri\src\commands\llms\chat.rs`, where we avoid constructing a `conversation_metadata` and therefore an LlmCall object because it requires a database read in order to retrieve the snippet, which is unnecessary because it isn't returned to the frontend anyways:
+
+```rs
+...
+use crate::models::llm_calls::{
+    ..., NewLlmCallContinuation, NewLlmCallRow,
+};
+...
+
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+
+    let config = match &args.provider {
+        ...
+    };
+
+    ... (no more conversation_metadata) ...
+
+    let new_id = EntityId {
+        uuid: Uuid::new_v4(),
+    };
+    let timestamp = chrono::Utc::now().naive_utc();
+    let completion: ChatMessage = sole_choice.try_into()?;
+
+    if let Some(conn) = db.as_mut() {
+        diesel::insert_into(llm_calls::table)
+            .values(NewLlmCallRow {
+                id: &new_id,
+                timestamp: &timestamp,
+                provider: &args.provider,
+                llm_requested: &requested_model,
+                llm: &response.model,
+                temperature: &requested_temperature,
+                prompt_tokens: token_metadata.prompt.as_ref(),
+                response_tokens: token_metadata.response.as_ref(),
+                total_tokens: token_metadata.total.as_ref(),
+                prompt: &Prompt::Chat(ChatPrompt {
+                    messages: args.prompt,
+                }),
+                completion: &completion,
+            })
+            .execute(conn)?;
+
+        if let Some(previous_id) = previous_call_id {
+            diesel::insert_into(llm_call_continuations::table)
+                .values(NewLlmCallContinuation {
+                    previous_call_id: &previous_id,
+                    next_call_id: &new_id,
+                })
+                .execute(conn)?;
+        }
+    } // todo: warn users if DB write unsuccessful
+
+    Ok(LightweightLlmCall {
+        id: new_id,
+        timestamp,
+        response_message: completion,
+    })
+}
+```
+
+Next, we edit `src-tauri\src\commands\llms\get_api_call.rs`:
+
+```rs
+...
+use crate::schema::llm_calls;
+use crate::views::llm_call_named_continuations;
+...
+
+async fn get_api_call_helper(
+    ...
+) -> ZammResult<LlmCall> {
+    ...
+
+    let previous_call_result: LlmCallLeftJoinResult = llm_calls::table
+        .left_join(
+            llm_call_named_continuations::dsl::llm_call_named_continuations
+                .on(llm_calls::id.eq(llm_call_named_continuations::next_call_id)),
+        )
+        .select((
+            llm_calls::all_columns,
+            llm_call_named_continuations::previous_call_id.nullable(),
+            llm_call_named_continuations::previous_call_completion.nullable(),
+        ))
+        ...;
+    let next_calls_result = llm_call_named_continuations::table
+        .select((
+            llm_call_named_continuations::next_call_id,
+            llm_call_named_continuations::next_call_completion,
+        ))
+        .filter(llm_call_named_continuations::previous_call_id.eq(parsed_uuid))
+        .load::<(EntityId, ChatMessage)>(conn)?;
+    ...
+}
+```
+
+Finally, we edit the reading and writing from a database in `src-tauri/src/test_helpers/database_contents.rs`:
+
+```rs
+...
+use crate::views::llm_call_named_continuations;
+...
+
+pub async fn get_database_contents(
+    ...
+) -> ZammResult<DatabaseContents> {
+    ...
+    let llm_call_left_joins = llm_calls::table
+        .left_join(
+            llm_call_named_continuations::dsl::llm_call_named_continuations
+                .on(llm_calls::id.eq(llm_call_named_continuations::next_call_id)),
+        )
+        .select((
+            llm_calls::all_columns,
+            llm_call_named_continuations::previous_call_id.nullable(),
+            llm_call_named_continuations::previous_call_completion.nullable(),
+        ))
+        .get_results::<LlmCallLeftJoinResult>(db)?;
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins
+        .into_iter()
+        .map(|lf| {
+            let (llm_call_row, previous_call_id, previous_call_completion) = lf;
+            let next_calls_result = llm_call_named_continuations::table
+                .select((
+                    llm_call_named_continuations::next_call_id,
+                    llm_call_named_continuations::next_call_completion,
+                ))
+                .filter(
+                    llm_call_named_continuations::previous_call_id.eq(&llm_call_row.id),
+                )
+                .load::<(EntityId, ChatMessage)>(db)?;
+            Ok((
+                (llm_call_row, previous_call_id, previous_call_completion),
+                next_calls_result,
+            )
+                .into())
+        })
+        .collect();
+    ...
+}
+```
+
+We update the database dump file at `src-tauri\api\sample-database-writes\conversation-continued\dump.yaml` with the new format for LLM call references:
+
+```yaml
+api_keys: []
+llm_calls:
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+  ...
+  conversation:
+    next_calls:
+    - id: c13c1e67-2de3-48de-a34c-a32079c03316
+      snippet: 'Sure, here''s a joke for you: Why don''t scientists trust...'
+- id: c13c1e67-2de3-48de-a34c-a32079c03316
+  ...
+  conversation:
+    previous_call:
+      id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+      snippet: Yes, it works. How can I assist you today?
+
+```
+
+and the actual call at `src-tauri/api/sample-calls/get_api_call-start-conversation.yaml`:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74"
+    }
+response:
+  message: >
+    {
+      ...
+      "conversation": {
+        "next_calls": [
+          {
+            "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+            "snippet": "Sure, here's a joke for you: Why don't scientists trust..."
+          }
+        ]
+      }
+    }
+...
+```
+
+and `src-tauri/api/sample-calls/get_api_call-continue-conversation.yaml`:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316"
+    }
+response:
+  message: >
+    {
+      ...
+      "conversation": {
+        "previous_call": {
+          "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+          "snippet": "Yes, it works. How can I assist you today?"
+        }
+      }
+    }
+...
+```
+
+Interestingly enough, all the tests pass and the app builds -- but `yarn tauri dev` specifically (and only that command) fails on Linux with:
+
+```
+error: linking with `cc` failed: exit status: 1
+  |
+  = note: LC_ALL="C" PATH="/root/.asdf/installs/rust/1.76.0/toolchains/1.76.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin:/root/.asdf/installs/rust/1.76.0/bin:/tmp/yarn--1716057597543-0.7563829...
+  ...
+  = note: /usr/bin/ld: /root/zamm/src-tauri/target/debug/deps/zamm-df7516eb9b93bda7.1xyldlavtwx51y4t.rcgu.o: in function `<diesel::expression::bound::Bound<T,U> as diesel::query_builder::QueryFragment<DB>>::walk_ast':
+          /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/expression/bound.rs:40: undefined reference to `diesel::query_builder::ast_pass::AstPass<DB>::push_bind_param'
+          /usr/bin/ld: /root/zamm/src-tauri/target/debug/deps/zamm-df7516eb9b93bda7.1xyldlavtwx51y4t.rcgu.o: in function `<diesel::expression::bound::Bound<T,U> as diesel::query_builder::QueryFragment<DB>>::walk_ast':
+          /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/expression/bound.rs:40: undefined reference to `diesel::query_builder::ast_pass::AstPass<DB>::push_bind_param'
+          /usr/bin/ld: /root/zamm/src-tauri/target/debug/deps/zamm-df7516eb9b93bda7.1xyldlavtwx51y4t.rcgu.o: in function `<diesel::expression::bound::Bound<T,U> as diesel::query_builder::QueryFragment<DB>>::walk_ast':
+          /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/expression/bound.rs:40: undefined reference to `diesel::query_builder::ast_pass::AstPass<DB>::push_bind_param'
+          /usr/bin/ld: /root/zamm/src-tauri/target/debug/deps/zamm-df7516eb9b93bda7.1xyldlavtwx51y4t.rcgu.o: in function `<diesel::expression::bound::Bound<T,U> as diesel::query_builder::QueryFragment<DB>>::walk_ast':
+          /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/diesel-2.1.4/src/expression/bound.rs:40: undefined reference to `diesel::query_builder::ast_pass::AstPass<DB>::push_bind_param'
+          /usr/bin/ld: /root/zamm/src-tauri/target/debug/deps/zamm-df7516eb9b93bda7: hidden symbol `_ZN6diesel13query_builder8ast_pass17AstPass$LT$DB$GT$15push_bind_param17h044cc0ebf0cc9718E' isn't defined
+          /usr/bin/ld: final link failed: bad value
+          collect2: error: ld returned 1 exit status
+          
+  = note: some `extern` functions couldn't be found; some native libraries may need to be installed or have their path specified
+  = note: use the `-l` flag to specify native libraries to link
+  = note: use the `cargo:rustc-link-lib` directive to specify the native libraries to link with Cargo (see https://doc.rust-lang.org/cargo/reference/build-scripts.html#cargorustc-link-libkindname)
+
+error: could not compile `zamm` (bin "zamm") due to 1 previous error
+```
+
+This [question](https://stackoverflow.com/questions/70910000/rust-diesel-linking-with-cc-failed) seems related, but then again we already have `libsqlite3-dev` installed. This is failing on the `main` branch as well, so we try `make clean` and building everything from scratch. Sure enough, things work fine now.
+
+#### Renaming to "follow up"
+
+The name `llm_call_continuations` sounds more vague than `llm_call_follow_ups`. So we rename:
+
+- `llm_call_continuations` to `llm_call_follow_ups`
+- `llm_call_named_continuations` to `llm_call_named_follow_ups`
+- `NewLlmCallContinuation` to `NewLlmCallFollowUp`
+- `as_continuation` to `as_follow_up_row` (for additional clarity and consistency with `as_sql_row`)
+- `insertable_call_continuations` to `insertable_call_follow_ups`
+- rename the folder `src-tauri\migrations\2024-05-13-135101_add_api_call_continuations` to `src-tauri\migrations\2024-05-13-135101_add_api_call_follow_ups`
+
+We are essentially relabeling what we used to call (in natural language, for this project) a "continuation" of an LLM call, to instead a "follow-up" to an LLM call.
+
+We commit, and then check out the previous commit before running
+
+```bash
+$ diesel migration revert --database-url /root/.local/share/zamm/zamm.sqlite3 -n 1
+```
+
+because otherwise the `down.sql` script won't run correctly.
+
+### Frontend
+
+We update `src-svelte/src/lib/bindings.ts` automatically with Specta, and then start fixing failing tests. We edit `src-svelte/src/routes/chat/Chat.svelte` to pass in the last message ID to the backend whenever possible, and put all the arguments to `chat` inside a proper object:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  export const lastMessageId = writable<string | undefined>(undefined);
+  ...
+
+  export function resetConversation() {
+    lastMessageId.set(undefined);
+    ...
+  }
+</script>
+
+<script lang="ts">
+  ...
+
+  async function sendChatMessage(message: string) {
+    ...
+    try {
+      let llmCall = await chat({
+        provider: "OpenAI",
+        llm: "gpt-4",
+        temperature: null,
+        previous_call_id: $lastMessageId,
+        prompt: $conversation,
+      });
+      lastMessageId.set(llmCall.id);
+      ...
+    } ...
+  }
+  
+  ...
+</script>
+
+...
+```
+
+We edit `src-svelte/src/routes/chat/Chat.test.ts`, where we can now cast directly to `ChatArgs` instead of `ChatMessage`. We need to copy the changes a second time to the `"won't send multiple messages at once"` test because it is based on the above with modifications.
+
+```ts
+...
+import Chat, {
+  ...,
+  lastMessageId,
+  ...,
+} from "./Chat.svelte";
+...
+import type { ChatArgs, ... } from "$lib/bindings";
+
+...
+  async function sendChatMessage(
+    ...
+  ) {
+    ...
+    const nextExpectedCallArgs = nextExpectedApiCall.request[1] as unknown as {
+      args: ChatArgs;
+    };
+    const nextExpectedMessage =
+      nextExpectedCallArgs.args["prompt"].slice(-1)[0];
+    ...
+  }
+
+  ...
+
+  test("won't send multiple messages at once", async () => {
+    ...
+    const nextExpectedCallArgs = nextExpectedApiCall.request[1] as unknown as {
+      args: ChatArgs;
+    };
+    const nextExpectedMessage =
+      nextExpectedCallArgs.args["prompt"].slice(-1)[0];
+    ...
+  });
+
+  ...
+
+  test("listens for updates to conversation store", async () => {
+    ...
+    lastMessageId.set("d5ad1e49-f57f-4481-84fb-4d70ba8a7a74");
+    ...
+  });
+```
+
+We need to manually edit `src-svelte/src/lib/bindings.ts` here because it generates
+
+```ts
+export type EntityId = { uuid: string }
+```
+
+which then produces the Svelte check error
+
+```
+c:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-svelte\src\routes\chat\Chat.svelte:90:25
+Error: Argument of type 'EntityId' is not assignable to parameter of type 'string'. (ts)
+      });
+      lastMessageId.set(llmCall.id);
+      appendMessage(llmCall.response_message);
+```
+
+As such, we manually edit that line right now to be
+
+```ts
+export type EntityId = string
+```
+
+and create [this bug](https://github.com/oscartbeaumont/tauri-specta/issues/93) to notify the maintainer of this issue in case they aren't already aware.
+
+The API call tests are failing too now, so we edit `src-svelte/src/routes/api-calls/[slug]/Actions.svelte`:
+
+```ts
+  ...
+  import { lastMessageId, conversation } from "../../chat/Chat.svelte";
+  ...
+
+  function restoreConversation() {
+    ...
+
+    lastMessageId.set(apiCall.id);
+    ...
+  }
+
+```
+
+We also fix the tests at `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts`, to check that the "Restore Conversation" button properly restores everything about a conversation:
+
+```ts
+...
+import {
+  ...,
+  lastMessageId,
+} from "../../chat/Chat.svelte";
+...
+
+  test("can restore chat conversation", async () => {
+    ...
+    expect(get(conversation)).toEqual(...);
+    expect(get(lastMessageId)).toBeUndefined();
+    ...
+
+    await waitFor(() => {
+      expect(get(conversation)).toEqual(...);
+    });
+    expect(get(lastMessageId)).toEqual("c13c1e67-2de3-48de-a34c-a32079c03316");
+    ...
+```
+
+While fixing the tests, we encountered the error `"message.includes" is not a function`, which [appears](https://stackoverflow.com/a/78389207) to be thrown when we try to handle an `Error` instead of an error message with the snackbar. As such, we also edit `src-svelte/src/lib/snackbar/Snackbar.svelte` to set the `msg` to a string before anything else happens:
+
+```svelte
+  export function snackbarError(error: string | Error) {
+    const msg = error instanceof Error ? error.message : error;
+
+    ...
+  }
+```
+
+#### Manual specta overwrite
+
+Due to having to manually override Specta, we will edit `main.rs` to not output the bindings unless we tell it to. We use `clap` to handle commandline arguments:
+
+```bash
+$ cargo add clap --features derive
+```
+
+We create `src-tauri/src/cli.rs` with a very barebones configuration, adding documentation because command descriptions in the help messages are [based on](https://github.com/clap-rs/clap/discussions/1619) code documentation:
+
+```rs
+use clap::{Parser, Subcommand};
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Run the GUI. This is the default command.
+    Gui {},
+    /// Export Specta bindings for development purposes
+    #[cfg(debug_assertions)]
+    ExportBindings {},
+}
+
+/// Zen and the Automation of Metaprogramming for the Masses
+/// 
+/// This is an experimental tool meant for automating programming-related activities,
+/// although none have been implemented yet. Blog posts on progress can be found at
+/// https://zamm.dev/
+#[derive(Parser)]
+#[command(name = "zamm")]
+#[command(version)]
+#[command(
+    about = "Zen and the Automation of Metaprogramming for the Masses"
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+```
+
+We modify `src-tauri\src\main.rs` to allow even Windows to export bindings, but only ever if it's explicitly requested:
+
+```rs
+...
+mod cli;
+...
+use clap::Parser;
+...
+#[cfg(debug_assertions)]
+use specta::collect_types;
+#[cfg(debug_assertions)]
+use tauri_specta::ts;
+...
+use cli::{Cli, Commands};
+...
+
+fn main() {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        #[cfg(debug_assertions)]
+        Some(Commands::ExportBindings {}) => {
+            ts::export(
+                collect_types![
+                    get_api_keys,
+                    ...
+                ],
+                "../src-svelte/src/lib/bindings.ts",
+            )
+            .expect("Failed to export Specta bindings");
+            println!("Specta bindings should be exported to ../src-svelte/src/lib/bindings.ts");
+        },
+        Some(Commands::Gui {}) | None => {
+            let mut possible_db = setup::get_db();
+            let api_keys = setup_api_keys(&mut possible_db);
+
+            tauri::Builder::default()
+                .manage(ZammDatabase(Mutex::new(possible_db)))
+                .manage(ZammApiKeys(Mutex::new(api_keys)))
+                .invoke_handler(tauri::generate_handler![
+                    get_api_keys,
+                    ...
+                ])
+                .run(tauri::generate_context!())
+                .expect("error while running tauri application");
+        }
+    }
+}
+
+```
+
+Now we can remove `src-svelte/src/lib/bindings.ts` from `.prettierignore`. In fact, since that's the only entry there, we can remove the file altogether.
+
+##### Specta upgrade
+
+We try upgrading to Specta 2, which should fix this issue, but is still in beta. We edit `src-tauri/Cargo.toml` to pin to a specific version of Specta:
+
+```toml
+specta = { version = "=2.0.0-rc.12", features = [...] }
+```
+
+Next, we edit `src-tauri/src/main.rs`, which must now use `specta::collect_functions` instead of `specta::collect_types`. Now we run into the issue
+
+```
+error[E0277]: the trait bound `tauri::State<'_, ZammDatabase>: Type` is not satisfied
+   --> src/commands/llms/get_api_calls.rs:30:1
+    |
+30  |   #[specta]
+    |   ^^^^^^^^^ the trait `Type` is not implemented for `tauri::State<'_, ZammDatabase>`
+    |
+   ::: src/main.rs:40:17
+    |
+40  | /                 collect_functions![
+41  | |                     get_api_keys,
+42  | |                     set_api_key,
+43  | |                     play_sound,
+...   |
+49  | |                     get_api_calls,
+50  | |                 ],
+    | |_________________- in this macro invocation
+    |
+    = help: the following other types implement trait `Type`:
+              bool
+              char
+              isize
+              i8
+              i16
+              i32
+              i64
+              i128
+            and 118 others
+    = note: required for `tauri::State<'_, ZammDatabase>` to implement `FunctionArg`
+    = note: required for `fn(State<'_, ZammDatabase>, i32) -> ...` to implement `specta::function::Function<_>`
+    = note: the full type name has been written to '/root/zamm/src-tauri/target/debug/deps/zamm-3960311a1ba30926.long-type-9008942556723932530.txt'
+note: required by a bound in `get_fn_datatype`
+   --> /root/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/specta-2.0.0-rc.12/src/internal.rs:232:40
+    |
+232 |     pub fn get_fn_datatype<TMarker, T: Function<TMarker>>(
+    |                                        ^^^^^^^^^^^^^^^^^ required by this bound in `get_fn_datatype`
+    = note: this error originates in the macro `__specta__fn__get_api_calls` which comes from the expansion of the macro `collect_functions` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0277, E0308.
+For more information about an error, try `rustc --explain E0277`.
+```
+
+Perhaps we need tauri-specta v2 to work with specta v2, but if we specify
+
+```toml
+tauri-specta = { version = "1.0.2", features = [...] }
+```
+
+then we have
+
+```
+error: failed to select a version for `webkit2gtk-sys`.
+    ... required by package `webkit2gtk v0.18.2`
+    ... which satisfies dependency `webkit2gtk = "^0.18.2"` of package `tauri v1.4.0`
+    ... which satisfies dependency `tauri = "^1.4"` of package `zamm v0.1.4 (/root/zamm/src-tauri)`
+versions that meet the requirements `^0.18` are: 0.18.0
+
+the package `webkit2gtk-sys` links to the native library `web_kit2`, but it conflicts with a previous package which links to `web_kit2` as well:
+package `webkit2gtk-sys v2.0.1`
+    ... which satisfies dependency `ffi = "^2.0.1"` of package `webkit2gtk v2.0.1`
+    ... which satisfies dependency `webkit2gtk = "=2.0.1"` of package `tauri v2.0.0-beta.19`
+    ... which satisfies dependency `tauri = "=2.0.0-beta.19"` of package `tauri-specta v2.0.0-rc.10`
+    ... which satisfies dependency `tauri-specta = "=2.0.0-rc.10"` of package `zamm v0.1.4 (/root/zamm/src-tauri)`
+Only one package in the dependency graph may specify the same links value. This helps ensure that only one copy of a native library is linked in the final binary. Try to adjust your dependencies so that only one package uses the `links = "web_kit2"` value. For more information, see https://doc.rust-lang.org/cargo/reference/resolver.html#links.
+
+failed to select a version for `webkit2gtk-sys` which could resolve this conflict
+```
+
+As such, we'll stick with Specta 1 and the manual override for now.
 
 ## Persisting and resuming conversations
 

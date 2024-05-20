@@ -285,6 +285,16 @@ https://docs.docker.com/engine/reference/commandline/login/#credentials-store
 Login Succeeded
 ```
 
+If you get the message
+
+```
+docker login ghcr.io -u amosjyng -p $GHCR_PAT
+WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+Error response from daemon: Get "https://ghcr.io/v2/": denied: denied
+```
+
+then you likely have the wrong credentials, possibly because you haven't updated your current terminal session with the new PAT.
+
 #### Makefile
 
 If you are using a Makefile for your build, you can set it as such:

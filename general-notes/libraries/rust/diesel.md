@@ -46,7 +46,45 @@ If you are using `asdf`, you will also need to run
 $ asdf reshim rust
 ```
 
-You can alternately only install the client libraries for the database you are actually using, as described on the page.
+You can alternately only install the client libraries for the database you are actually using, as described on the page:
+
+```bash
+$ cargo install diesel_cli --no-default-features --features sqlite
+```
+
+On Windows, you will need to follow [this step](https://stackoverflow.com/a/76427629) (the commands can be copied verbatim):
+
+```
+C:\Windows\System32>cd C:\ProgramData\chocolatey\lib\SQLite\tools
+
+C:\ProgramData\chocolatey\lib\SQLite\tools>call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+**********************************************************************
+** Visual Studio 2019 Developer Command Prompt v16.11.33
+** Copyright (c) 2021 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+
+C:\ProgramData\chocolatey\lib\SQLite\tools>lib /machine:x64 /def:sqlite3.def /out:sqlite3.lib
+Microsoft (R) Library Manager Version 14.29.30153.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+   Creating library sqlite3.lib and object sqlite3.exp
+```
+
+Then, in PowerShell, export the directory where the library was created before compiling Diesel, like so:
+
+```
+PS C:\Users\user\source\repos\myproject> $Env:SQLITE3_LIB_DIR = "C:\Users\Amos Ng\software\sqlite"
+PS C:\Users\user\source\repos\myproject> cargo install diesel_cli --no-default-features --features sqlite
+```
+
+If you don't you'll get the error:
+
+```
+  = note: LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'
+```
+
+If afterwards, Diesel commands produce no output and no side-effects, not even `diesel --help`, that is [because](https://www.reddit.com/r/rust/comments/vqnm3l/diesel_cli_is_too_much_pain_can_someone_help_me/) the `sqlite3.lib` dependency is not in your PATH.
 
 We can start off by running
 

@@ -2436,7 +2436,21 @@ ReferenceError: FontFace is not defined
     156|       "url(/public-fonts/zhi-mang-xing.ttf)",
 ```
 
-We mock `FontFace`, using [this](https://stackoverflow.com/a/71545957) as a way to :
+We mock `FontFace`, which leads us to
+
+```
+ FAIL  src/routes/AppLayout.test.ts > AppLayout > will set transparency if transparency preference overridden
+TypeError: Cannot read properties of undefined (reading 'add')        
+ ❯ src/routes/BackgroundUI.svelte:139:20
+    137|       "url(/public-fonts/zhi-mang-xing.ttf)",
+    138|     );
+    139|     document.fonts.add(fontFile);
+       |                    ^
+    140|
+    141|     fontFile.load().then(
+```
+
+As such, we use [this](https://stackoverflow.com/a/71545957) as a way to get the mock working:
 
 ```ts
 vi.stubGlobal("FontFace", function () {
@@ -2468,7 +2482,422 @@ error Command failed with exit code 3221225477.
 info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
 ```
 
+#### Addressing segfault
+
 It appears that this is a [Windows-specific problem](https://stackoverflow.com/a/58959576) with NodeJS, but as it turns out, NodeJS on Linux exits too with a segfault with exit code 139. It appears that this has no effect on CI tests. Upgrading to Node v22 on Windows fixes this issue.
+
+After a while, even CI tests start failing in this manner with the message
+
+```
+Segmentation fault (core dumped)
+error Command failed with exit code 139.
+```
+
+Ironically, we are now unable to reproduce this on the Linux machine that is still running Node v20.5.1. We see from [this answer](https://stackoverflow.com/a/33849752) that we can go [here](https://nodejs.org/dist/v20.5.1/) to try to download the same version of NodeJS to install on Windows once again to try to reproduce the issue. We are able to reproduce the issue on Windows, but it does not appear easy to avoid the crash on this older version of NodeJS while still getting this test to pass. Even installing the latest version of the Node v20 series, `v20.13.1`, doesn't help with the crash on Windows. We try updating to use Node `22.2.0`. We now get a whole bunch of errors during the build, such as
+
+```
+60.16 ../../nan/nan.h: In function 'void Nan::SetAccessor(v8::Local<v8::ObjectTemplate>, v8::Local<v8::String>, Nan::GetterCallback, Nan::SetterCallback, v8::Local<v8::Value>, v8::AccessControl, v8::PropertyAttribute, Nan::imp::Sig)':
+60.16 ../../nan/nan.h:2558:3: error: no matching function for call to 'v8::ObjectTemplate::SetAccessor(v8::Local<v8::String>&, void (*&)(v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value>&), void (*&)(v8::Local<v8::Name>, v8::Local<v8::Value>, const v8::PropertyCallbackInfo<void>&), v8::Local<v8::Object>&, v8::AccessControl&, v8::PropertyAttribute&)'
+60.16  2558 |   );
+60.16       |   ^
+60.16 In file included from /root/.cache/node-gyp/22.2.0/include/node/v8-function.h:15,
+60.16                  from /root/.cache/node-gyp/22.2.0/include/node/v8.h:33,
+60.16                  from /root/.cache/node-gyp/22.2.0/include/node/node.h:73,
+60.16                  from ../../nan/nan.h:62,
+60.16                  from ../src/backend/Backend.h:6,
+60.16                  from ../src/backend/Backend.cc:1:
+60.16 /root/.cache/node-gyp/22.2.0/include/node/v8-template.h:1049:8: note: candidate: 'void v8::ObjectTemplate::SetAccessor(v8::Local<v8::String>, v8::AccessorGetterCallback, v8::AccessorSetterCallback, v8::Local<v8::Value>, v8::PropertyAttribute, v8::SideEffectType, v8::SideEffectType)'
+```
+
+which according to [this answer](https://stackoverflow.com/q/64316140) might mean that package upgrades are required. We try `yarn upgrade` in the root directory, and then the build succeeds locally. On CI, however, we run into errors like this for the steps that don't use the Docker image:
+
+```
+make: Entering directory '/home/runner/work/zamm/zamm/node_modules/canvas/build'
+  SOLINK_MODULE(target) Release/obj.target/canvas-postbuild.node
+  COPY Release/canvas-postbuild.node
+  CXX(target) Release/obj.target/canvas/src/backend/Backend.o
+  CXX(target) Release/obj.target/canvas/src/backend/ImageBackend.o
+  CXX(target) Release/obj.target/canvas/src/backend/PdfBackend.o
+  CXX(target) Release/obj.target/canvas/src/backend/SvgBackend.o
+  CXX(target) Release/obj.target/canvas/src/bmp/BMPParser.o
+  CXX(target) Release/obj.target/canvas/src/Backends.o
+  CXX(target) Release/obj.target/canvas/src/Canvas.o
+  CXX(target) Release/obj.target/canvas/src/CanvasGradient.o
+  CXX(target) Release/obj.target/canvas/src/CanvasPattern.o
+In file included from ../src/CanvasPattern.cc:6:
+../src/Image.h:18:10: fatal error: gif_lib.h: No such file or directory
+   18 | #include <gif_lib.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+make: *** [canvas.target.mk:161: Release/obj.target/canvas/src/CanvasPattern.o] Error 1
+make: Leaving directory '/home/runner/work/zamm/zamm/node_modules/canvas/build'
+gyp ERR! build error 
+```
+
+[It appears](https://github.com/dominictarr/feedopensource/issues/25#issue-25625002) that we might just have to install `libgif-dev`. We edit `.github/workflows/tests.yaml`:
+
+```yaml
+...
+
+jobs:
+  ...
+  pre-commit:
+    ...
+    steps:
+      ...
+      - name: Install main Node dependencies
+        run: |
+          sudo apt install -y libgif-dev
+          yarn install --frozen-lockfile
+      ...
+  svelte:
+    ...
+    steps:
+      ...
+      - name: Install Node dependencies
+        run: |
+          sudo apt install -y libgif-dev
+          ...
+  e2e:
+    ...
+    steps:
+      ...
+      - name: Install Node dependencies
+        run: |
+          sudo apt install -y libgif-dev
+          ...
+```
+
+Unfortunately, the same exit code 139 is still occurring on CI, with failing screenshot and end-to-end tests to boot. Since we've already done the work to upgrade to the latest Node, we might as well keep that progress and just update the screenshots. However, the problem with Node crashing after all tests run still needs to be solved.
+
+We see that there have [been](https://github.com/vitest-dev/vitest/issues/3143) past [issues](https://github.com/vitest-dev/vitest/issues/317) with Vitest segfaults, but these were all pre-1.0.0 release. Nonetheless, we try out the suggestion to use `--pool=forks` instead (the suggestion to use `--no-threads` is [outdated](https://github.com/vitest-dev/vitest/issues/4620#issuecomment-1832683849)). Unfortunately, this breaks the slider, switch, and API calls tests -- basically any test that makes use of Playwright, except surprisingly for the Storybook tests. It is unclear why this would affect anything anyways, given that we have already edited `src-svelte\vitest.config.ts` to enforce `singleThread: true`.
+
+Running locally on Linux with
+
+```bash
+$ yarn vitest --pool=forks --exclude src/routes/storybook.test.ts run
+```
+
+to avoid expensive Storybook tests does not reproduce the issue. Running that locally on Windows does reproduce the timeout issue, but it seems only intermittently so.
+
+Reinstalling Node 22 on Windows fails with
+
+```
+error C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\canvas: Command failed.
+Exit code: 7
+Command: node-pre-gyp install --fallback-to-build --update-binary
+Arguments:
+Directory: C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\canvas
+Output:
+node-pre-gyp info it worked if it ends with ok
+node-pre-gyp info using node-pre-gyp@1.0.11
+node-pre-gyp info using node@22.2.0 | win32 | x64
+(node:18996) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+node-pre-gyp http GET https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v127-win32-unknown-x64.tar.gz
+node-pre-gyp ERR! install response status 404 Not Found on https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v127-win32-unknown-x64.tar.gz
+node-pre-gyp WARN Pre-built binaries not installable for canvas@2.11.2 and node@22.2.0 (node-v127 ABI, unknown) (falling back to source compile with node-gyp)
+node-pre-gyp WARN Hit error response status 404 Not Found on https://github.com/Automattic/node-canvas/releases/download/v2.11.2/canvas-v2.11.2-node-v127-win32-unknown-x64.tar.gz
+node-pre-gyp ERR! UNCAUGHT EXCEPTION
+node-pre-gyp ERR! stack Error: spawn EINVAL
+node-pre-gyp ERR! stack     at ChildProcess.spawn (node:internal/child_process:421:11)
+node-pre-gyp ERR! stack     at Object.spawn (node:child_process:760:9)
+node-pre-gyp ERR! stack     at module.exports.run_gyp (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\@mapbox\node-pre-gyp\lib\util\compile.js:80:18)
+node-pre-gyp ERR! stack     at build (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\@mapbox\node-pre-gyp\lib\build.js:41:13)
+node-pre-gyp ERR! stack     at self.commands.<computed> [as build] (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\@mapbox\node-pre-gyp\lib\node-pre-gyp.js:86:37)
+node-pre-gyp ERR! stack     at run (C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\@mapbox\node-pre-gyp\lib\main.js:81:30)
+node-pre-gyp ERR! stack     at process.processTicksAndRejections (node:internal/process/task_queues:77:11)
+node-pre-gyp ERR! System Windows_NT 10.0.22631
+node-pre-gyp ERR! command "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\node_modules\\@mapbox\\node-pre-gyp\\bin\\node-pre-gyp" "install" "--fallback-to-build" "--update-binary"
+```
+
+It appears that there are [no prebuilt binaries](https://stackoverflow.com/a/73097307) available for NodeJS v22 yet, as seen on the [canvas v2.11.2 release page](https://github.com/Automattic/node-canvas/releases/tag/v2.11.2). However, the pre-existing installed packages for Node 20 work fine.
+
+We try to see if we are able to reproduce the segfault inside of Docker, in which case we can either try to fix it or if not, to use the Docker image on CI tests. We take this opportunity to edit `Dockerfile` to point to the new repo location:
+
+```Dockerfile
+...
+LABEL org.opencontainers.image.source="https://github.com/zamm-dev/zamm"
+
+...
+
+# dev dependencies
+RUN yarn playwright install --with-deps && \
+  apt install -y imagemagick
+```
+
+We edit `Makefile` as well to reflect this new tag:
+
+```Makefile
+BUILD_IMAGE = ghcr.io/zamm-dev/zamm:v0.1.4-build
+```
+
+and for good measure update the repo location in `src-tauri/Cargo.toml`:
+
+```toml
+repository = "https://github.com/zamm-dev/zamm"
+```
+
+We edit `src-svelte/Makefile` to give ourselves an easy way to run quick tests on Vitest:
+
+```Makefile
+quick-test:
+	yarn vitest --exclude src/routes/storybook.test.ts run
+```
+
+and finally edit `.github/workflows/tests.yaml` to try using the new image on CI for frontend tests as well. We remove the "Install remaining dependencies" step for the Svelte tests here because they should be covered by the Docker build step:
+
+```yaml
+...
+
+jobs:
+  build:
+    ...
+    container:
+      image: "ghcr.io/zamm-dev/zamm:v0.1.4-build"
+      ...
+    ...
+  svelte:
+    ...
+    container:
+      image: "ghcr.io/zamm-dev/zamm:v0.1.4-build"
+      options: --user root
+    ...
+    steps:
+      ...
+      - name: Run Svelte Tests
+        run: yarn workspace gui test
+```
+
+It turns out that we still need the install Playwright step because the `/github/home/` path is used instead:
+
+```
+ FAIL  src/lib/Slider.playwright.test.ts > Slider drag test
+Error: browserType.launch: Executable doesn't exist at /github/home/.cache/ms-playwright/chromium-1097/chrome-linux/chrome
+╔═════════════════════════════════════════════════════════════════════════╗
+║ Looks like Playwright Test or Playwright was just installed or updated. ║
+║ Please run the following command to download new browsers:              ║
+║                                                                         ║
+║     yarn playwright install                                             ║
+║                                                                         ║
+║ <3 Playwright Team                                                      ║
+╚═════════════════════════════════════════════════════════════════════════╝
+```
+
+Instead of needing to download it again, we just copy it over:
+
+```yaml
+      - name: Copy over playwright binaries
+        run: |
+          mkdir -p /github/home/.cache/
+          cp -R /root/.cache/ms-playwright /github/home/.cache/ms-playwright
+```
+
+When we finally run the tests locally, we run into:
+
+```
+ FAIL  src/routes/api-calls/ApiCalls.playwright.test.ts > Api Calls endless scroll test > loads more messages when scrolled to end
+Error: page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:6006/?path=/story/screens-llm-call-list--full
+Call log:
+  - navigating to "http://localhost:6006/?path=/story/screens-llm-call-list--full", waiting until "load"
+
+ ❯ getScrollElement src/routes/api-calls/ApiCalls.playwright.test.ts:38:16
+     36|   const getScrollElement = async () => {
+     37|     const url = `http://localhost:6006/?path=/story/screens-llm-call-list--full`;
+     38|     await page.goto(url);
+       |                ^
+     39|     await page.locator("button[title='Hide addons [A]']").click();
+     40|
+ ❯ test.retry src/routes/api-calls/ApiCalls.playwright.test.ts:66:47
+```
+
+This appears to only be a fluke due to a slow startup with Storybook. The segfault turns out to sometimes happen and sometimes not inside the Docker image. A repeatable command that's usable even after `make clean` is
+
+```bash
+$ docker run --rm -v .:/zamm -w /zamm ghcr.io/zamm-dev/zamm:v0.1.4-build bash -c "yarn install --frozen-lockfile && cd src-svelte && make quick-test"
+```
+
+We find that using `--pool=forks` during testing does in fact fix the segfault problem in the Docker container locally, so we edit `src-svelte/Makefile`:
+
+```Makefile
+quick-test:
+	yarn vitest --pool=forks --exclude src/routes/storybook.test.ts run
+
+```
+
+and `src-svelte/package.json`:
+
+```json
+{
+  ...,
+  "scripts": {
+    ...,
+    "test": "vitest --pool=forks run",
+    ...
+  },
+  ...
+}
+```
+
+The slider tests fail on CI due to timeouts, but at least the screenshot tests function fine as usual. We notice that the first test sometimes fail locally as well, but succeeds on the retry. As such, we edit `src-svelte/src/lib/test-helpers.ts` to see if warming up the Storybook server helps:
+
+```ts
+async function startStorybook(): Promise<ChildProcess> {
+  return new Promise((resolve, reject) => {
+    ...
+    storybookProcess.stdout.on("data", (data) => {
+      ...
+      if (storybookStartupMessage.test(...)) {
+        fetch("http://localhost:6006")
+          .then(() => {
+            resolve(storybookProcess);
+          })
+          .catch(reject);
+      }
+    });
+    ...
+  });
+}
+```
+
+This fixes the timeout flukes locally, but not for CI. We try changing the tests to trigger Playwright timeouts instead of Vitest timeouts to see what is taking so long, and edit `src-svelte/vitest.config.ts` to extend default test timeouts:
+
+```ts
+export default defineConfig({
+  ...
+  test: {
+    ...,
+    testTimeout: 20_000,
+    ...
+  },
+});
+```
+
+We also add `context.setDefaultTimeout(9_000);` to `src-svelte/src/lib/Slider.playwright.test.ts`, `src-svelte/src/lib/Switch.playwright.test.ts`, and `src-svelte/src/routes/api-calls/ApiCalls.playwright.test.ts`. This finally does get the tests to pass on CI. However, are other non-Playwright tests that do a `waitFor` that shouldn't take so long to fail, so we remove our changes to the global test config at `src-svelte/vitest.config.ts` and instead add proper constants to `src-svelte/src/lib/test-helpers.ts`:
+
+```ts
+export const PLAYWRIGHT_TIMEOUT = 9_000;
+export const PLAYWRIGHT_TEST_TIMEOUT = 20_000;
+```
+
+We then do an import in each of the above `test.ts` files:
+
+```ts
+import { PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_TEST_TIMEOUT } from "$lib/test-helpers.ts";
+```
+
+and set `context.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);` in the test setup and `timeout: PLAYWRIGHT_TEST_TIMEOUT` after each test. We get the Svelte error
+
+```
+/root/zamm/src-svelte/src/routes/api-calls/ApiCalls.playwright.test.ts:14:8
+Error: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+  PLAYWRIGHT_TEST_TIMEOUT,
+} from "$lib/test-helpers.ts";
+```
+
+so we do
+
+```ts
+import { PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_TEST_TIMEOUT } from "$lib/test-helpers";
+```
+
+instead. We decide to do this refactor in `src-svelte/src/routes/storybook.test.ts` as well, and so we end up changing `src-svelte/src/lib/test-helpers.ts` with the Storybook logic:
+
+```ts
+export const PLAYWRIGHT_TIMEOUT =
+  process.env.PLAYWRIGHT_TIMEOUT === undefined
+    ? PLAYWRIGHT_TIMEOUT
+    : parseInt(process.env.PLAYWRIGHT_TIMEOUT);
+export const PLAYWRIGHT_TEST_TIMEOUT = 2.2 * PLAYWRIGHT_TIMEOUT;
+```
+
+We als notice that in `.github\workflows\tests.yaml`, there are the lines
+
+```yaml
+    env:
+      PLAYWRIGHT_TIMEOUT: 60000
+```
+
+We try setting `PLAYWRIGHT_TIMEOUT` to 9,000 instead, but that results in a lot of timeouts on GitHub CI. As such, we leave it at the original values for now.
+
+##### API calls CI test failure
+
+Now we run into test flakiness for `src-svelte/src/routes/api-calls/ApiCalls.playwright.test.ts`, but only on CI:
+
+```
+ ❯ src/routes/api-calls/ApiCalls.playwright.test.ts  (1 test | 1 failed) 140215ms
+   ❯ src/routes/api-calls/ApiCalls.playwright.test.ts > Api Calls endless scroll test > loads more messages when scrolled to end
+     → Timed out 5000ms waiting for expect(locator).toHaveText(expected)
+
+Locator: locator('.scroll-contents').locator('a:nth-last-child(2) .message.instance .text-container')
+Expected string: "Mocking number 10."
+Received string: ""
+Call log:
+  - locator._expect with timeout 5000ms
+  - waiting for locator('.scroll-contents').locator('a:nth-last-child(2) .message.instance .text-container')
+
+     → locator.click: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator('button[title=\'Hide addons [A]\']')
+  -   locator resolved to <button type="button" class="css-17dxjer" title="Hide ad…>…</button>
+  - attempting click action
+  -   waiting for element to be visible, enabled and stable
+  -   element is visible, enabled and stable
+  -   scrolling into view if needed
+  -   done scrolling
+  -   <div class="css-mzrf51">…</div> from <div class="css-sqdry3">…</div> subtree intercepts pointer events
+  - retrying click action, attempt #1
+  -   waiting for element to be visible, enabled and stable
+  -   element is visible, enabled and stable
+  -   scrolling into view if needed
+  -   done scrolling
+  -   <iframe allowfullscreen="" class="css-1e296jv" data-is-l…></iframe> from <div class="css-sqdry3">…</div> subtree intercepts pointer events
+  - retrying click action, attempt #2
+  -   waiting 20ms
+  -   waiting for element to be visible, enabled and stable
+  -   element is visible, enabled and stable
+  -   scrolling into view if needed
+  -   done scrolling
+  -   <iframe allowfullscreen="" class="css-1e296jv" data-is-l…></iframe> from <div class="css-sqdry3">…</div> subtree intercepts pointer events
+...
+  - retrying click action, attempt #108
+  -   waiting 500ms
+  -   waiting for element to be visible, enabled and stable
+  -   element is visible, enabled and stable
+  -   scrolling into view if needed
+  -   done scrolling
+  -   <div class="css-1ki11f7" id="storybook-preview-wrappe…>…</div> from <div class="css-sqdry3">…</div> subtree intercepts pointer events
+  - retrying click action, attempt #109
+  -   waiting 500ms
+
+ ❯ getScrollElement src/routes/api-calls/ApiCalls.playwright.test.ts:41:59
+     39|     const url = `http://localhost:6006/?path=/story/screens-llm-call-l…
+     40|     await page.goto(url);
+     41|     await page.locator("button[title='Hide addons [A]']").click();
+       |                                                           ^
+     42| 
+     43|     const maybeFrame = page.frame({ name: "storybook-preview-iframe" }…
+ ❯ test.retry src/routes/api-calls/ApiCalls.playwright.test.ts:68:41
+```
+
+This is not reproducible in the local Docker image. It looks like the `#storybook-preview-wrapper` element that is the parent of the `iframe` is preventing it from being clicked. The rendered HTML for the page looks like this:
+
+```
+<div id="storybook-preview-wrapper" class="css-1ki11f7">
+  <a tabindex="0" href="#reusable-external-link--external-link" class="css-1bi9mm9">
+    Skip to sidebar
+  </a>
+  <iframe data-is-storybook="true" id="storybook-preview-iframe" title="storybook-preview-iframe" src="iframe.html?viewMode=story&amp;id=*" allow="clipboard-write;" allowfullscreen="" class="css-1e296jv" data-is-loaded="true">
+  </iframe>
+</div>
+```
+
+From [this issue](https://github.com/microsoft/playwright/issues/13576#issuecomment-1101468115), it appears that we can try working around this by editing `src-svelte\src\routes\api-calls\ApiCalls.playwright.test.ts`:
+
+```ts
+    await page.goto(url);
+    await page.locator("button[title='Hide addons [A]']").dispatchEvent("click");
+```
 
 #### Scrollbar fix on main content
 
