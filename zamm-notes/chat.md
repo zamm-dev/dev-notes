@@ -11499,6 +11499,845 @@ $ diesel migration revert --database-url /root/.local/share/zamm/zamm.sqlite3 -n
 
 because otherwise the `down.sql` script won't run correctly.
 
+#### Discover existing follow-ups
+
+We can go through the database and discover follow-up relations between existing API calls. We only want to do this the first time the user upgrades to zamm v0.1.4, but there doesn't appear to be attach Rust code to be triggered when a Diesel migration runs. As such, we settle for manually detecting the upgrade in the backend instead.
+
+##### Detecting ZAMM version upgrades
+
+We do
+
+```bash
+$ cargo add version-compare
+```
+
+We expose some functionality from the existing preference reading/writing code to other parts of the project. We edit `src-tauri\src\commands\preferences\write.rs` just to expose this function:
+
+```ts
+pub fn set_preferences_helper(
+    ...
+) -> ZammResult<()> {
+    ...
+}
+```
+
+We then do a little bit of a refactor in `src-tauri\src\commands\preferences\read.rs`, and expose the refactored function as well:
+
+```rs
+pub fn get_preferences_file_contents(
+    ...
+) -> ZammResult<Preferences> {
+    ...
+    if preferences_path.exists() {
+        ...
+        Ok(preferences)
+    } else {
+        ...
+        Ok(Preferences::default())
+    }
+}
+
+fn get_preferences_happy_path(
+    maybe_preferences_dir: &Option<PathBuf>,
+) -> ZammResult<Preferences> {
+    #[allow(unused_mut)]
+    let mut found_preferences = get_preferences_file_contents(maybe_preferences_dir)?;
+    #[cfg(target_os = "windows")]
+    if found_preferences.transparency_on.is_none() {
+        found_preferences.transparency_on = Some(true);
+    }
+    Ok(found_preferences)
+}
+
+pub fn get_preferences_helper(...) -> Preferences {
+    ...
+}
+
+```
+
+Here `get_preferences_file_contents` is basically what `get_preferences_happy_path` was before, minus setting `transparency_on` to true for Windows. This is because we don't want to add settings to the local setttings file if the user hasn't explicitly changed them. Modifying preferences in this way with `get_preferences_happy_path` will result in losing information about what was set by the user and what was set by default.
+
+We expose these new functions in `src-tauri\src\commands\preferences\mod.rs` as well:
+
+```rs
+pub use read::{..., get_preferences_file_contents};
+pub use write::{..., set_preferences_helper};
+```
+
+and also expose that module for direct access in `src-tauri/src/commands/mod.rs`:
+
+```rs
+...
+pub mod preferences;
+...
+```
+
+We add a new field to `src-tauri/src/commands/preferences/models.rs`:
+
+```rs
+#[derive(...)]
+pub struct Preferences {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    ...
+}
+```
+
+We wish to keep the app upgrade and versioning logic contained to the app startup, so we avoid making any further changes here, such as setting a default for the version to the current Cargo version. This way, none of the tests for the other preference-setting API calls change, nor will they affect the version once the app is up and running and the user toggles some preference changes.
+
+We create `src-tauri\src\upgrades.rs` to make use of these newly exposed functions, and overwrite the version if it's old:
+
+```rs
+use std::env;
+use std::path::PathBuf;
+
+use crate::commands::{
+    errors::ZammResult,
+    preferences::{get_preferences_file_contents, set_preferences_helper},
+};
+
+pub fn handle_app_upgrades(preferences_dir: &Option<PathBuf>) -> ZammResult<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let mut preferences = get_preferences_file_contents(preferences_dir)?;
+    let last_touched_by_previous_zamm = match preferences.version {
+        None => true,
+        Some(pref_version) => version_compare::compare_to(
+            pref_version,
+            current_version,
+            version_compare::Cmp::Lt,
+        )
+        .unwrap_or(false),
+    };
+
+    if last_touched_by_previous_zamm {
+        preferences.version = Some(current_version.to_string());
+        set_preferences_helper(preferences_dir, &preferences)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sample_call::SampleCall;
+    use crate::test_helpers::api_testing::standard_test_subdir;
+    use crate::test_helpers::{
+        SampleCallTestCase, SideEffectsHelpers, ZammResultReturn,
+    };
+    use stdext::function_name;
+
+    struct HandleAppUpgradesTestCase {
+        test_fn_name: &'static str,
+    }
+
+    impl SampleCallTestCase<(), ZammResult<()>> for HandleAppUpgradesTestCase {
+        const EXPECTED_API_CALL: &'static str = "upgrade";
+        const CALL_HAS_ARGS: bool = false;
+
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        async fn make_request(
+            &mut self,
+            _: &Option<()>,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            handle_app_upgrades(&side_effects.disk)
+        }
+
+        fn serialize_result(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<()>,
+        ) -> String {
+            ZammResultReturn::serialize_result(self, sample, result)
+        }
+
+        async fn check_result(
+            &self,
+            sample: &SampleCall,
+            args: Option<&()>,
+            result: &ZammResult<()>,
+        ) {
+            ZammResultReturn::check_result(self, sample, args, result).await
+        }
+    }
+
+    impl ZammResultReturn<(), ()> for HandleAppUpgradesTestCase {}
+
+    async fn check_app_upgrades(test_fn_name: &'static str, file_prefix: &str) {
+        let mut test_case = HandleAppUpgradesTestCase { test_fn_name };
+        test_case.check_sample_call(file_prefix).await;
+    }
+
+    #[tokio::test]
+    async fn test_upgrade_first_init() {
+        check_app_upgrades(
+            function_name!(),
+            "./api/sample-calls/upgrade-first-init.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_upgrade_from_v_0_1_3() {
+        check_app_upgrades(
+            function_name!(),
+            "./api/sample-calls/upgrade-from-v0.1.3.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_upgrade_from_future_version() {
+        check_app_upgrades(
+            function_name!(),
+            "./api/sample-calls/upgrade-from-future-version.yaml",
+        )
+        .await;
+    }
+}
+
+```
+
+Note that we're reusing the testing logic for API calls even though this is not an API call. Ideally, we should refactor API sample calls into the API request and response pair, and the backend interactions that make the request-response pair optional. But for now, we simply create `src-tauri/api/sample-calls/upgrade-first-init.yaml` to represent what happens on first app startup with the new version:
+
+```yaml
+request:
+  - upgrade
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: preferences/version-init
+
+```
+
+where `src-tauri\api\sample-disk-writes\preferences\version-init\preferences.toml` looks like:
+
+```toml
+version = "0.1.4"
+
+```
+
+and `src-tauri/api/sample-calls/upgrade-from-v0.1.3.yaml` to represent what happens when the user upgrades from v0.1.3 or before:
+
+```yaml
+request:
+  - upgrade
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: preferences/v0.1.3
+    endStateDirectory: preferences/version-update
+```
+
+where `src-tauri\api\sample-disk-writes\preferences\v0.1.3\preferences.toml` looks like this (with an additional option added to simulate the user having changed some settings):
+
+```toml
+version = "0.1.3"
+sound_on = false
+
+```
+
+and `src-tauri\api\sample-disk-writes\preferences\version-update\preferences.toml` looks like this (with the previous setting preserved):
+
+```toml
+sound_on = false
+version = "0.1.4"
+
+```
+
+Finally, we create `src-tauri/api/sample-calls/upgrade-from-future-version.yaml`, which demonstrates that files should be untouched if it's a future version:
+
+```yaml
+request:
+  - upgrade
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: preferences/future-version
+    endStateDirectory: preferences/future-version
+
+```
+
+where `src-tauri\api\sample-disk-writes\preferences\future-version\preferences.toml` looks like this (valid for our purposes until ZAMM gets past version 1.9.9):
+
+```toml
+version = "1.9.9"
+
+```
+
+We then edit `src-tauri\src\main.rs` based on the examples [here](https://github.com/tauri-apps/tauri/discussions/5230) and [here](https://github.com/tauri-apps/tauri/discussions/6583) to call this new function:
+
+```rs
+...
+mod upgrades;
+...
+
+use upgrades::handle_app_upgrades;
+...
+
+fn main() {
+    ...
+            tauri::Builder::default()
+                .setup(|app| {
+                    let config_dir = app.handle().path_resolver().app_config_dir();
+                    handle_app_upgrades(&config_dir)?;
+                    Ok(())
+                })
+                ...;
+    ...
+}
+```
+
+##### Figuring out follow-up API calls
+
+We already have a database of API calls from previous version. We'd like to add the missing links in now. Our first attempt passing the database in directly gives us this problem:
+
+```
+error[E0373]: closure may outlive the current function, but it borrows `possible_db`, which is owned by the current function
+  --> src\main.rs:64:24
+   |
+64 |                 .setup(|app| {
+   |                        ^^^^^ may outlive borrowed value `possible_db`
+65 |                     let config_dir = app.hand...
+66 |                     match possible_db.as_mut() {
+   |                           ----------- `possible_db` is borrowed here
+   |
+note: function requires argument type to outlive `'static`
+  --> src\main.rs:63:13
+   |
+63 | / ...   tauri::Builder::default()
+64 | | ...       .setup(|app| {
+65 | | ...           let config_dir = app.handle().path_resolver... 
+66 | | ...           match possible_db.as_mut() {
+...  |
+77 | | ...           Ok(())
+78 | | ...       })
+   | |____________^
+help: to force the closure to take ownership of `possible_db` (and any other referenced variables), use the `move` keyword
+   |
+64 |                 .setup(move |app| {
+   |                        ++++
+
+error[E0505]: cannot move out of `possible_db` because it is borrowed
+  --> src\main.rs:79:49
+   |
+63 | /             tauri::Builder::default()
+64 | |                 .setup(|app| {
+   | |                        ----- borrow of `possible_db` occurs here
+65 | |                     let config_dir = app.handle().path_resolve...
+66 | |                     match possible_db.as_mut() {
+   | |                           ----------- borrow occurs due to use in closure
+...  |
+77 | |                     Ok(())
+78 | |                 })
+   | |__________________- argument requires that `possible_db` is borrowed for `'static`
+79 |                   .manage(ZammDatabase(Mutex::new(possible_db...
+   |                                                   ^^^^^^^^^^^ move out of `possible_db` occurs here
+```
+
+Instead, we try getting the app state as shown [here](https://github.com/tauri-apps/tauri/discussions/4202#discussioncomment-2813507), but then we find that we need `async` due to needing to wait for the DB to lock, so we try the solution [here](https://github.com/tauri-apps/tauri/discussions/7596#discussioncomment-6718895). But then we get
+
+```
+error[E0521]: borrowed data escapes outside of closure
+  --> src\main.rs:69:21
+   |
+65 |                   .setup(|app| {
+   |                           ---
+   |                           |
+   |                           `app` is a reference that is only valid in the closure body
+   |                           has type `&'1 mut tauri::App`        
+...
+69 | /                     tauri::async_runtime::spawn(async move { 
+70 | |                         match db.0.lock().await.as_mut() {   
+71 | |                             None => {
+72 | |                                 eprintln!("Couldn't conne... 
+...  |
+80 | |                         }
+81 | |                     });
+   | |                      ^
+   | |                      |
+   | |______________________`app` escapes the closure body here     
+   |                        argument requires that `'1` must outlive `'static`
+```
+
+It's unclear if it's possible for the `'_` lifetime of the state to live on like this, so instead we try a simpler way to [block on](https://stackoverflow.com/a/52521592) async tasks, turning them into sync tasks. We end up with a `src-tauri\src\main.rs` that looks like:
+
+```rs
+...
+use futures::executor;
+...
+use tauri::Manager;
+...
+
+fn main() {
+    ...
+            tauri::Builder::default()
+                .setup(|app| {
+                    let config_dir = app.handle().path_resolver().app_config_dir();
+                    let zamm_db = app.state::<ZammDatabase>();
+
+                    executor::block_on(async {
+                        handle_app_upgrades(&config_dir, &zamm_db)
+                            .await
+                            .unwrap_or_else(|e| {
+                                eprintln!("Couldn't run custom data migrations: {e}");
+                                eprintln!("Continuing with unchanged data");
+                            });
+                    });
+
+                    Ok(())
+                })
+                .manage(ZammDatabase(Mutex::new(possible_db)))
+                .manage(ZammApiKeys(Mutex::new(api_keys)))
+                ...;
+}
+```
+
+Then our `src-tauri\src\upgrades.rs` look like:
+
+```rs
+...
+use anyhow::anyhow;
+use chrono::NaiveDateTime;
+use diesel::dsl::not;
+use diesel::prelude::*;
+
+use crate::models::llm_calls::ChatPrompt;
+use crate::models::llm_calls::EntityId;
+use crate::models::llm_calls::Prompt;
+use crate::schema::{llm_call_follow_ups, llm_calls};
+use crate::ZammDatabase;
+
+async fn upgrade_to_v_0_1_4(zamm_db: &ZammDatabase) -> ZammResult<()> {
+    let mut db = zamm_db.0.lock().await;
+    let conn = db.as_mut().ok_or(anyhow!("Failed to lock database"))?;
+
+    let llm_calls_without_followups: Vec<(EntityId, NaiveDateTime, Prompt)> =
+        llm_calls::table
+            .select((llm_calls::id, llm_calls::timestamp, llm_calls::prompt))
+            .filter(not(llm_calls::id.eq_any(
+                llm_call_follow_ups::table.select(llm_call_follow_ups::next_call_id),
+            )))
+            .load::<(EntityId, NaiveDateTime, Prompt)>(conn)?;
+    let non_initial_calls: Vec<&(EntityId, NaiveDateTime, Prompt)> =
+        llm_calls_without_followups
+            .iter()
+            .filter(|(_, _, prompt)| {
+                match prompt {
+                    // if it's just system message + initial human message, then this
+                    // must be an initial prompt rather than any previous one.
+                    // Otherwise, it should have at least 4 messages: the initial system
+                    // message, the initial human message, the initial AI reply, and
+                    // the human follow-up
+                    Prompt::Chat(chat_prompt) => chat_prompt.messages.len() >= 4,
+                }
+            })
+            .collect();
+
+    for (id, timestamp, prompt) in non_initial_calls {
+        let (search_prompt, search_completion) = match prompt {
+            Prompt::Chat(chat_prompt) => {
+                let length = chat_prompt.messages.len();
+                let previous_messages = chat_prompt.messages[..length - 2].to_vec();
+                let previous_prompt = Prompt::Chat(ChatPrompt {
+                    messages: previous_messages,
+                });
+                let previous_completion = &chat_prompt.messages[length - 2];
+                (previous_prompt, previous_completion)
+            }
+        };
+
+        let prior_api_call: Option<EntityId> = llm_calls::table
+            .select(llm_calls::id)
+            .filter(llm_calls::timestamp.lt(timestamp))
+            .filter(llm_calls::prompt.eq(search_prompt))
+            .filter(llm_calls::completion.eq(search_completion))
+            .first::<EntityId>(conn)
+            .optional()?;
+
+        if let Some(prior_call_id) = prior_api_call {
+            diesel::insert_into(llm_call_follow_ups::table)
+                .values((
+                    llm_call_follow_ups::previous_call_id.eq(prior_call_id),
+                    llm_call_follow_ups::next_call_id.eq(id),
+                ))
+                .execute(conn)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn version_before(a: &Option<String>, b: &str) -> bool {
+    match a {
+        None => true,
+        Some(version) => {
+            version_compare::compare_to(version, b, version_compare::Cmp::Lt)
+                .unwrap_or(false)
+        }
+    }
+}
+
+pub async fn handle_app_upgrades(
+    preferences_dir: &Option<PathBuf>,
+    zamm_db: &ZammDatabase,
+) -> ZammResult<()> {
+    ...
+
+    if version_before(&preferences.version, "0.1.4") {
+        upgrade_to_v_0_1_4(zamm_db).await?;
+    }
+
+    if version_before(&preferences.version, current_version) {
+        preferences.version = ...;
+        ...
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    impl SampleCallTestCase<(), ZammResult<()>> for HandleAppUpgradesTestCase {
+        ...
+
+        async fn make_request(
+            ...
+        ) -> ZammResult<()> {
+            handle_app_upgrades(&side_effects.disk, side_effects.db.as_ref().unwrap())
+                .await
+        }
+
+        ...
+    }
+
+    ...
+
+    #[tokio::test]
+    async fn test_upgrade_to_v_0_1_4_onwards() {
+        check_app_upgrades(
+            function_name!(),
+            "./api/sample-calls/upgrade-to-v0.1.4.yaml",
+        )
+        .await;
+    }
+
+    ...
+}
+
+```
+
+where `src-tauri/api/sample-calls/upgrade-to-v0.1.4.yaml` (renamed from `src-tauri/api/sample-calls/upgrade-from-v0.1.3.yaml`) now looks like
+
+```yaml
+request:
+  - upgrade
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: preferences/sound-override
+    endStateDirectory: preferences/version-update
+  database:
+    startStateDump: sample-v0.1.3-db
+    endStateDump: sample-v0.1.4-db
+
+```
+
+As for `src-tauri\api\sample-database-writes\sample-v0.1.3-db\dump.yaml`, we start it off with our usual duo, stripped of any links:
+
+```yaml
+api_keys: []
+llm_calls:
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+  timestamp: 2024-01-16T08:50:19.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hello, does this work?
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Yes, it works. How can I assist you today?
+  tokens:
+    prompt: 32
+    response: 12
+    total: 44
+- id: c13c1e67-2de3-48de-a34c-a32079c03316
+  timestamp: 2024-01-16T09:50:19.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hello, does this work?
+      - role: AI
+        text: Yes, it works. How can I assist you today?
+      - role: Human
+        text: Tell me something funny.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: 'Sure, here''s a joke for you: Why don''t scientists trust atoms? Because they make up everything!'
+  tokens:
+    prompt: 57
+    response: 22
+    total: 79
+```
+
+Then we add a mock AI call:
+
+```yaml
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a00
+  timestamp: 2024-01-16T08:00:50.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: This is a mock conversation.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Mocking number 0.
+  tokens:
+    prompt: 15
+    response: 3
+    total: 18
+```
+
+Then mock call #2 is a follow-up to the first mock call:
+
+```yaml
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a02
+  timestamp: 2024-01-18T08:02:50.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: This is a mock conversation.
+      - role: AI
+        text: Mocking number 0.
+      - role: Human
+        text: This is a mock response.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Mocking number 2.
+  tokens:
+    prompt: 15
+    response: 3
+    total: 18
+```
+
+and then mock call #4 is one that doesn't match any prior history. This shouldn't happen, but in case it does, the program shouldn't crash:
+
+```yaml
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a04
+  timestamp: 2024-01-18T08:04:50.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: This is a non-existent fluke with no history.
+      - role: AI
+        text: Mocking number 0.
+      - role: Human
+        text: This is another mock response.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Mocking number 4.
+  tokens:
+    prompt: 15
+    response: 3
+    total: 18
+```
+
+Then, mock call #6 is a *second* follow-up to call #2, but one that is finally non-sequential (for example, if someone restores a conversation and starts chatting from there):
+
+```yaml
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a06
+  timestamp: 2024-01-18T08:06:50.738093890
+  llm:
+    name: gpt-4-0613
+    requested: gpt-4
+    provider: OpenAI
+  request:
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: This is a mock conversation.
+      - role: AI
+        text: Mocking number 0.
+      - role: Human
+        text: This is another mock response.
+    temperature: 1.0
+  response:
+    completion:
+      role: AI
+      text: Mocking number 6.
+  tokens:
+    prompt: 15
+    response: 3
+    total: 18
+```
+
+The corresponding SQL at `src-tauri\api\sample-database-writes\sample-v0.1.3-db\dump.sql`:
+
+```sql
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a74','2024-01-16 08:50:19.738093890','open_ai','gpt-4','gpt-4-0613',1.0,32,12,44,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this work?"}]}','{"role":"AI","text":"Yes, it works. How can I assist you today?"}');
+INSERT INTO llm_calls VALUES('c13c1e67-2de3-48de-a34c-a32079c03316','2024-01-16 09:50:19.738093890','open_ai','gpt-4','gpt-4-0613',1.0,57,22,79,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this work?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"Human","text":"Tell me something funny."}]}','{"role":"AI","text":"Sure, here''s a joke for you: Why don''t scientists trust atoms? Because they make up everything!"}');
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a00','2024-01-18 08:00:50.738093890','open_ai','gpt-4','gpt-4-0613',1.0,15,3,18,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"This is a mock conversation."}]}','{"role":"AI","text":"Mocking number 0."}');
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a02','2024-01-18 08:02:50.738093890','open_ai','gpt-4','gpt-4-0613',1.0,15,3,18,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"This is a mock conversation."},{"role":"AI","text":"Mocking number 0."},{"role":"Human","text":"This is a mock response."}]}','{"role":"AI","text":"Mocking number 2."}');
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a04','2024-01-18 08:04:50.738093890','open_ai','gpt-4','gpt-4-0613',1.0,15,3,18,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"This is a non-existent fluke with no history."},{"role":"AI","text":"Mocking number 0."},{"role":"Human","text":"This is another mock response."}]}','{"role":"AI","text":"Mocking number 4."}');
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a06','2024-01-18 08:06:50.738093890','open_ai','gpt-4','gpt-4-0613',1.0,15,3,18,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"This is a mock conversation."},{"role":"AI","text":"Mocking number 0."},{"role":"Human","text":"This is another mock response."}]}','{"role":"AI","text":"Mocking number 6."}');
+```
+
+gives us confidence that Serde serialization is consistent enough for us to simply query for the serialized prompt and completion text in SQL itself without needing to resort to higher-level parsing in Rust.
+
+`src-tauri\api\sample-database-writes\sample-v0.1.4-db\dump.sql` looks similar, except as expected with the link rows add at the end:
+
+```sql
+INSERT INTO llm_calls VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a74', ...);
+...
+INSERT INTO llm_call_follow_ups VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a74','c13c1e67-2de3-48de-a34c-a32079c03316');
+INSERT INTO llm_call_follow_ups VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a00','d5ad1e49-f57f-4481-84fb-4d70ba8a7a02');
+INSERT INTO llm_call_follow_ups VALUES('d5ad1e49-f57f-4481-84fb-4d70ba8a7a00','d5ad1e49-f57f-4481-84fb-4d70ba8a7a06');
+```
+
+Similarly, with `src-tauri\api\sample-database-writes\sample-v0.1.4-db\dump.yaml` we recover the `continue-conversation` dump, plus the other mock calls we made:
+
+```yaml
+api_keys: []
+llm_calls:
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+  ...
+  conversation:
+    next_calls:
+    - id: c13c1e67-2de3-48de-a34c-a32079c03316
+      snippet: 'Sure, here''s a joke for you: Why don''t scientists trust...'
+- id: c13c1e67-2de3-48de-a34c-a32079c03316
+  ...
+  conversation:
+    previous_call:
+      id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+      snippet: Yes, it works. How can I assist you today?
+- id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a00
+  ...
+  conversation:
+    next_calls:
+    - id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a02
+      snippet: Mocking number 2.
+    - id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a06
+      snippet: Mocking number 6.
+...
+```
+
+Because the test function takes in a database now, we edit `src-tauri/api/sample-calls/upgrade-first-init.yaml` to ensure that this does not interfere with a fresh install of ZAMM:
+
+```yaml
+...
+sideEffects:
+  ...
+  database:
+    startStateDump: empty
+    endStateDump: empty
+
+```
+
+Similarly with `src-tauri\api\sample-calls\upgrade-from-future-version.yaml`, we ensure that this data migration is not run if we encounter a *newer* version of the database (for example, future versions of ZAMM might enable manually deleting such links):
+
+```yaml
+...
+sideEffects:
+  ...
+  database:
+    startStateDump: sample-v0.1.3-db
+    endStateDump: sample-v0.1.3-db
+
+```
+
+Finally, as a bit of extra information, we edit `src-tauri\src\upgrades.rs` to print out any results of this migration:
+
+```rs
+async fn upgrade_to_v_0_1_4(...) -> ZammResult<()> {
+    ...
+    let mut num_links_added = 0;
+    for (id, timestamp, prompt) in non_initial_calls {
+        ...
+
+        if let Some(prior_call_id) = prior_api_call {
+            diesel::insert_into(...)
+                ...;
+            num_links_added += 1;
+        }
+    }
+
+    if num_links_added > 0 {
+        println!(
+            "v0.1.4 data migration: Linked {} LLM API calls with their follow-ups",
+            num_links_added
+        );
+    }
+
+    Ok(())
+}
+```
+
+We can use the `--show-output` option of `cargo test` to check that this output works.
+
 ### Frontend
 
 We update `src-svelte/src/lib/bindings.ts` automatically with Specta, and then start fixing failing tests. We edit `src-svelte/src/routes/chat/Chat.svelte` to pass in the last message ID to the backend whenever possible, and put all the arguments to `chat` inside a proper object:
@@ -11831,6 +12670,145 @@ failed to select a version for `webkit2gtk-sys` which could resolve this conflic
 ```
 
 As such, we'll stick with Specta 1 and the manual override for now.
+
+#### Displaying the new data
+
+##### Getting test data
+
+When we eventually evalute the visualization of this data, we'd like to have a visual test case where the API call both is a follow-up, and has more than one follow-up to itself. To make sure that we are testing with realistic data, we add some extra tests to `src-tauri\src\commands\llms\chat.rs`:
+
+```rs
+  #[tokio::test]
+    async fn test_fork_conversation_step_1() {
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-fork-conversation-python.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_fork_conversation_step_2() {
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-fork-conversation-rust.yaml",
+        )
+        .await;
+    }
+```
+
+where `src-tauri/api/sample-calls/chat-fork-conversation-python.yaml` looks like
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        "llm": "gpt-4",
+        "temperature": null,
+        "previous_call_id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+        "prompt": [
+          {
+            "role": "System",
+            "text": "You are ZAMM, a chat program. Respond in first person."
+          },
+          {
+            "role": "Human",
+            "text": "Hello, does this work?"
+          },
+          {
+            "role": "AI",
+            "text": "Yes, it works. How can I assist you today?"
+          },
+          {
+            "role": "Human",
+            "text": "Tell me something funny."
+          },
+          {
+            "role": "AI",
+            "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+          },
+          {
+            "role": "Human",
+            "text": "Write me a Python script that prints that joke out."
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "0e6bcadf-2b41-43d9-b4cf-81008d4f4771",
+      "timestamp": "2024-05-23T09:30:37.854241700",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here is a simple Python script that will print out the joke:\n\n```python\nprint(\"Why don't scientists trust atoms? Because they make up everything!\")\n```\n\nJust run this script and it will display the joke."
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-continued
+    endStateDump: conversation-forked-step-1
+  network:
+    recordingFile: fork-conversation-python.json
+
+```
+
+and `src-tauri/api/sample-calls/chat-fork-conversation-rust.yaml` is the same thing but continuing on from the previous database state, and with a different user response to `c13c1e67-2de3-48de-a34c-a32079c03316`:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        "llm": "gpt-4",
+        "temperature": null,
+        "previous_call_id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+        "prompt": [
+          {
+            "role": "System",
+            "text": "You are ZAMM, a chat program. Respond in first person."
+          },
+          ...,
+          {
+            "role": "AI",
+            "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+          },
+          {
+            "role": "Human",
+            "text": "Write me a Rust script that prints that joke out."
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "63b5c02e-b864-4efe-a286-fbef48b152ef",
+      "timestamp": "2024-05-23T09:34:38.572764500",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here is a simple Rust program that prints out the joke:\n\n```rust\nfn main() {\n    println!(\"Why don't scientists trust atoms? Because they make up everything!\");\n}\n```\nTo run this program, you'd simply compile and run the Rust file containing this code."
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-forked-step-1
+    endStateDump: conversation-forked-step-2
+  network:
+    recordingFile: fork-conversation-rust.json
+
+```
+
+The response messages are copied over from the output of the failing tests.
+
+Since the backend testing infrastructure does not yet support simulating multiple API calls at once and testing their effects, this is the easiest way to get realistic test data on both calls.
+
+The contents of `src-tauri/api/sample-database-writes/conversation-forked-step-1/` and `src-tauri/api/sample-database-writes/conversation-forked-step-2` are simply copied from the temporary test directories when the tests failed, with a manual sanity check to see that the results look sane. `src-tauri/api/sample-network-requests/fork-conversation-python.json` and `src-tauri/api/sample-network-requests/fork-conversation-rust.json` are automatically captured. In the future, it would be a nice TODO to have the backend test infrastructure also automatically capture empty database directories.
 
 ## Persisting and resuming conversations
 
