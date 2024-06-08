@@ -12338,6 +12338,56 @@ async fn upgrade_to_v_0_1_4(...) -> ZammResult<()> {
 
 We can use the `--show-output` option of `cargo test` to check that this output works.
 
+#### Always returning follow-ups in the same order
+
+We notice one fluke failure in our Rust tests on CI because the database dump returned the `next_calls` in this order:
+
+```yaml
+    next_calls:
+    - id: 63b5c02e-b864-4efe-a286-fbef48b152ef
+      snippet: 'Sure, here is a simple Rust program that prints out the joke: ```rust fn main() { println!("Why don''t scientists trust...'
+    - id: 0e6bcadf-2b41-43d9-b4cf-81008d4f4771
+      snippet: 'Sure, here is a simple Python script that will print out the joke: ```python print("Why don''t scientists trust atoms? Because...'
+```
+
+To prevent this, we do
+
+```bash
+$ diesel migration generate ordered_names                                 
+Creating migrations\2024-05-29-071520_ordered_names\up.sql
+Creating migrations\2024-05-29-071520_ordered_names\down.sql
+```
+
+Our `src-tauri\migrations\2024-05-29-071520_ordered_names\down.sql` will just restore the view to its previous version:
+
+```sql
+DROP VIEW llm_call_named_follow_ups;
+CREATE VIEW llm_call_named_follow_ups AS
+  SELECT
+    llm_call_follow_ups.previous_call_id AS previous_call_id,
+    previous_call.completion AS previous_call_completion,
+    llm_call_follow_ups.next_call_id AS next_call_id,
+    next_call.completion AS next_call_completion
+  FROM
+    llm_call_follow_ups
+    JOIN llm_calls AS previous_call ON llm_call_follow_ups.previous_call_id = previous_call.id
+    JOIN llm_calls AS next_call ON llm_call_follow_ups.next_call_id = next_call.id;
+
+```
+
+whereas our `src-tauri\migrations\2024-05-29-071520_ordered_names\up.sql` will add an extra `ORDER BY` clause to remove such uncertainties:
+
+```sql
+DROP VIEW llm_call_named_follow_ups;
+CREATE VIEW llm_call_named_follow_ups AS
+  SELECT
+    ...
+  FROM
+    ...
+  ORDER BY next_call.timestamp ASC;
+
+```
+
 ### Frontend
 
 We update `src-svelte/src/lib/bindings.ts` automatically with Specta, and then start fixing failing tests. We edit `src-svelte/src/routes/chat/Chat.svelte` to pass in the last message ID to the backend whenever possible, and put all the arguments to `chat` inside a proper object:
@@ -12809,6 +12859,513 @@ The response messages are copied over from the output of the failing tests.
 Since the backend testing infrastructure does not yet support simulating multiple API calls at once and testing their effects, this is the easiest way to get realistic test data on both calls.
 
 The contents of `src-tauri/api/sample-database-writes/conversation-forked-step-1/` and `src-tauri/api/sample-database-writes/conversation-forked-step-2` are simply copied from the temporary test directories when the tests failed, with a manual sanity check to see that the results look sane. `src-tauri/api/sample-network-requests/fork-conversation-python.json` and `src-tauri/api/sample-network-requests/fork-conversation-rust.json` are automatically captured. In the future, it would be a nice TODO to have the backend test infrastructure also automatically capture empty database directories.
+
+We realize that we actually still need to update `src-tauri\api\sample-calls\upgrade-from-future-version.yaml` to use the new database dump, and to update the call accordingly:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+      ...
+      "conversation": {
+        "previous_call": {
+          "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+          ...
+        },
+        "next_calls": [
+          {
+            "id": "0e6bcadf-2b41-43d9-b4cf-81008d4f4771",
+            "snippet": "Sure, here is a simple Python script that will print..."
+          },
+          {
+            "id": "63b5c02e-b864-4efe-a286-fbef48b152ef",
+            "snippet": "Sure, here is a simple Rust program that prints out..."
+          }
+        ]
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-forked-step-2
+    endStateDump: conversation-forked-step-2
+
+```
+
+We edit `src-tauri\api\sample-calls\get_api_call-start-conversation.yaml` to also use `conversation-forked-step-2`, but this of course results in no changes to that particular API call because the only new follow up links don't affect the API call in question. We also realize that there needs to be an example *without* any conversation links, so we create `src-tauri\api\sample-calls\get_api_call-no-links.yaml` using an earlier sample database snapshot:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74"
+    }
+response:
+  message: >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+      "timestamp": "2024-01-16T08:50:19.738093890",
+      "llm": {
+        "name": "gpt-4-0613",
+        "requested": "gpt-4",
+        "provider": "OpenAI"
+      },
+      "request": {
+        "prompt": {
+          "type": "Chat",
+          "messages": [
+            {
+              "role": "System",
+              "text": "You are ZAMM, a chat program. Respond in first person."
+            },
+            {
+              "role": "Human",
+              "text": "Hello, does this work?"
+            }
+          ]
+        },
+        "temperature": 1.0
+      },
+      "response": {
+        "completion": {
+          "role": "AI",
+          "text": "Yes, it works. How can I assist you today?"
+        }
+      },
+      "tokens": {
+        "prompt": 32,
+        "response": 12,
+        "total": 44
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-started
+    endStateDump: conversation-started
+
+```
+
+and add it as a test to `src-tauri\src\commands\llms\get_api_call.rs`:
+
+```rs
+    #[tokio::test]
+    async fn test_get_api_call_no_links() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/get_api_call-no-links.yaml",
+        )
+        .await;
+    }
+```
+
+We actually need to also copy-paste the contents of `src-tauri\api\sample-calls\get_api_call-continue-conversation.yaml` into the `CONTINUE_CONVERSATION_CALL` variable in `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.stories.ts`. Ideally this could either be automated, or the stories could be split between ones that make actual API calls and ones that just have them defined.
+
+##### Displaying the test data
+
+We find that at first, the SVGs for the left and right arrows are differently sized for some reason. This gets fixed when we wrap the SVGs in their own divs first.
+
+We also try to clamp the text to two lines at most. This is when we [find out](https://css-tricks.com/almanac/properties/l/line-clamp/) that the way to do so in CSS is by exactly repeating these four lines:
+
+```css
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;  
+  overflow: hidden;
+```
+
+As such, we finally end up with a `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` that looks like this:
+
+```svelte
+<script lang="ts">
+  ...
+  import IconLeftArrow from "~icons/mingcute/left-fill";
+  import IconRightArrow from "~icons/mingcute/right-fill";
+  ...
+
+  $: previousCall = apiCall?.conversation?.previous_call;
+  $: nextCalls = apiCall?.conversation?.next_calls ?? [];
+</script>
+
+<InfoBox title="API Call">
+  {#if apiCall}
+    ...
+    {#if apiCall?.conversation !== undefined}
+      <SubInfoBox subheading="Conversation">
+        <div class="conversation-links composite-reveal">
+          <div class="conversation previous-links composite-reveal">
+            {#if previousCall !== undefined}
+              <a
+                class="conversation link previous atomic-reveal"
+                href={`/api-calls/${previousCall?.id}`}
+              >
+                <div class="arrow-icon"><IconLeftArrow /></div>
+                <div class="snippet">{previousCall?.snippet}</div>
+              </a>
+            {/if}
+          </div>
+
+          <div class="conversation next-links composite-reveal">
+            {#each nextCalls as nextCall}
+              <a
+                class="conversation link next atomic-reveal"
+                href={`/api-calls/${nextCall.id}`}
+              >
+                <div class="snippet">{nextCall.snippet}</div>
+                <div class="arrow-icon"><IconRightArrow /></div>
+              </a>
+            {/each}
+          </div>
+        </div>
+      </SubInfoBox>
+    {/if}
+  {:else}
+    ...
+  {/if}
+</InfoBox>
+
+<style>
+  ...
+
+  .conversation-links {
+    display: flex;
+    flex-direction: row;
+    gap: 1rem;
+  }
+
+  .conversation.previous-links,
+  .conversation.next-links {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .conversation.link {
+    border: 1px solid var(--color-border);
+    padding: 0.75rem;
+    border-radius: var(--corner-roundness);
+    color: black;
+    display: flex;
+    flex-direction: row;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .conversation.link .arrow-icon {
+    display: block;
+    margin-top: 0.3rem;
+  }
+
+  .conversation.link .arrow-icon :global(svg) {
+    transform: scale(1.5);
+    color: var(--color-faded);
+  }
+
+  .conversation.link .snippet {
+    text-align: start;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+</style>
+```
+
+We edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.stories.ts` to include a new example that showcases links that would span more than one line:
+
+```ts
+...
+
+const LOTS_OF_CODE_CALL = {
+  id: "9857257b-8e17-4203-91eb-c10bef8ff4e6",
+  timestamp: "2024-05-18T03:21:39.637157100",
+  llm: {
+    name: "gpt-4-0613",
+    provider: "OpenAI",
+    requested: "gpt-4",
+  },
+  request: {
+    prompt: {
+      type: "Chat",
+      messages: [
+        {
+          role: "System",
+          text: "You are ZAMM, a chat program. Respond in first person.",
+        },
+        {
+          role: "Human",
+          // eslint-disable-next-line max-len
+          text: "I'm not sure that this diesel code is doing quite what I want:\n\n```rs\nlet llm_calls_display = diesel::alias!(llm_calls as display);\n\n    let previous_call_result: LlmCallLeftJoinResult = llm_calls::table\n        .left_join(\n            llm_call_continuations::dsl::llm_call_continuations\n                .on(llm_calls::id.eq(llm_call_continuations::next_call_id)),\n        )\n        .inner_join(llm_calls_display.on(llm_call_continuations::previous_call_id.eq(llm_calls_display.field(llm_calls::id))))\n        .select((\n            llm_calls::all_columns,\n            llm_call_continuations::previous_call_id.nullable(),\n            llm_calls_display.fields(llm_calls::completion).nullable(),\n        ))\n        .filter(llm_calls::id.eq(&parsed_uuid))\n        .first::<LlmCallLeftJoinResult>(conn)?;\n```\n\nHow do I get Diesel to first do an inner join on llm_call_continuations with llm_calls_display, and then do a left join with llm_calls?",
+        },
+        {
+          role: "AI",
+          // eslint-disable-next-line max-len
+          text: "With Diesel ORM in Rust, you can't change arbitrarily the order of `JOIN` operations through the query builder because it always follows a left to right order in a straight-line query. \n\nHowever, in your situation, there is a possible workaround. Although this method is a bit verbose and more complicated, Diesel allows you to nest `JOIN` statements, thus enabling more flexibility. You could first perform the inner join and then use the result of that to perform the left join.\n\nHere's an example of how you could modify your code:\n\n```rs\nlet subquery = llm_call_continuations::dsl::llm_call_continuations\n          .inner_join(llm_calls_display::table)\n          .filter(llm_call_continuations::previous_call_id.eq(llm_calls_display.field(llm_calls::id)))\n          .select((\n            llm_call_continuations::previous_call_id,\n            llm_calls_display.fields(llm_calls::completion)\n            ))\n          .into_boxed();\n\nlet previous_call_result: LlmCallLeftJoinResult = llm_calls::table\n    .left_join(\n        subquery.on(diesel::dsl::exists(\n            subquery.filter(subquery_columns::id.eq(llm_calls::id)).limit(1),\n        )),\n    )\n    .select((llm_calls::all_columns, subquery_columns::all_columns.nullable()))\n    .filter(llm_calls::id.eq(&parsed_uuid))\n    .first::<LlmCallLeftJoinResult>(conn)?;\n```\n\nNotice that the inner join between `llm_call_continuations` and `llm_calls_display` is now separated into a subquery which is then used in the left join with `llm_calls`. This would achieve the desired effect of first performing the inner join and then the left join. Please adjust this skeleton code based on your column names and requirements. \n\nAlso please remember to handle the nullable fields as necessary from the subquery. \n\nMake sure also that your actual ORM model matches the SQL query, specifically the nullability of your fields.",
+        },
+        {
+          role: "Human",
+          text: "The variable `subquery_columns` is not defined anywhere.",
+        },
+      ],
+    },
+    temperature: 1,
+  },
+  response: {
+    completion: {
+      role: "AI",
+      // eslint-disable-next-line max-len
+      text: "I apologize for the confusion. The `subquery_columns` used in the previous example was intended as a placeholder for the actual columns you're selecting from your subquery. Diesel doesn't have direct support for aliasing a subquery so you can't directly access those columns.\n\nInstead, you'll have to use individual .select() calls for each column in your subquery that you want to use in the outer query.\n\nHere is a corrected version of the code where `subquery_columns` is replaced by appropriate column names:\n\n```rs\nlet subquery = llm_call_continuations::dsl::llm_call_continuations\n    .inner_join(llm_calls_display::table)\n    .filter(llm_call_continuations::previous_call_id.eq(llm_calls_display.field(llm_calls::id)))\n    .select((\n        llm_call_continuations::previous_call_id,\n        llm_calls_display.fields(llm_calls::completion)\n    ))\n    .into_boxed();\n\nlet previous_call_result: LlmCallLeftJoinResult = llm_calls::table\n    .left_join(\n         diesel::dsl::exists(\n            subquery.filter(llm_call_continuations::previous_call_id.eq(llm_calls::id))\n        )\n    )\n    .select((\n        llm_calls::all_columns, \n        subquery.select(llm_call_continuations::previous_call_id).nullable(), \n        subquery.select(llm_calls_display.fields(llm_calls::completion)).nullable()\n    ))\n    .filter(llm_calls::id.eq(&parsed_uuid))\n    .first::<LlmCallLeftJoinResult>(conn)?;\n```\n\nIn this code, both `llm_call_continuations::previous_call_id` and `llm_calls_display.fields(llm_calls::completion)` are used in the .select() calls for `subquery` in the outer query. Please adjust to your actual column names and select items. \n\nYou might also need to import `IntoBoxed` trait from diesel::query_dsl::boxed::IntoBoxed to use `into_boxed()` method on your query.\n\nAgain, with Diesel ORM you have to match your ORM and query structure exactly with your SQL query structure, so you will need to ensure that this modified query still aligns with your underlying data model.",
+    },
+  },
+  tokens: {
+    prompt: 688,
+    response: 462,
+    total: 1150,
+  },
+  conversation: {
+    next_calls: [
+      {
+        id: "a0f13902-8ae9-4fce-9317-5189636bb058",
+        snippet:
+          "`HasTable` trait is implemented for every struct that derives `Table`....",
+      },
+    ],
+    previous_call: {
+      id: "93c89a67-7423-42dd-9869-4fc155c2f477",
+      snippet: "With Diesel ORM in Rust, you can't change arbitrarily the...",
+    },
+  },
+};
+
+...
+
+export const LotsOfCode: StoryObj = Template.bind({}) as any;
+LotsOfCode.args = {
+  apiCall: LOTS_OF_CODE_CALL,
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+LotsOfCode.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+```
+
+This new test case also shows us the need to do better word wrapping on the `pre` text. It turns out all we need to change is to add these lines to `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte`:
+
+```css
+  pre {
+    ...
+    word-wrap: break-word;
+    word-break: break-word;
+    ...
+  }
+```
+
+We add the new test case to `src-svelte\src\routes\storybook.test.ts`, and also set the `wide` case to require a window resize, because the new links mean that they no longer fit:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "individual"],
+    variants: [
+      ...,
+      {
+        name: "wide",
+        resizeWindow: true,
+      },
+      ...,
+      {
+        name: "lots-of-code",
+        resizeWindow: true,
+      }
+    ],
+    ...
+  },
+  ...
+];
+```
+
+This looks fine for a large enough screen, but the links get too smushed on small screens. We edit `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte`, toning down the gap to conform with the 0.5rem gap within each group, but then realizing that the smaller gap works well on bigger screens too:
+
+```css
+  .conversation-links {
+    ...
+    gap: 0.5rem;
+  }
+
+  ...
+
+  @media (max-width: 46rem) {
+    .conversation-links {
+      flex-direction: column;
+    }
+
+    .conversation.previous-links,
+    .conversation.next-links {
+      flex: none;
+    }
+  }
+```
+
+Unfortunately, we find that the screenshots taken now aren't very good. This is because the screen contents now extend past the height of the device that we've set on Storybook. Clearly we need to get rid of that viewport option. However, resizing the entire window to be extremely narrow causes its own set of complications with Storybook's UI changing to fit, and also doesn't let us easily view the Storybook story unless we resize the window ourselves. On the other hand, not resizing the entire window means that the CSS media queries for smaller screens won't be triggered. We end up resizing the entire window before even loading it, by editing `src-svelte/src/routes/storybook.test.ts` as such:
+
+```ts
+...
+
+const NARROW_WINDOW_SIZE = 675;
+
+...
+
+interface VariantConfig {
+  ...
+  narrowWindow?: boolean;
+  ...
+}
+
+const components: ComponentTestConfig[] = [
+  ...
+  {
+    path: ["screens", "llm-call", "individual"],
+    variants: [
+      {
+        name: "narrow",
+        narrowWindow: true,
+        resizeWindow: true,
+      },
+      ...
+    ],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+
+...
+
+  const makeWindowNarrow = async (page: Page) => {
+    const currentViewport = page.viewportSize();
+    if (currentViewport === null) {
+      throw new Error("Viewport is null");
+    }
+
+    await page.setViewportSize({
+      width: NARROW_WINDOW_SIZE,
+      height: currentViewport.height,
+    });
+  };
+
+  for (const config of components) {
+    ...
+
+    test(
+        `${testName} should render the same`,
+        async ({ expect }) => {
+          const page =
+            ...;
+          const variantPrefix = ...;
+
+          if (variantConfig.narrowWindow) {
+            await makeWindowNarrow(page);
+          }
+
+          await page.goto(
+            ...
+          );
+
+          ...
+        },
+        ...
+    );
+```
+
+We then rename `resizeWindow` to `tallWindow` to make the naming consistent with `narrowWindow`.
+
+Resizing the window also makes us realize that we should edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` to make the snippet longer when it fits completely within less than one line in the UI:
+
+```css
+  .conversation.link .snippet {
+    flex: 1;
+    ...
+  }
+```
+
+Finally, we realize that we should get the backend to send perhaps double the amount of text it is currently sending. We refactor and edit `src-tauri/src/models/llm_calls/various.rs` to set the number of words taken for a snippet to 20:
+
+```rs
+...
+
+const NUM_WORDS_TO_SNIPPET: usize = 20;
+
+...
+
+impl From<(EntityId, ChatMessage)> for LlmCallReference {
+    fn from((id, message): (EntityId, ChatMessage)) -> Self {
+        ...
+        let truncated_text = text
+            ...
+            .take(NUM_WORDS_TO_SNIPPET)
+            ...;
+        ...
+    }
+}
+```
+
+and then we update the test files. Some test files still show the relevant truncation, for example `src-tauri\api\sample-calls\get_api_call-continue-conversation.yaml`:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+      ...,
+      "conversation": {
+        "previous_call": {
+          "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+          "snippet": "Yes, it works. How can I assist you today?"
+        },
+        "next_calls": [
+          {
+            "id": "0e6bcadf-2b41-43d9-b4cf-81008d4f4771",
+            "snippet": "Sure, here is a simple Python script that will print out the joke: ```python print(\"Why don't scientists trust atoms? Because..."
+          },
+          {
+            "id": "63b5c02e-b864-4efe-a286-fbef48b152ef",
+            "snippet": "Sure, here is a simple Rust program that prints out the joke: ```rust fn main() { println!(\"Why don't scientists trust..."
+          }
+        ]
+      }
+    }
+...
+```
+
+We update `CONTINUE_CONVERSATION_CALL` and `LOTS_OF_CODE_CALL` in `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.stories.ts` as well to coincide with the updated gold API call and the actual outputs from the app, respectively.
+
+We also tweak `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte` to get the table text looking better when the view is narrow:
+
+```css
+  td {
+    text-align: left;
+  }
+```
+
+We also update the credits page at `src-svelte\src\routes\credits\Credits.svelte`:
+
+```svelte
+              <Creditor
+                name="MingCute Icon"
+                logo="mingcute.svg"
+                url="https://www.mingcute.com/"
+              />
+```
+
+The Storybook screenshot tests work as expected once the screenshots are updated. However, the end-to-end tests are now failing because the sidebar icons are no longer showing inset shadows. Since we haven't touched the sidebar at all here, and since the Storybook sidebar screenshots see no change, we see if the e2e tests fail on main as well. Sure enough, they do despite having passed with no problems just a week earlier. We verify that the inset shadows still render correctly on our own Linux machine with the built AppImage from CI, and then update the e2e screenshots separately.
 
 ## Persisting and resuming conversations
 

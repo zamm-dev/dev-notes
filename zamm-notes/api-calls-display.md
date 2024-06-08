@@ -3727,3 +3727,1450 @@ We then edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte`:
   {/if}
 </InfoBox>
 ```
+
+## Editing API calls
+
+We want to allow the user to edit existing API calls to produce new ones.
+
+### Frontend refactoring
+
+#### Prompt
+
+We start by refactoring the Prompt display, along with all associated styles, out of `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import Prompt from "./Prompt.svelte";
+  ...
+</script>
+
+<InfoBox title="API Call">
+  {#if apiCall}
+    <table class="composite-reveal">
+      ...
+    </table>
+
+    <Prompt prompt={apiCall.request.prompt} />
+
+    <SubInfoBox subheading="Response">
+      ...
+    </SubInfoBox>
+    
+    ...
+  {/if}
+</InfoBox>
+
+<style>
+  ...
+</style>
+```
+
+where `src-svelte\src\routes\api-calls\[slug]\Prompt.svelte` now looks like
+
+```svelte
+<script lang="ts">
+  import autosize from "autosize";
+  import SubInfoBox from "$lib/SubInfoBox.svelte";
+  import { type Prompt } from "$lib/bindings";
+  import { onMount } from "svelte";
+
+  export let prompt: Prompt;
+  export let editable = false;
+  let textareas: HTMLTextAreaElement[] = [];
+
+  function toggleRole(i: number) {
+    switch (prompt.messages[i].role) {
+      case "System":
+        prompt.messages[i].role = "Human";
+        break;
+      case "Human":
+        prompt.messages[i].role = "AI";
+        break;
+      case "AI":
+        prompt.messages[i].role = "System";
+        break;
+    }
+  }
+
+  function editText(
+    i: number,
+    e: Event & { currentTarget: EventTarget & HTMLTextAreaElement },
+  ) {
+    prompt.messages[i].text = e.currentTarget.value;
+  }
+
+  function addMessage() {
+    prompt.messages = [...prompt.messages, { role: "System", text: "" }];
+  }
+
+  onMount(() => {
+    textareas.forEach((textarea) => autosize(textarea));
+    return () => {
+      textareas.forEach((textarea) => autosize.destroy(textarea));
+    };
+  });
+</script>
+
+<SubInfoBox subheading="Prompt">
+  <div class="prompt composite-reveal">
+    {#each prompt.messages ?? [] as message, i}
+      <div class={"message atomic-reveal " + message.role.toLowerCase()}>
+        <span
+          class="role"
+          class:editable
+          role="button"
+          aria-label="Toggle message type"
+          tabindex="0"
+          on:click={() => toggleRole(i)}
+          on:keypress={() => toggleRole(i)}>{message.role}</span
+        >
+        {#if editable}
+          <textarea
+            rows="1"
+            value={message.text}
+            on:input={(e) => editText(i, e)}
+            bind:this={textareas[i]}
+          />
+        {:else}
+          <pre>{message.text}</pre>
+        {/if}
+      </div>
+    {/each}
+    {#if editable}
+      <button title="Add a new message to the chat" on:click={addMessage}
+        >+</button
+      >
+    {/if}
+  </div>
+</SubInfoBox>
+
+<style>
+  .prompt {
+    margin-bottom: 1rem;
+  }
+
+  .role.editable {
+    cursor: pointer;
+  }
+
+  .message {
+    transition-property: background-color;
+    transition: var(--standard-duration) ease-out;
+    margin: 0.5rem 0;
+    padding: 0.5rem;
+    border-radius: var(--corner-roundness);
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .message.system {
+    background-color: var(--color-system);
+  }
+
+  .message.human {
+    background-color: var(--color-human);
+  }
+
+  .message.ai {
+    background-color: var(--color-ai);
+  }
+
+  .message .role {
+    color: var(--color-faded);
+    width: 4rem;
+    min-width: 4rem;
+    text-align: center;
+  }
+
+  textarea {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    background-color: transparent;
+    width: 100%;
+    resize: none;
+  }
+
+  button {
+    width: 100%;
+    padding: 0.2rem;
+    box-sizing: border-box;
+    background: transparent;
+    border: 2px dashed var(--color-border);
+    border-radius: var(--corner-roundness);
+    font-size: 1rem;
+    color: var(--color-faded);
+    cursor: pointer;
+    transition: calc(0.5 * var(--standard-duration)) ease-out;
+  }
+
+  button:hover {
+    background: var(--color-border);
+    color: #fff;
+  }
+</style>
+
+```
+
+because we made it possible to edit each message in the prompt, as well as add new messages and toggle message types.
+
+Because the `pre` elements are now split apart, we move the styling for them to `src-svelte\src\routes\styles.css`:
+
+```css
+pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  margin: 0;
+  text-align: left;
+}
+```
+
+We refactor the sample calls out of `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.stories.ts`:
+
+```ts
+...
+import {
+  CONTINUE_CONVERSATION_CALL,
+  KHMER_CALL,
+  LOTS_OF_CODE_CALL,
+} from "./sample-calls";
+...
+
+export default {
+  component: ApiCallComponent,
+  ...
+};
+
+...
+```
+
+where `src-svelte\src\routes\api-calls\[slug]\sample-calls.ts` looks like
+
+```ts
+export const CONTINUE_CONVERSATION_CALL = {
+  id: "c13c1e67-2de3-48de-a34c-a32079c03316",
+  ...
+};
+
+export const KHMER_CALL = {
+  id: "92665f19-be8c-48f2-b483-07f1d9b97370",
+  ...
+};
+
+export const LOTS_OF_CODE_CALL = {
+  id: "9857257b-8e17-4203-91eb-c10bef8ff4e6",
+  ...
+};
+```
+
+We introduce new stories to `src-svelte\src\routes\api-calls\[slug]\Prompt.stories.ts` as well:
+
+```ts
+import PromptComponent from "./Prompt.svelte";
+import type { StoryObj } from "@storybook/svelte";
+import { CONTINUE_CONVERSATION_CALL } from "./sample-calls";
+
+export default {
+  component: PromptComponent,
+  title: "Screens/LLM Call/Individual/Prompt",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: PromptComponent,
+  props: args,
+});
+
+export const Uneditable: StoryObj = Template.bind({}) as any;
+Uneditable.args = {
+  prompt: CONTINUE_CONVERSATION_CALL.request.prompt,
+};
+
+export const Editable: StoryObj = Template.bind({}) as any;
+Editable.args = {
+  editable: true,
+  prompt: CONTINUE_CONVERSATION_CALL.request.prompt,
+};
+
+```
+
+Now that we have the initial UI mocked out, we edit `src-svelte\src\routes\api-calls\[slug]\Prompt.svelte` a little further and introduce a placeholder of "Set text for new prompt message...".
+
+We also realize that we should avoid making the role toggle-able when the prompt is not editable. We edit `src-svelte/src/routes/api-calls/[slug]/Prompt.svelte` again:
+
+```ts
+  function toggleRole(i: number) {
+    if (!editable) {
+      return;
+    }
+
+    ...
+  }
+```
+
+#### New API call submission
+
+We realize that before implementing the ability to edit API calls, it may make sense to add the ability to make arbitrary new API calls. We create a new component at `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte`:
+
+```svelte
+<script lang="ts" context="module">
+  import type { Prompt as PromptType } from "$lib/bindings";
+  import { writable } from "svelte/store";
+  export const prompt = writable<PromptType>({
+    type: "Chat",
+    messages: [{ role: "System", text: "" }],
+  });
+</script>
+
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import PromptComponent from "../[slug]/Prompt.svelte";
+  import Button from "$lib/controls/Button.svelte";
+  import { chat } from "$lib/bindings";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import { goto } from "$app/navigation";
+  let expectingResponse = false;
+  async function submitApiCall() {
+    if (expectingResponse) {
+      return;
+    }
+    expectingResponse = true;
+    try {
+      const createdLlmCall = await chat({
+        provider: "OpenAI",
+        llm: "gpt-4",
+        temperature: null,
+        prompt: $prompt.messages,
+      });
+      goto(`/api-calls/${createdLlmCall.id}`);
+    } catch (error) {
+      snackbarError(error as string | Error);
+    } finally {
+      expectingResponse = false;
+    }
+  }
+</script>
+
+<InfoBox title="New API Call">
+  <PromptComponent editable bind:prompt={$prompt} />
+
+  <div class="action">
+    <Button on:click={submitApiCall}>Submit</Button>
+  </div>
+</InfoBox>
+
+<style>
+  .action :global(button) {
+    width: 100%;
+  }
+</style>
+```
+
+We add a corresponding story at `src-svelte/src/routes/api-calls/new/ApiCallEditor.stories.ts`:
+
+```ts
+import ApiCallEditorComponent from "./ApiCallEditor.svelte";
+import type { StoryObj } from "@storybook/svelte";
+
+export default {
+  component: ApiCallEditorComponent,
+  title: "Screens/LLM Call/New",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: ApiCallEditorComponent,
+  props: args,
+});
+
+export const Blank: StoryObj = Template.bind({}) as any;
+```
+
+and add this to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "new"],
+    variants: ["blank"],
+  },
+  ...
+];
+```
+
+Then, we edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte` again to make it ready for testing by introducing a reset function:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  export function resetNewApiCall() {
+    prompt.set({
+      type: "Chat",
+      messages: [{ role: "System", text: "" }],
+    });
+  }
+</script>
+
+<script lang="ts">
+  ...
+
+  async function submitApiCall() {
+    ...
+
+    try {
+      ...
+      resetNewApiCall();
+
+      ...
+    } ...
+  }
+</script>
+```
+
+We can now test this in `src-svelte/src/routes/api-calls/new/ApiCallEditor.test.ts`:
+
+```ts
+import { expect, test, vi, type Mock } from "vitest";
+import "@testing-library/jest-dom";
+
+import { render, screen } from "@testing-library/svelte";
+import ApiCallEditor, { resetNewApiCall } from "./ApiCallEditor.svelte";
+import userEvent from "@testing-library/user-event";
+import { TauriInvokePlayback } from "$lib/sample-call-testing";
+import { get } from "svelte/store";
+import { mockStores } from "../../../vitest-mocks/stores";
+
+describe("API call editor", () => {
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    vi.stubGlobal("__TAURI_INVOKE__", tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetNewApiCall();
+  });
+
+  async function addNewMessage() {
+    const numMessages = screen.getAllByRole("listitem").length;
+    const newMessageButton = screen.getByRole("button", { name: "+" });
+    await userEvent.click(newMessageButton);
+    expect(screen.getAllByRole("listitem").length).toBe(numMessages + 1);
+  }
+
+  async function setNewMessage(role: string, message: string) {
+    const messageDivs = screen.getAllByRole("listitem");
+    const lastMessageDiv = messageDivs[messageDivs.length - 1];
+
+    const roleToggle = lastMessageDiv.querySelector(
+      'span[aria-label="Toggle message type"]',
+    );
+    if (roleToggle === null) {
+      throw new Error("Role toggle not found");
+    }
+    for (let i = 0; i < 3; i++) {
+      if (roleToggle.textContent === role) {
+        break;
+      }
+      await userEvent.click(roleToggle);
+    }
+    expect(roleToggle.textContent).toBe(role);
+
+    const messageInput = lastMessageDiv.querySelector("textarea");
+    if (messageInput === null) {
+      throw new Error("Message input not found");
+    }
+    await userEvent.type(messageInput, message);
+    expect(messageInput).toHaveValue(message);
+  }
+
+  test("can manually trigger API call with all roles", async () => {
+    render(ApiCallEditor, {});
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/chat-manual-conversation-recreation.yaml",
+    );
+
+    await setNewMessage(
+      "System",
+      "You are ZAMM, a chat program. Respond in first person.",
+    );
+    await addNewMessage();
+    await setNewMessage("Human", "Hello, does this work?");
+    await addNewMessage();
+    await setNewMessage("AI", "Yes, it works. How can I assist you today?");
+    await addNewMessage();
+    await setNewMessage("Human", "Tell me something funny.");
+
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    expect(get(mockStores.page).url.pathname).toEqual(
+      "/api-calls/c13c1e67-2de3-48de-a34c-a32079c03316",
+    );
+  });
+});
+
+```
+
+To get this test to run, we need to edit `src-svelte/src/routes/api-calls/[slug]/Prompt.svelte` to mark the roles of each div as a "listitem" for use in the test. We also realize we should only set the role to "button" for the label if it is actually editable, and otherwise just disable it.
+
+```svelte
+<SubInfoBox subheading="Prompt">
+  <div class="prompt composite-reveal" role="list">
+    {#each prompt.messages ?? [] as message, i}
+      <div
+        ...
+        role="listitem"
+      >
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <span
+          ...
+          role={editable ? "button" : "text"}
+          aria-label={editable ? "Toggle message type" : undefined}
+          tabindex={editable ? 0 : undefined}
+          ...>{message.role}</span
+        >
+        ...
+      </div>
+    {/each}
+    ...
+  </div>
+</SubInfoBox>
+```
+
+However, we also need to ignore the `a11y-no-noninteractive-tabindex` warning, or else we get hit with:
+
+```
+/root/zamm/src-svelte/src/routes/api-calls/[slug]/Prompt.svelte
+  55:9  error  A11y: noninteractive element cannot have nonnegative tabIndex value(a11y-no-noninteractive-tabindex)  svelte/valid-compile
+```
+
+We had meant to reuse the API call `src-tauri/api/sample-calls/chat-continue-conversation.yaml` in the test, but it turns out we need to create a new one at `src-tauri/api/sample-calls/chat-manual-conversation-recreation.yaml`:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        "llm": "gpt-4",
+        "temperature": null,
+        "prompt": [
+          {
+            "role": "System",
+            "text": "You are ZAMM, a chat program. Respond in first person."
+          },
+          {
+            "role": "Human",
+            "text": "Hello, does this work?"
+          },
+          {
+            "role": "AI",
+            "text": "Yes, it works. How can I assist you today?"
+          },
+          {
+            "role": "Human",
+            "text": "Tell me something funny."
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+      "timestamp": "2024-01-16T09:50:19.738093890",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-started
+    endStateDump: conversation-manually-recreated
+  network:
+    recordingFile: continue-conversation.json
+
+```
+
+The only difference here is that there is no `previous_call_id` listed in the arguments -- and therefore a different database dump as well. We create a `src-tauri/api/sample-database-writes/conversation-manually-recreated/dump.sql` that's a copy of `src-tauri/api/sample-database-writes/conversation-continued/dump.sql` except for the link between the new API call and the previous one, and we create a `src-tauri/api/sample-database-writes/conversation-manually-recreated/dump.yaml` that is likewise a copy of `src-tauri/api/sample-database-writes/conversation-continued/dump.yaml` but without the `conversation` key.
+
+We make sure that this new API call is consistent with how the backend processes it by editing `src-tauri/src/commands/llms/chat.rs`:
+
+```rs
+    #[tokio::test]
+    async fn test_manual_conversation_recreation() {
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-manual-conversation-recreation.yaml",
+        )
+        .await;
+    }
+```
+
+While committing, we find that we must remove the extraneous `use std::env;` from `src-tauri/src/main.rs`. We remove it, but it is worrying that this lint was not detected on Windows or in the CI environment.
+
+We need to put this in an actual page in the app. We create `src-svelte/src/routes/api-calls/new/+page.svelte`:
+
+```svelte
+<script>
+  import ApiCallEditor from "./ApiCallEditor.svelte";
+</script>
+
+<ApiCallEditor />
+
+```
+
+We then link to it by editing `src-svelte/src/routes/api-calls/ApiCalls.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import IconAdd from "~icons/mingcute/add-fill";
+  ...
+</script>
+
+<InfoBox title="LLM API Calls" fullHeight>
+  <div class="container api-calls-page full-height" style={minimumWidths}>
+    <a class="new-api-call" href="/api-calls/new/">
+      <IconAdd />
+    </a>
+    ...
+  </div>
+</InfoBox>
+
+<style>
+  ...
+
+  a.new-api-call {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+  }
+
+  a.new-api-call :global(svg) {
+    transform: scale(1.2);
+    color: var(--color-faded);
+  }
+
+  ...
+</style>
+```
+
+We further `src-svelte/src/routes/api-calls/ApiCalls.svelte` to change the placeholder text to refer to the new possibility for populating API calls:
+
+```svelte
+              <EmptyPlaceholder>
+                Looks like you haven't made any calls to an LLM yet.<br />Get
+                started via <a href="/chat">chat</a> or by making one <a href="/api-calls/new/">from scratch</a>.
+              </EmptyPlaceholder>
+```
+
+We edit `src-svelte/src/lib/EmptyPlaceholder.svelte` to style the placeholder links in the same faded color, because we want all placeholder links to look this way across the app:
+
+```css
+  .empty :global(a) {
+    color: var(--color-faded);
+    text-decoration: underline;
+  }
+```
+
+We want to make sure that this new button looks right when the info box animation is being loaded, so we create `src-svelte/src/routes/api-calls/ApiCalls.full-page.stories.ts` to test:
+
+```ts
+import ApiCallsComponent from "./ApiCalls.svelte";
+import MockPageTransitions from "$lib/__mocks__/MockPageTransitions.svelte";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+
+export default {
+  component: ApiCallsComponent,
+  title: "Screens/LLM Call/List",
+  argTypes: {},
+  decorators: [
+    TauriInvokeDecorator,
+    (story: StoryFn) => {
+      return {
+        Component: MockPageTransitions,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: ApiCallsComponent,
+  props: args,
+});
+
+export const FullPage: StoryObj = Template.bind({}) as any;
+FullPage.args = {
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+FullPage.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+  sampleCallFiles: [
+    "/api/sample-calls/get_api_calls-full.yaml",
+    "/api/sample-calls/get_api_calls-offset.yaml",
+  ],
+};
+
+```
+
+Next, we want to add this page to the end-to-end screenshots test. We follow the example [here](https://webdriver.io/fr/docs/selectors/#element-with-certain-text) and add this test to `webdriver/test/specs/e2e.test.js`:
+
+```js
+  it("should allow navigation to the new API call page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="API Calls"]');
+    await findAndClick('a=from scratch');
+    await findAndClick('a[title="API Calls"]');
+    await findAndClick('a=from scratch');
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("new-api-call", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+```
+
+We finish up with some nits by editing `src-svelte/src/routes/api-calls/ApiCalls.svelte` to add a mouseover title for the add button:
+
+```svelte
+    <a class="new-api-call" ... title="New API call">
+      <IconAdd />
+    </a>
+```
+
+and we edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte` to get the submit button to grow, but only up to a fixed size, so that it doesn't look too tiny (if it fits to content) but also doesn't get too unwieldy large (if the window is too big):
+
+```css
+  .action {
+    width: 100%;
+    display:flex;
+    justify-content: center;
+  }
+
+  .action :global(button) {
+    width: 100%;
+    max-width: 25rem;
+  }
+```
+
+and edit `src-svelte/src/routes/storybook.test.ts` to screenshot the entire body:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "new"],
+    ...,
+    screenshotEntireBody: true,
+  },
+  ...
+];
+```
+
+We find that a couple of screenshots, `src-svelte/screenshots/baseline/screens/chat/conversation/new-message-sent.png` and `src-svelte/screenshots/baseline/screens/chat/conversation/full-message-width.png`, are failing now because of our change to the `pre` word break. We move these three lines outside of `src-svelte/src/routes/styles.css` and into `src-svelte/src/routes/api-calls/[slug]/Prompt.svelte`:
+
+```css
+  .message pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    word-break: break-word;
+  }
+```
+
+and `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte`:
+
+```css
+  pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    word-break: break-word;
+  }
+```
+
+It is good that our screenshot tests caught this.
+
+### Backend implementation
+
+We do a new Diesel migration:
+
+```bash
+$ diesel migration generate variant_links                                    
+Creating migrations\2024-05-29-183428_variant_links\up.sql
+Creating migrations\2024-05-29-183428_variant_links\down.sql
+```
+
+where `src-tauri\migrations\2024-05-29-183428_variant_links\up.sql` is
+
+```sql
+CREATE TABLE llm_call_variants (
+  canonical_id VARCHAR NOT NULL,
+  variant_id VARCHAR NOT NULL,
+  PRIMARY KEY (canonical_id, variant_id),
+  FOREIGN KEY (canonical_id) REFERENCES llm_calls (id) ON DELETE CASCADE,
+  FOREIGN KEY (variant_id) REFERENCES llm_calls (id) ON DELETE CASCADE
+);
+
+CREATE VIEW llm_call_named_variants AS
+  SELECT
+    llm_call_variants.canonical_id AS canonical_id,
+    canonical.completion AS canonical_completion,
+    llm_call_variants.variant_id AS variant_id,
+    variant.completion AS variant_completion
+  FROM
+    llm_call_variants
+    JOIN llm_calls AS canonical ON llm_call_variants.canonical_id = canonical.id
+    JOIN llm_calls AS variant ON llm_call_variants.variant_id = variant.id
+  ORDER BY variant.timestamp ASC;
+
+```
+
+and `src-tauri\migrations\2024-05-29-183428_variant_links\down.sql` is:
+
+```sql
+DROP TABLE llm_call_variants;
+DROP VIEW llm_call_named_variants;
+
+```
+
+This is of course based mainly on the API call conversation links table and view. We run this migration:
+
+```bash
+$ diesel migration run --database-url 'C:\Users\Amos Ng\AppData\Roaming\zamm\ZAMM\data\zamm.sqlite3'
+Running migration 2024-05-29-183428_variant_links
+```
+
+and by doing so `src-tauri\src\schema.rs` gets updated automatically. We'll have to manually edit `src-tauri\src\views.rs` ourselves to introduce our new view:
+
+```rs
+...
+
+diesel::table! {
+    llm_call_named_variants (canonical_id, variant_id) {
+        canonical_id -> Text,
+        canonical_completion -> Text,
+        variant_id -> Text,
+        variant_completion -> Text,
+    }
+}
+
+diesel::allow_tables_to_appear_in_same_query!(..., llm_call_named_variants, ...);
+
+```
+
+Next, we recreate much of the querying that we did for conversation links, but this time to instead gather data for edited API links. First we start off by editing `src-tauri\src\models\llm_calls\various.rs` to add the new metadata data structure we want:
+
+```rs
+#[derive(Debug, Default, Clone, Serialize, Deserialize, specta::Type)]
+pub struct VariantMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical: Option<LlmCallReference>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub variants: Vec<LlmCallReference>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub sibling_variants: Vec<LlmCallReference>,
+}
+
+impl VariantMetadata {
+    pub fn is_default(&self) -> bool {
+        self.canonical.is_none()
+            && self.variants.is_empty()
+            && self.sibling_variants.is_empty()
+    }
+}
+
+```
+
+We define how this data structure is supposed to be assembled in `src-tauri\src\models\llm_calls\llm_call.rs`. Note that a list of LLM call references is returned every time; the only difference is whether this represents a list of variant children that this is the canonical parent of, or whether this represents the list of variant siblings that this is but one member of:
+
+```rs
+...
+use crate::models::llm_calls::various::{
+    ...,
+    VariantMetadata,
+};
+...
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct LlmCall {
+    ...
+    #[serde(skip_serializing_if = "VariantMetadata::is_default", default)]
+    pub variation: VariantMetadata,
+}
+
+...
+
+pub type LlmCallLeftJoinResult = (
+    LlmCallRow,
+    Option<EntityId>,
+    Option<ChatMessage>,
+    Option<EntityId>,
+    Option<ChatMessage>,
+);
+
+pub type LlmCallQueryResults = (
+    LlmCallLeftJoinResult,
+    Vec<(EntityId, ChatMessage)>,
+    Vec<(EntityId, ChatMessage)>,
+);
+
+impl From<LlmCallQueryResults> for LlmCall {
+    fn from(query_results: LlmCallQueryResults) -> Self {
+        let (
+            (
+                llm_call_row,
+                previous_call_id,
+                previous_call_completion,
+                maybe_canonical_id,
+                maybe_canonical_completion,
+            ),
+            next_calls,
+            variants,
+        ) = query_results;
+
+        ...
+        let variant_references = variants
+            .into_iter()
+            .map(|(id, completion)| (id, completion).into())
+            .collect();
+        let variant_metadata = if let (Some(canonical_id), Some(canonical_completion)) =
+            (maybe_canonical_id, maybe_canonical_completion)
+        {
+            VariantMetadata {
+                canonical: Some((canonical_id, canonical_completion).into()),
+                variants: Vec::new(),
+                sibling_variants: variant_references,
+            }
+        } else {
+            VariantMetadata {
+                canonical: None,
+                variants: variant_references,
+                sibling_variants: Vec::new(),
+            }
+        };
+
+        LlmCall {
+            ...,
+            variation: variant_metadata,
+        }
+    }
+}
+
+```
+
+We do the actual query in `src-tauri/src/commands/llms/get_api_call.rs`:
+
+```rs
+async fn get_api_call_helper(
+    ...
+) -> ZammResult<LlmCall> {
+    ...
+
+    let left_join_result: LlmCallLeftJoinResult = llm_calls::table
+        .left_join(
+            llm_call_named_follow_ups::...,
+        )
+        .left_join(
+            llm_call_named_variants::dsl::llm_call_named_variants
+                .on(llm_calls::id.eq(llm_call_named_variants::variant_id)),
+        )
+        .select((
+            ...,
+            llm_call_named_variants::canonical_id.nullable(),
+            llm_call_named_variants::canonical_completion.nullable(),
+        ))
+        ...;
+    let next_calls_result = llm_call_named_follow_ups::table
+        .select((
+            ...
+        ))
+        .filter(llm_call_named_follow_ups::previous_call_id.eq(&parsed_uuid))
+        .load::<(EntityId, ChatMessage)>(conn)?;
+    let canonical_id = left_join_result.3.clone().unwrap_or(parsed_uuid);
+    let variants_result = llm_call_named_variants::table
+        .select((
+            llm_call_named_variants::variant_id,
+            llm_call_named_variants::variant_completion,
+        ))
+        .filter(llm_call_named_variants::canonical_id.eq(canonical_id))
+        .load::<(EntityId, ChatMessage)>(conn)?;
+    Ok((left_join_result, next_calls_result, variants_result).into())
+}
+```
+
+Finally, we also update the queries in `src-tauri/src/test_helpers/database_contents.rs`:
+
+```rs
+...
+use crate::views::{..., llm_call_named_variants};
+...
+
+pub async fn get_database_contents(
+    ...
+) -> ZammResult<DatabaseContents> {
+    ...
+    let llm_call_left_joins = llm_calls::table
+        .left_join(
+            llm_call_named_follow_ups::...,
+        )
+        .left_join(
+            llm_call_named_variants::dsl::llm_call_named_variants
+                .on(llm_calls::id.eq(llm_call_named_variants::variant_id)),
+        )
+        .select((
+            ...,
+            llm_call_named_variants::canonical_id.nullable(),
+            llm_call_named_variants::canonical_completion.nullable(),
+        ))
+        ...;
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins
+        .into_iter()
+        .map(|lf| {
+            let (
+                llm_call_row,
+                previous_call_id,
+                previous_call_completion,
+                maybe_canonical_id,
+                maybe_canonical_completion,
+            ) = lf;
+            let next_calls_result: Vec<(EntityId, ChatMessage)> =
+                llm_call_named_follow_ups::...;
+            let canonical_id = maybe_canonical_id
+                .clone()
+                .unwrap_or(llm_call_row.id.clone());
+            let variants_result: Vec<(EntityId, ChatMessage)> =
+                llm_call_named_variants::table
+                    .select((
+                        llm_call_named_variants::variant_id,
+                        llm_call_named_variants::variant_completion,
+                    ))
+                    .filter(llm_call_named_variants::canonical_id.eq(canonical_id))
+                    .load::<(EntityId, ChatMessage)>(db)?;
+            let reconstituted_lf: LlmCallLeftJoinResult = (
+                llm_call_row,
+                previous_call_id,
+                previous_call_completion,
+                maybe_canonical_id,
+                maybe_canonical_completion,
+            );
+            Ok((reconstituted_lf, next_calls_result, variants_result).into())
+        })
+        .collect();
+    Ok(DatabaseContents {
+        ...
+    })
+}
+```
+
+We destructure and restructure the elements again because we encountered an error with simply pulling one of the elements out. After we get everything in a working state, we simplify things further with:
+
+```rs
+    let llm_calls_result: ZammResult<Vec<LlmCall>> = llm_call_left_joins
+        .into_iter()
+        .map(|lf| {
+            let llm_call_id = lf.0.id.clone();
+            let next_calls_result: Vec<(EntityId, ChatMessage)> =
+                llm_call_named_follow_ups::table
+                    .select((
+                        ...
+                    ))
+                    .filter(
+                        llm_call_named_follow_ups::previous_call_id
+                            .eq(&llm_call_id),
+                    )
+                    .load::...;
+            let canonical_id = lf.3.clone().unwrap_or(llm_call_id);
+            let variants_result: Vec<(EntityId, ChatMessage)> =
+                ...;
+            Ok((lf, next_calls_result, variants_result).into())
+        })
+        .collect();
+```
+
+We check that all our tests pass, as they should because no API calls with actual variants have been added yet.
+
+#### Linking variants in API calls
+
+Now we add code to actually write the variant links out. We modify `src-tauri\src\commands\llms\chat.rs` to take in variant metadata when the frontend sends it:
+
+```rs
+...
+use crate::models::llm_calls::{
+    ..., NewLlmCallVariant, ...
+};
+use crate::schema::{..., llm_call_variants};
+...
+use diesel::prelude::*;
+...
+
+#[derive(...)]
+pub struct ChatArgs {
+    ...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    canonical_id: Option<Uuid>,
+}
+
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+
+    if let Some(conn) = db.as_mut() {
+        ...
+
+        if let Some(potential_canonical_uuid) = args.canonical_id {
+            let potential_canonical_id = EntityId { uuid: potential_canonical_uuid };
+            // check if the canonical ID is itself a variant
+            let canonical_id = llm_call_variants::table
+                .select(llm_call_variants::canonical_id)
+                .filter(llm_call_variants::variant_id.eq(&potential_canonical_id))
+                .first::<EntityId>(conn)
+                .unwrap_or(potential_canonical_id);
+            diesel::insert_into(llm_call_variants::table)
+                .values(NewLlmCallVariant {
+                    canonical_id: &canonical_id,
+                    variant_id: &new_id,
+                })
+                .execute(conn)?;
+        }
+    } // todo: warn users if DB write unsuccessful
+
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+    
+    #[tokio::test]
+    async fn test_edit_conversation() {
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-edit-conversation.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_re_edit_conversation() {
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-re-edit-conversation.yaml",
+        )
+        .await;
+    }
+}
+
+```
+
+Our first test at `src-tauri/api/sample-calls/chat-edit-conversation.yaml` just modifies the last message:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        "llm": "gpt-4",
+        "temperature": null,
+        "canonical_id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+        "prompt": [
+          ...,
+          {
+            "role": "Human",
+            "text": "Tell me a funny joke."
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+      "timestamp": "2024-06-08T06:20:40.601356700",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here is a light-hearted joke for you: \n\nWhy don't scientists trust atoms?\n\nBecause they make up everything!"
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-forked-step-2
+    endStateDump: conversation-edited
+  network:
+    recordingFile: edit-conversation.json
+
+```
+
+Our second transcript at `src-tauri/api/sample-calls/chat-re-edit-conversation.yaml` is based on this first edit, and itself further edits an earlier message:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "OpenAI",
+        "llm": "gpt-4",
+        "temperature": null,
+        "canonical_id": "f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+        "prompt": [
+          ...,
+          {
+            "role": "Human",
+            "text": "Hello, does this really work?"
+          },
+          ...,
+          {
+            "role": "Human",
+            "text": "Tell me a funny joke."
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+      "timestamp": "2024-06-08T09:40:22.392223700",
+      "response_message": {
+        "role": "AI",
+        "text": "Sure, here you go: Why don't scientists trust atoms? Because they make up everything!"
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-edited
+    endStateDump: conversation-edited-2
+  network:
+    recordingFile: re-edit-conversation.json
+
+```
+
+However, because `7a35a4cf-f3d9-4388-bca8-2fe6e78c9648` is itself a variant call, we want to make sure that the backend actually registers this as a variant of the original `c13c1e67-2de3-48de-a34c-a32079c03316` instead. This does call into question whether the database snapshots contain as much high-level intentions of our tests as a regular database query in the test would. The database query provides stronger guarantees for testing at first, but if we re-record the database, we would lose sight of the original intentions. As such, we edit `src-tauri\src\commands\llms\chat.rs` again to make sure that this nuance is captured in a comment:
+
+```rs
+    #[tokio::test]
+    async fn test_re_edit_conversation() {
+        // this test checks that if we edit a variant, the new variant gets linked to
+        // the original canonical call, not to the variant that was edited
+        test_llm_api_call(
+            function_name!(),
+            "api/sample-calls/chat-re-edit-conversation.yaml",
+        )
+        .await;
+    }
+```
+
+The new code references a new struct that we must define in `src-tauri\src\models\llm_calls\linkage.rs`:
+
+```rs
+...
+use crate::schema::{..., llm_call_variants};
+...
+
+#[derive(Insertable)]
+#[diesel(table_name = llm_call_variants)]
+pub struct NewLlmCallVariant<'a> {
+    pub canonical_id: &'a EntityId,
+    pub variant_id: &'a EntityId,
+}
+
+```
+
+We expose this in `src-tauri\src\models\llm_calls\mod.rs`:
+
+```rs
+pub use linkage::{..., NewLlmCallVariant};
+```
+
+During testing, we find that the second re-edit only introduces a single variant link in, with no trace of the original to be found. We realize that this is because we're not inserting the links when reading them in from the database dump. We edit `src-tauri/src/test_helpers/database_contents.rs`:
+
+```rs
+...
+use crate::models::llm_calls::{
+    ..., NewLlmCallVariant, ...,
+};
+...
+use crate::schema::{..., llm_call_variants, ...};
+...
+
+impl DatabaseContents {
+    ...
+
+    pub fn insertable_call_variants(&self) -> Vec<NewLlmCallVariant> {
+        self.llm_calls
+            .iter()
+            .flat_map(|k| k.as_variant_rows())
+            .collect()
+    }
+}
+
+...
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+    db.transaction::<(), diesel::result::Error, _>(|conn| {
+        ...
+        diesel::insert_into(llm_call_variants::table)
+            .values(&db_contents.insertable_call_variants())
+            .execute(conn)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+pub fn dump_sqlite_database(db_path: &PathBuf, dump_path: &PathBuf) {
+    let dump_output = std::process::Command::new("sqlite3")
+        ...
+        .arg(".dump ... llm_call_variants")
+        ...;
+    ...
+}
+```
+
+This necessitates editing `src-tauri\src\models\llm_calls\llm_call.rs` as well:
+
+```rs
+...
+#[cfg(test)]
+use crate::models::llm_calls::{..., NewLlmCallVariant, ...};
+...
+
+#[cfg(test)]
+impl LlmCall {
+    ...
+
+    pub fn as_variant_rows(&self) -> Vec<NewLlmCallVariant> {
+        self.variation
+            .variants
+            .iter()
+            .map(|variant| NewLlmCallVariant {
+                canonical_id: &self.id,
+                variant_id: &variant.id,
+            })
+            .collect()
+    }
+}
+```
+
+This time around, we edit `src-tauri/src/test_helpers/api_testing.rs` to automatically copy output database files for us if the gold files are missing, just like how we do the same for the recorded network requests. This approach admittedly means that tests will still succeed if we only delete the YAML dump file, but that shouldn't be too much of a concern since the normal mode of operation will still be deleting the entire folder.
+
+```rs
+...
+
+fn copy_file_if_missing(
+    expected_file_path: impl AsRef<Path>,
+    actual_file_path: impl AsRef<Path>,
+    fail_on_copy: bool,
+) {
+    let expected_path_abs = expected_file_path.as_ref().absolutize().unwrap();
+    let actual_path_abs = actual_file_path.as_ref().absolutize().unwrap();
+
+    if !expected_path_abs.exists() {
+        fs::create_dir_all(expected_path_abs.parent().unwrap()).unwrap();
+        fs::copy(&actual_path_abs, &expected_path_abs).unwrap();
+        if fail_on_copy {
+            panic!(
+                "Gold file not found at {}, copied actual file from {}",
+                expected_path_abs.as_ref().display(),
+                actual_path_abs.as_ref().display(),
+            );
+        } else {
+            eprintln!(
+                "Gold file not found at {}, copied actual file from {}",
+                expected_path_abs.as_ref().display(),
+                actual_path_abs.as_ref().display(),
+            );
+        }
+    }
+}
+
+...
+
+pub trait SampleCallTestCase<T, U>
+where
+    ...
+{
+    ...
+
+    async fn check_sample_call(&mut self, sample_file: &str) -> SampleCallResult<T, U> {
+        ...
+
+        // check the call against db side-effects
+        if let Some(test_db) = &side_effects_helpers.db {
+            ...
+
+            copy_file_if_missing(
+                sample.db_end_dump("yaml"),
+                &actual_db_yaml_dump,
+                false,
+            );
+            copy_file_if_missing(
+                sample.db_end_dump("sql"),
+                &actual_db_sql_dump,
+                true,
+            );
+
+            compare_files(
+                sample.db_end_dump("yaml"),
+                &actual_db_yaml_dump,
+                ...
+            );
+            compare_files(
+                sample.db_end_dump("sql"),
+                &actual_db_sql_dump,
+                ...
+            );
+        }
+
+        ...
+    }
+}
+```
+
+`src-tauri/api/sample-network-requests/edit-conversation.json` and `src-tauri/api/sample-network-requests/re-edit-conversation.json` automatically get recorded by the VCR test code. Similarly for the database, we now have `src-tauri\api\sample-database-writes\conversation-edited\dump.sql` automatically written out, which we just have to compare to `src-tauri\api\sample-database-writes\conversation-forked-step-2\dump.sql` to confirm that sure enough, the only changes are the addition of these two rows:
+
+```sql
+...
+INSERT INTO llm_calls VALUES('f39a5017-89d4-45ec-bcbb-25c2bd43cfc1','2024-06-08 06:20:40.601356700','open_ai','gpt-4','gpt-4-0613',1.0,58,25,83,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this work?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"Human","text":"Tell me a funny joke."}]}','{"role":"AI","text":"Sure, here is a light-hearted joke for you: \n\nWhy don''t scientists trust atoms?\n\nBecause they make up everything!"}');
+...
+INSERT INTO llm_call_variants VALUES('c13c1e67-2de3-48de-a34c-a32079c03316','f39a5017-89d4-45ec-bcbb-25c2bd43cfc1');
+```
+
+We do the same comparison for `src-tauri\api\sample-database-writes\conversation-edited-2\dump.sql`, checking that the only differences with `src-tauri\api\sample-database-writes\conversation-edited\dump.sql` are once again the *addition* of these two rows:
+
+```sql
+...
+INSERT INTO llm_calls VALUES('7a35a4cf-f3d9-4388-bca8-2fe6e78c9648','2024-06-08 09:40:22.392223700','open_ai','gpt-4','gpt-4-0613',1.0,59,19,78,'{"type":"Chat","messages":[{"role":"System","text":"You are ZAMM, a chat program. Respond in first person."},{"role":"Human","text":"Hello, does this really work?"},{"role":"AI","text":"Yes, it works. How can I assist you today?"},{"role":"Human","text":"Tell me a funny joke."}]}','{"role":"AI","text":"Sure, here you go: Why don''t scientists trust atoms? Because they make up everything!"}');
+...
+INSERT INTO llm_call_variants VALUES('c13c1e67-2de3-48de-a34c-a32079c03316','7a35a4cf-f3d9-4388-bca8-2fe6e78c9648');
+```
+
+as opposed to the *replacement* of the previous `llm_call_variants` line, as had happened when the test code was not inserting the rows of the variants table for the dump it was reading in.
