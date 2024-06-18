@@ -5174,3 +5174,871 @@ INSERT INTO llm_call_variants VALUES('c13c1e67-2de3-48de-a34c-a32079c03316','7a3
 ```
 
 as opposed to the *replacement* of the previous `llm_call_variants` line, as had happened when the test code was not inserting the rows of the variants table for the dump it was reading in.
+
+### Frontend feature development
+
+Now we make use of this on the frontend. We update the Specta bindings, and then edit `src-svelte\src\routes\api-calls\new\ApiCallEditor.svelte` after discovering that [this](https://css-tricks.com/flexbox-truncated-text/) is how you get text ellipsis to show up for flex children:
+
+```svelte
+<script lang="ts" context="module">
+  import type { ..., LlmCallReference } from "$lib/bindings";
+  ...
+
+  export const canonicalRef = writable<LlmCallReference | undefined>(undefined);
+  ...
+
+  export function getDefaultApiCall(): PromptType {
+    return {
+      type: "Chat",
+      messages: [{ role: "System", text: "" }],
+    };
+  }
+
+  export function resetNewApiCall() {
+    canonicalRef.set(undefined);
+    prompt.set(getDefaultApiCall());
+  }
+</script>
+
+<script lang="ts">
+  ...
+
+  async function submitApiCall() {
+    ...
+
+    try {
+      const createdLlmCall = await chat({
+        ...
+        temperature: ...,
+        canonical_id: $canonicalRef?.id,
+        prompt: ...,
+      });
+      ...
+    }
+    ...
+  }
+</script>
+
+<InfoBox title="New API Call">
+  {#if $canonicalRef}
+    <div class="canonical-display">
+      <span class="label">Original API call:</span>
+      <a href="/api-calls/{$canonicalRef.id}">{$canonicalRef.snippet}</a>
+    </div>
+  {/if}
+
+  ...
+</InfoBox>
+
+<style>
+  .canonical-display {
+    background-color: var(--color-offwhite);
+    padding: 0.75rem;
+    border-radius: var(--corner-roundness);
+    display: flex;
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+
+  .canonical-display .label {
+    white-space: nowrap;
+  }
+
+  .canonical-display a {
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  ...
+</style>
+```
+
+We wrap the default API call in a `getDefaultApiCall` function so that we can reuse it in tests, and also in case of any update shenanigans when `src-svelte\src\routes\api-calls\[slug]\Prompt.svelte` edits the message directly, because Svelte [does not appear](https://stackoverflow.com/a/70614916) to make copies of objects that are assigned to stores.
+
+We update `src-svelte/src/routes/api-calls/new/ApiCallEditor.stories.ts` to demonstrate how it might look when we're editing an API call instead of creating one from scratch:
+
+```ts
+...
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import { CONTINUE_CONVERSATION_CALL } from "../[slug]/sample-calls";
+
+export default {
+  ...,
+  decorators: [SvelteStoresDecorator],
+};
+
+...
+
+export const EditContinuedConversation: StoryObj = Template.bind({}) as any;
+EditContinuedConversation.parameters = {
+  stores: {
+    apiCallEditing: {
+      canonicalRef: {
+        id: "c13c1e67-2de3-48de-a34c-a32079c03316",
+        snippet:
+          "Sure, here's a joke for you: Why don't scientists trust atoms? " +
+          "Because they make up everything!",
+      },
+      prompt: CONTINUE_CONVERSATION_CALL.request.prompt,
+    },
+  },
+};
+
+```
+
+This in turn requires that we update `src-svelte/src/lib/__mocks__/stores.ts`:
+
+```ts
+...
+import {
+  canonicalRef,
+  getDefaultApiCall,
+  prompt,
+} from "../../routes/api-calls/new/ApiCallEditor.svelte";
+import type {
+  ...,
+  Prompt,
+  LlmCallReference,
+} from "$lib/bindings";
+...
+
+interface ApiCallEditing {
+  canonicalRef: LlmCallReference;
+  prompt: Prompt;
+}
+
+interface Stores {
+  ...
+  apiCallEditing?: ApiCallEditing;
+}
+
+...
+
+const SvelteStoresDecorator: Decorator = (
+  ...
+) => {
+  ...
+  canonicalRef.set(stores?.apiCallEditing?.canonicalRef);
+  prompt.set(stores?.apiCallEditing?.prompt || getDefaultApiCall());
+  ...
+}
+```
+
+We should also add this new story to `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "new"],
+    variants: [..., "edit-continued-conversation"],
+    ...
+  },
+  ...
+];
+```
+
+Now we edit `src-svelte\src\routes\api-calls\new\ApiCallEditor.test.ts`. Because this time around, we're editing an actual existing API call instead of creating one from scratch, we need to clear the existing input before typing a new one in:
+
+```ts
+...
+import ApiCallEditor, {
+  canonicalRef,
+  prompt,
+  ...,
+} from "./ApiCallEditor.svelte";
+...
+
+describe("API call editor", () => {
+  ...
+
+  async function setNewMessage(role: string, message: string) {
+    ...
+    if (messageInput.value !== "") {
+      await userEvent.clear(messageInput);
+    }
+    await userEvent.type(...);
+    ...
+  }
+
+  ...
+
+  test("can edit an existing API call", async () => {
+    const snippet =
+      "Sure, here's a joke for you: Why don't scientists trust atoms? " +
+      "Because they make up everything!";
+    canonicalRef.set({
+      id: "c13c1e67-2de3-48de-a34c-a32079c03316",
+      snippet,
+    });
+    prompt.set({
+      type: "Chat",
+      messages: [
+        {
+          role: "System",
+          text: "You are ZAMM, a chat program. Respond in first person.",
+        },
+        {
+          role: "Human",
+          text: "Hello, does this work?",
+        },
+        {
+          role: "AI",
+          text: "Yes, it works. How can I assist you today?",
+        },
+        {
+          role: "Human",
+          text: "Tell me something funny.",
+        },
+      ],
+    });
+    render(ApiCallEditor, {});
+    const originalApiCallLabel = screen.getByText("Original API call:");
+    const originalApiCallLink = originalApiCallLabel.nextElementSibling;
+    if (originalApiCallLink === null) {
+      throw new Error("Original API call link not found");
+    }
+    expect(originalApiCallLink).toHaveTextContent(snippet);
+    expect(originalApiCallLink).toHaveAttribute(
+      "href",
+      "/api-calls/c13c1e67-2de3-48de-a34c-a32079c03316",
+    );
+
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/chat-edit-conversation.yaml",
+    );
+    await setNewMessage("Human", "Tell me a funny joke.");
+
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    expect(get(mockStores.page).url.pathname).toEqual(
+      "/api-calls/f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+    );
+  });
+});
+
+```
+
+#### Setting the canonical reference stores
+
+We want the individual API call page to have a button that lets us edit that API call. As such, we edit `src-svelte/src/routes/api-calls/[slug]/Actions.svelte` to add this button:
+
+```svelte
+<script lang="ts">
+  ...
+  import { canonicalRef, prompt } from "../new/ApiCallEditor.svelte";
+  ...
+
+  function editApiCall() {
+    if (!apiCall) {
+      snackbarError("API call not yet loaded");
+      return;
+    }
+
+    canonicalRef.set({
+      id: apiCall.id,
+      snippet: apiCall.response.completion.text,
+    });
+    prompt.set(apiCall.request.prompt);
+
+    goto("/api-calls/new/");
+  }
+
+  ...
+</script>
+
+<InfoBox title="Actions" ...>
+  <div ...>
+    <div class="button-container cut-corners outer">
+      <Button unwrapped leftEnd ...>Edit API call</Button>
+      <Button unwrapped rightEnd on:click={restoreConversation}>Restore conversation</Button>
+    </div>
+  </div>
+</InfoBox>
+
+<style>
+  ...
+
+  .button-container {
+    display: flex;
+  }
+
+  .button-container :global(.left-end) {
+    --cut-top-left: 8px;
+  }
+
+  .button-container :global(.right-end) {
+    --cut-bottom-right: 8px;
+  }
+
+  @media (max-width: 35rem) {
+    .button-container {
+      flex-direction: column;
+    }
+  }
+</style>
+
+```
+
+We empirically discover that 35rem is a good point to switch over from a horizontal to vertical layout for buttons on the app. Our styling changes call for some edits to `src-svelte/src/lib/controls/Button.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  export let leftEnd = false;
+  export let rightEnd = ...;
+  ...
+</script>
+
+{#if unwrapped}
+  <button
+    ...
+    class:left-end={leftEnd}
+    ...
+  >
+    ...
+  </button>
+{:else}
+  <button
+    ...
+    class:left-end={leftEnd}
+    ...
+  >
+    <div ... class:left-end={leftEnd} ...>
+      ...
+    </div>
+  </button>
+{/if}
+
+<style>
+  ...
+
+  .outer.left-end,
+  .inner.left-end {
+    --cut-bottom-right: 0.01rem;
+  }
+
+  ...
+</style>
+```
+
+Next, we test our new button. But first, we refactor some test data out into a new file `src-svelte/src/routes/api-calls/new/test.data.ts`:
+
+```ts
+import type { Prompt } from "$lib/bindings";
+
+export const EDIT_CANONICAL_REF = {
+  id: "c13c1e67-2de3-48de-a34c-a32079c03316",
+  snippet: "Sure, here's a joke for you: Why don't scientists trust atoms? " +
+  "Because they make up everything!",
+};
+
+export const EDIT_PROMPT: Prompt = {
+  type: "Chat",
+  messages: [
+    {
+      role: "System",
+      text: "You are ZAMM, a chat program. Respond in first person.",
+    },
+    {
+      role: "Human",
+      text: "Hello, does this work?",
+    },
+    {
+      role: "AI",
+      text: "Yes, it works. How can I assist you today?",
+    },
+    {
+      role: "Human",
+      text: "Tell me something funny.",
+    },
+  ],
+};
+
+```
+
+We edit `src-svelte\src\routes\api-calls\new\ApiCallEditor.test.ts` accordingly, to import these variables that were just moved out of that file:
+
+```ts
+...
+import { EDIT_CANONICAL_REF, EDIT_PROMPT } from "./test.data";
+
+describe("API call editor", () => {
+  ...
+
+  test("can edit an existing API call", async () => {
+    canonicalRef.set(EDIT_CANONICAL_REF);
+    prompt.set(EDIT_PROMPT);
+    ...
+    expect(originalApiCallLink).toHaveTextContent(EDIT_CANONICAL_REF.snippet);
+    expect(originalApiCallLink).toHaveAttribute(
+      "href",
+      ...
+    );
+    ...
+  });
+});
+```
+
+Note that we don't define and export the test data from this file directly, because if we did that, calling `vitest` on just `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts` would cause Vitest to also run the tests on this imported test file.
+
+Naturally, our next step is to also import this data and use it in `src-svelte/src/routes/api-calls/[slug]/ApiCall.test.ts`:
+
+```ts
+...
+import { canonicalRef, prompt, getDefaultApiCall, resetNewApiCall } from "../new/ApiCallEditor.svelte";
+import { EDIT_PROMPT } from "../new/test.data";
+...
+
+describe("Individual API call", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    mockStores.page.set({
+      url: new URL("http://localhost/"),
+      params: {},
+    });
+    resetConversation();
+    resetNewApiCall();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("can edit API call", async() => {
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_api_call-continue-conversation.yaml",
+    );
+    render(ApiCall, { id: "c13c1e67-2de3-48de-a34c-a32079c03316" });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    await waitFor(() => {
+      screen.getByText("Hello, does this work?");
+    });
+    expect(get(canonicalRef)).toBeUndefined();
+    expect(get(prompt)).toEqual(getDefaultApiCall());
+    expect(get(mockStores.page).url.pathname).toEqual("/");
+
+    const editButton = await waitFor(() =>
+      screen.getByText("Edit API call"),
+    );
+    userEvent.click(editButton);
+    await waitFor(() => {
+      expect(get(prompt)).toEqual(EDIT_PROMPT);
+    });
+    expect(get(canonicalRef)).toEqual(EDIT_CANONICAL_REF);
+    expect(get(mockStores.page).url.pathname).toEqual("/api-calls/new/");
+  });
+});
+
+```
+
+It is good to use the same exact data across these two tests so that we can be sure the handoff takes place correctly.
+
+We notice that on the development Tauri app on Windows, the new API call editing page is incorrectly rendered by the individual API svelte component. This is because SvelteKit routing appears to get confused by the slug, such that it thinks `/api-calls/new/` should be handled by the `/api-calls/[slug]` route. It turns out we can fix this by editing the prerender entries in `src-svelte/svelte.config.js` to explicitly include the `/api-calls/new/` page:
+
+```js
+const config = {
+  ...
+
+  kit: {
+    ...
+    prerender: {
+      ...,
+      entries: ["*", "/api-calls/new/", "/api-calls/[slug]"],
+    },
+  },
+};
+```
+
+#### Showing variant data
+
+We first edit the backend tests to return API calls that show the variant data. We edit `src-tauri\api\sample-calls\get_api_call-continue-conversation.yaml` to return from a version of the database that has variant data on the given API call:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+      ...,
+      "variation": {
+        "variants": [
+          {
+            "id": "f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+            "snippet": "Sure, here is a light-hearted joke for you: Why don't scientists trust atoms? Because they make up everything!..."
+          },
+          {
+            "id": "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+            "snippet": "Sure, here you go: Why don't scientists trust atoms? Because they make up everything!"
+          }
+        ]
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-edited-2
+    endStateDump: conversation-edited-2
+
+```
+
+We then also create `src-tauri\api\sample-calls\get_api_call-edit.yaml` to show the return value when the API call in question is a variant and not the canonical one:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648"
+    }
+response:
+  message: >
+    {
+      "id": "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+      "timestamp": "2024-06-08T09:40:22.392223700",
+      "llm": {
+        "name": "gpt-4-0613",
+        "requested": "gpt-4",
+        "provider": "OpenAI"
+      },
+      "request": {
+        "prompt": {
+          "type": "Chat",
+          "messages": [
+            {
+              "role": "System",
+              "text": "You are ZAMM, a chat program. Respond in first person."
+            },
+            {
+              "role": "Human",
+              "text": "Hello, does this really work?"
+            },
+            {
+              "role": "AI",
+              "text": "Yes, it works. How can I assist you today?"
+            },
+            {
+              "role": "Human",
+              "text": "Tell me a funny joke."
+            }
+          ]
+        },
+        "temperature": 1.0
+      },
+      "response": {
+        "completion": {
+          "role": "AI",
+          "text": "Sure, here you go: Why don't scientists trust atoms? Because they make up everything!"
+        }
+      },
+      "tokens": {
+        "prompt": 59,
+        "response": 19,
+        "total": 78
+      },
+      "variation": {
+        "canonical": {
+          "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+          "snippet": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+        },
+        "sibling_variants": [
+          {
+            "id": "f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+            "snippet": "Sure, here is a light-hearted joke for you: Why don't scientists trust atoms? Because they make up everything!..."
+          },
+          {
+            "id": "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+            "snippet": "Sure, here you go: Why don't scientists trust atoms? Because they make up everything!"
+          }
+        ]
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-edited-2
+    endStateDump: conversation-edited-2
+
+```
+
+We edit `src-tauri/src/commands/llms/get_api_call.rs` to include this test:
+
+```rs
+    #[tokio::test]
+    async fn test_get_api_call_edit() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/get_api_call-edit.yaml",
+        )
+        .await;
+    }
+```
+
+Then, we edit `src-svelte\src\routes\api-calls\[slug]\sample-calls.ts` to update `CONTINUE_CONVERSATION_CALL` and include `VARIANT_CALL` with the contents of the response returned in `src-tauri\api\sample-calls\get_api_call-edit.yaml`.
+
+We refactor out LLM call reference link logic into `src-svelte/src/lib/ApiCallReferenceLink.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { LlmCallReference } from "$lib/bindings";
+
+  export let apiCall: LlmCallReference;
+  export let nolink = false;
+</script>
+
+{#if nolink}
+  <span>{apiCall.snippet}</span>
+{:else}
+  <a href="/api-calls/{apiCall.id}">{apiCall.snippet}</a>
+{/if}
+
+<style>
+  span, a {
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  span {
+    font-style: italic;
+  }
+</style>
+
+```
+
+and `src-svelte/src/lib/ApiCallReference.svelte`, which will trigger ellipsis in case the parent container does not have `display: flex;`:
+
+```svelte
+<script lang="ts">
+  import ApiCallReferenceLink from "./ApiCallReferenceLink.svelte";
+  import type { LlmCallReference } from "./bindings";
+
+  export let apiCall: LlmCallReference;
+  export let selfContained = false;
+</script>
+
+{#if selfContained}
+  <div class="ellipsis-container">
+    <ApiCallReferenceLink {apiCall} {...$$restProps} />
+  </div>
+{:else}
+  <ApiCallReferenceLink {apiCall} {...$$restProps} />
+{/if}
+
+<style>
+  .ellipsis-container {
+    display: flex;
+    width: 100%;
+  }
+</style>
+
+```
+
+We define the `apiCall` argument explicitly instead of including it in `restProps`, because otherwise Svelte complains about that mandatory attribute not being included. [This](https://github.com/sveltejs/language-tools/issues/1377) may be a potentially related issue.
+
+With this, we can now edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte` to use this new component and remove the styling for `.canonical-display a`:
+
+```svelte
+<script lang="ts">
+  import ApiCallReference from "$lib/ApiCallReference.svelte";
+  ...
+</script>
+
+<InfoBox title="New API Call">
+  {#if $canonicalRef}
+    <div class="canonical-display">
+      ...
+      <ApiCallReference apiCall={$canonicalRef} />
+    </div>
+  {/if}
+  ...
+</InfoBox>
+
+<style>
+  ...
+</style>
+```
+
+We can now use this in `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte` as well:
+
+```svelte
+<script lang="ts">
+  ...
+  import ApiCallReference from "$lib/ApiCallReference.svelte";
+  ...
+
+  function getThisAsRef(apiCall: LlmCall | undefined) {
+    if (!apiCall) {
+      return;
+    }
+
+    return {
+      id: apiCall.id,
+      snippet: apiCall.response.completion.text,
+    };
+  }
+
+  $: thisAsRef = getThisAsRef(apiCall);
+  $: variants = apiCall?.variation?.variants ?? apiCall?.variation?.sibling_variants ?? [];
+</script>
+
+<InfoBox title="API Call">
+  {#if apiCall}
+    ...
+    {#if apiCall?.variation !== undefined}
+      <SubInfoBox subheading="Variants">
+        <div class="variation-links composite-reveal">
+          {#if apiCall.variation.canonical}
+            <ApiCallReference selfContained apiCall={apiCall.variation.canonical} />
+          {:else if thisAsRef}
+            <ApiCallReference selfContained nolink apiCall={thisAsRef} />
+          {/if}
+
+          <ul>
+            {#each variants as variant}
+              <li>
+                <ApiCallReference selfContained nolink={variant.id === apiCall.id} apiCall={variant} />
+              </li>
+            {/each}
+          </ul>
+        </div>
+      </SubInfoBox>
+    {/if}
+    ...
+  {/if}
+</InfoBox>
+
+<style>
+  ...
+
+  .variation-links ul {
+    margin: 0;
+    padding: 0;
+    list-style-type: circle;
+  }
+
+  .variation-links li {
+    display: list-item;
+    margin-left: 1rem;
+    width: calc(100% - 1rem);
+  }
+
+  ...
+</style>
+```
+
+where it turns out we have to set [these CSS properties](https://stackoverflow.com/a/3444102) for the list item icons to actually show up.
+
+We add a story to `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.stories.ts` that showcases how the page gets rendered for a variant API call:
+
+```ts
+...
+import {
+  ...,
+  VARIANT_CALL,
+} from "./sample-calls";
+
+...
+
+export const Variant: StoryObj = Template.bind({}) as any;
+Variant.args = {
+  apiCall: VARIANT_CALL,
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+
+```
+
+We add this story to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "individual"],
+    variants: [
+      ...,
+      "variant",
+    ],
+    ...
+  },
+  ...
+];
+```
+
+##### Rounded tree list
+
+We take inspiration from [this answer](https://stackoverflow.com/a/67702407). [This repo](https://github.com/xotonic/flex-tree) appears interesting too, but we will go with the first style for now. We edit `src-svelte\src\routes\api-calls\[slug]\ApiCallDisplay.svelte` as such:
+
+```css
+  .variation-links ul {
+    ...
+    list-style-type: none;
+  }
+
+  .variation-links li {
+    --indent: 2rem;
+    --line-thickness: 2px;
+    margin-left: var(--indent);
+    width: calc(100% - var(--indent));
+    position: relative;
+  }
+
+  .variation-links li:before {
+    content: "";
+    position: absolute;
+    bottom: 50%;
+    left: calc(-1 * var(--indent) + 0.5rem);
+    width: 1rem;
+    height: 150%;
+    border-bottom: var(--line-thickness) solid var(--color-border);
+    border-left: var(--line-thickness) solid var(--color-border);
+    border-bottom-left-radius: var(--corner-roundness);
+  }
+
+  .variation-links li:first-child:before {
+    height: 50%;
+  }
+```
+
+Next, we find out that `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts` is now failing because the response text appears twice in the document. We edit the test to fix this, and to also test for the new conversation and variant links we've added:
+
+```ts
+  test("can load API call with correct details", async () => {
+    ...
+
+    // check that AI message is displayed
+    const responseSection = await screen.findByLabelText("Response");
+    const response = responseSection.querySelector("pre");
+    expect(response).toHaveTextContent("Sure, here's a joke for you: Why don't scientists trust atoms? " +
+    "Because they make up everything!");
+
+    // check that metadata is displayed
+    ...
+
+    // check that links are displayed
+    const conversationSection = await screen.findByLabelText("Conversation");
+    const conversationLinks = Array.from(conversationSection.querySelectorAll("a")).map((a) => a.href);
+    expect(conversationLinks).toEqual([
+      // previous
+      "http://localhost:3000/api-calls/d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+      // next
+      "http://localhost:3000/api-calls/0e6bcadf-2b41-43d9-b4cf-81008d4f4771",
+      "http://localhost:3000/api-calls/63b5c02e-b864-4efe-a286-fbef48b152ef",
+    ]);
+
+    const variantSection = await screen.findByLabelText("Variants");
+    const variantLinks = Array.from(variantSection.querySelectorAll("a")).map((a) => a.href);
+    expect(variantLinks).toEqual([
+      "http://localhost:3000/api-calls/f39a5017-89d4-45ec-bcbb-25c2bd43cfc1",
+      "http://localhost:3000/api-calls/7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+    ]);
+  });
+```
