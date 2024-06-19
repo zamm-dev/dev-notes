@@ -883,3 +883,125 @@ header {
     ...
   }
 ```
+
+## Saving tab URLs
+
+When we navigate to a new sidebar tab, we would want to save the old tab location if possible. We do this by editing `src-svelte/src/routes/SidebarUI.svelte`. Note that:
+
+1. We changed `href={dummyLinks ? "#" : route.path}` to just `href={iconLinks[route.name]}` because it turns out the on-click handler already fixes the issue where we go to a different page when we click on the links in Storybook
+2. We index by route name instead of by index because the split in the two `each` blocks makes index arithmetic slightly more complicated.
+
+```svelte
+<script lang="ts">
+  ...
+  let previousRoute = currentRoute;
+  let iconLinks = routes.reduce(
+    (acc, route) => {
+      acc[route.name] = route.path;
+      return acc;
+    },
+    {} as Record<string, string>,
+  );
+  ...
+
+  function getMatchingRoute(newRoute: string) {
+    const routeIndex = routes.findIndex((r) => routeMatches(r.path, newRoute));
+    return routes[routeIndex];
+  }
+
+  function getIndicatorPosition(matchingTab: App.Route) {
+    const routeName = matchingTab.name.toLowerCase();
+    ...
+  }
+
+  function updateIndicator(newRoute: string) {
+    const previousTab = getMatchingRoute(previousRoute);
+    const currentTab = getMatchingRoute(newRoute);
+    indicatorPosition = getIndicatorPosition(currentTab);
+    if (previousTab.name !== currentTab.name) {
+      // click on the previous icon will take the user back to that same page
+      iconLinks[previousTab.name] = previousRoute;
+      // clicking on the new icon will reset to the default page for this icon
+      iconLinks[currentTab.name] = currentTab.path;
+    }
+    previousRoute = newRoute;
+  }
+
+  ...
+
+  onMount(() => {
+    const updateIndicator = () => {
+      ...
+      indicatorPosition = getIndicatorPosition(getMatchingRoute(currentRoute));
+    };
+    ...
+  });
+
+  $: updateIndicator(currentRoute);
+</script>
+
+<header ...>
+  ...
+  <nav>
+    ...
+    {#each routes.slice0, routes.length - 2 as route (...)}
+      <a
+        ...
+        href={iconLinks[route.name]}
+        ...
+      >
+        ...
+      </a>
+    {/each}
+    ...
+    {#each routes.slice(routes.length - 2, routes.length) as route (...)}
+      <a
+        ...
+        href={iconLinks[route.name]}
+        ...
+      >
+        ...
+      </a>
+    {/each}
+  </nav>
+</header>
+```
+
+We test these changes by adding to these tests in `src-svelte/src/routes/SidebarUI.test.ts`:
+
+```ts
+describe("Sidebar", () => {
+  ...
+
+  test("saves sub-path when navigating to new icon", async () => {
+    render(SidebarUI, {
+      currentRoute: "/api-calls/1234",
+      dummyLinks: true,
+    });
+    const homeLink = screen.getByTitle("Dashboard");
+    const apiCallsLink = screen.getByTitle("API Calls");
+    expect(homeLink).toHaveAttribute("href", "/");
+    expect(apiCallsLink).toHaveAttribute("href", "/api-calls");
+
+    await act(() => userEvent.click(homeLink));
+    expect(homeLink).toHaveAttribute("href", "/");
+    expect(apiCallsLink).toHaveAttribute("href", "/api-calls/1234");
+  });
+
+  test("restores default path when navigating back to old icon", async () => {
+    render(SidebarUI, {
+      currentRoute: "/api-calls/1234",
+      dummyLinks: true,
+    });
+    const homeLink = screen.getByTitle("Dashboard");
+    const apiCallsLink = screen.getByTitle("API Calls");
+    await act(() => userEvent.click(homeLink));
+    expect(homeLink).toHaveAttribute("href", "/");
+    expect(apiCallsLink).toHaveAttribute("href", "/api-calls/1234");
+
+    await act(() => userEvent.click(apiCallsLink));
+    expect(homeLink).toHaveAttribute("href", "/");
+    expect(apiCallsLink).toHaveAttribute("href", "/api-calls");
+  });
+});
+```
