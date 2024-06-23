@@ -2323,3 +2323,1544 @@ It appears that they want us to [add explicit comments](https://eslint.org/docs/
       }
     };
 ```
+
+## Database import/export
+
+After performing [the database refactor](/zamm-notes/tauri.md) to streamline the tests somewhat, we are ready to allow the user to import and export their database in a YAML format.
+
+### Backend
+
+#### Refactoring test logic
+
+We are going to reuse some of the functions that are used in tests. As such, we start by splitting `src-tauri/src/test_helpers/database_contents.rs` verbatim into
+
+- `src-tauri/src/models/database_contents.rs`, which contains `LlmCallData`, `DatabaseContents`, `get_database_contents`, `write_database_contents`, and `read_database_contents`
+- `src-tauri/src/test_helpers/sqlite.rs`, which contains `load_sqlite_database` and `dump_sqlite_database`
+
+We'll have to register the moved `database_contents.rs` as a new submodule in `src-tauri/src/models/mod.rs`:
+
+```rs
+#[cfg(test)]
+pub mod database_contents;
+```
+
+and edit `src-tauri/src/test_helpers/mod.rs` to register `sqlite` instead of `database_contents` as a submodule:
+
+```rs
+pub mod sqlite;
+```
+
+Finally, we edit `src-tauri/src/test_helpers/api_testing.rs` to import some of these functions from the new location:
+
+```rs
+...
+use crate::models::database_contents::{
+    read_database_contents, write_database_contents,
+};
+...
+use crate::test_helpers::sqlite::{dump_sqlite_database, load_sqlite_database};
+...
+```
+
+Because the new files are verbatim split-up versions of the old file, nothing other than imports need to be changed.
+
+#### Adding database import/export commands
+
+We add the export command at `src-tauri/src/commands/database/export.rs`:
+
+```rs
+use specta::specta;
+
+use tauri::State;
+
+use crate::commands::errors::ZammResult;
+use crate::models::database_contents::write_database_contents;
+use crate::ZammDatabase;
+
+async fn export_db_helper(zamm_db: &ZammDatabase, db_path: String) -> ZammResult<()> {
+    write_database_contents(zamm_db, &db_path).await
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn export_db(
+    database: State<'_, ZammDatabase>,
+    db_path: String,
+) -> ZammResult<()> {
+    export_db_helper(&database, db_path).await
+}
+```
+
+and the import command at `src-tauri/src/commands/database/import.rs`:
+
+```rs
+use specta::specta;
+
+use tauri::State;
+
+use crate::commands::errors::ZammResult;
+use crate::models::database_contents::read_database_contents;
+use crate::ZammDatabase;
+
+async fn import_db_helper(zamm_db: &ZammDatabase, db_path: String) -> ZammResult<()> {
+    read_database_contents(zamm_db, &db_path).await
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn import_db(
+    database: State<'_, ZammDatabase>,
+    db_path: String,
+) -> ZammResult<()> {
+    import_db_helper(&database, db_path).await
+}
+```
+
+We expose them in the new module `src-tauri/src/commands/database/mod.rs`:
+
+```rs
+pub mod export;
+pub mod import;
+
+pub use export::export_db;
+pub use import::import_db;
+```
+
+and expose that in turn in `src-tauri/src/commands/mod.rs`:
+
+```rs
+mod database;
+...
+
+pub use database::{export_db, import_db};
+...
+```
+
+We make use of these in `src-tauri/src/main.rs`:
+
+```rs
+...
+use commands::{
+    ..., export_db, ..., import_db, ...,
+};
+...
+
+fn main() {
+    ...
+            ts::export(
+                collect_types![
+                    ...,
+                    import_db,
+                    export_db,
+                ],
+                ...,
+            )
+            ...;
+    ...
+          tauri::Builder::default()
+              ...
+              .invoke_handler(tauri::generate_handler![
+                    ...,
+                    import_db,
+                    export_db,
+                ])
+                ...;
+}
+```
+
+Because we are now making use of the database import/export logic in the main, non-test code, we edit:
+
+- `src-tauri/src/models/api_keys.rs` to remove the `#[cfg(test)]` marker from `impl ApiKey`
+- `src-tauri/src/models/llm_calls/linkage.rs` to remove the `#[cfg(test)]` marker from `impl LlmCallFollowUp` and `impl LlmCallVariant`
+- `src-tauri/src/models/llm_calls/row.rs` to remove the `#[cfg(test)]` from `impl LlmCallRow`
+- `src-tauri/src/models/mod.rs` to remove the `#[cfg(test)]` from `pub mod database_contents;`
+
+From initial compilation errors, we realize that the function signatures for `write_database_contents` and `read_database_contents` are different. We edit `src-tauri/src/models/database_contents.rs` to reconcile them again by changing the input for `write_database_contents` from a `&PathBuf` to a `&str`:
+
+```rs
+pub async fn write_database_contents(
+    ...,
+    file_path: &str,
+) -> ZammResult<()> {
+    let file_path_buf = PathBuf::from(file_path);
+    let file_path_abs = file_path_buf.absolutize()?;
+    ...
+    fs::write(file_path_abs, ...)?;
+    ...
+}
+```
+
+This means that we must now also edit `src-tauri/src/test_helpers/api_testing.rs` to call this function with the right argument type:
+
+```rs
+...
+
+async fn dump_sql_to_yaml(
+    ...,
+    expected_yaml_dump_abs: &Path,
+) {
+    ...
+    write_database_contents(..., expected_yaml_dump_abs.to_str().unwrap())
+        ...;
+}
+
+async fn setup_gold_db_files(
+    ...
+) {
+    ...
+    dump_sql_to_yaml(
+        ...,
+        &expected_yaml_dump_abs,
+    )
+    ...
+}
+
+...
+
+    async fn check_sample_call(...) -> ... {
+        ...
+
+        if let Some(test_db) = ... {
+            ...
+            let actual_db_yaml_dump = ...;
+            ...
+            write_database_contents(..., actual_db_yaml_dump.to_str().unwrap())
+                ...;
+            ...
+        }
+
+        ...
+    }
+
+...
+```
+
+#### Testing the export function
+
+We create a new sample call file at `src-tauri/api/sample-calls/export_db-populated.yaml`:
+
+```yaml
+request:
+  - export_db
+  - >
+    {
+      "path": "test-folder/exported-db.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: db-import-export/conversation-edited-2
+  database:
+    startStateDump: conversation-edited-2
+    endStateDump: conversation-edited-2
+```
+
+where `src-tauri/api/sample-disk-writes/db-import-export/conversation-edited-2/test-folder/exported-db.yaml` is simply copied over from `src-tauri\api\sample-database-writes\conversation-edited-2\dump.yaml`.
+
+We edit `.pre-commit-config.yaml` to prevent files like `src-tauri/api/sample-disk-writes/db-import-export/conversation-edited-2/test-folder/exported-db.yaml` from also being formatted during pre-commit:
+
+```yaml
+  - repo: local
+    hooks:
+      ...
+      - id: prettier
+        name: prettier
+        ...
+        exclude: ^(...|src-tauri/api/sample-disk-writes/|...$)
+```
+
+In doing so, we wonder if the exclude should actually be `^(...|src-tauri/api/sample-disk-writes/|...)$`, but realize that it is indeed meant to be that way because `src-tauri/api/sample-disk-writes/` should match the prefix of any files in that folder.
+
+We edit `src-tauri/src/commands/database/export.rs` to run this test, in the process renaming `db_path` to `path` to avoid redundancy in the context of this function, and also changing that parameter to be a `&str` instead of a `String`. We copy over the test setup boilerplate code from other files:
+
+```rs
+async fn export_db_helper(..., path: &str) -> ZammResult<()> {
+    write_database_contents(..., path).await
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn export_db(
+    ...,
+    path: String,
+) -> ZammResult<()> {
+    export_db_helper(..., &path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sample_call::SampleCall;
+    use crate::test_helpers::api_testing::standard_test_subdir;
+    use crate::test_helpers::{
+        SampleCallTestCase, SideEffectsHelpers, ZammResultReturn,
+    };
+    use serde::{Deserialize, Serialize};
+    use stdext::function_name;
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct ExportDbRequest {
+        path: String,
+    }
+
+    struct ExportDbTestCase {
+        test_fn_name: &'static str,
+    }
+
+    impl SampleCallTestCase<ExportDbRequest, ZammResult<()>> for ExportDbTestCase {
+        const EXPECTED_API_CALL: &'static str = "export_db";
+        const CALL_HAS_ARGS: bool = true;
+
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        async fn make_request(
+            &mut self,
+            args: &Option<ExportDbRequest>,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            export_db_helper(
+                side_effects.db.as_ref().unwrap(),
+                &args.as_ref().unwrap().path,
+            )
+            .await
+        }
+
+        fn serialize_result(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<()>,
+        ) -> String {
+            ZammResultReturn::serialize_result(self, sample, result)
+        }
+
+        async fn check_result(
+            &self,
+            sample: &SampleCall,
+            args: Option<&ExportDbRequest>,
+            result: &ZammResult<()>,
+        ) {
+            ZammResultReturn::check_result(self, sample, args, result).await
+        }
+    }
+
+    impl ZammResultReturn<ExportDbRequest, ()> for ExportDbTestCase {}
+
+    async fn check_get_api_call_sample(test_fn_name: &'static str, file_prefix: &str) {
+        let mut test_case = ExportDbTestCase { test_fn_name };
+        test_case.check_sample_call(file_prefix).await;
+    }
+
+    #[tokio::test]
+    async fn test_export_db_populated() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/export_db-populated.yaml",
+        )
+        .await;
+    }
+}
+
+```
+
+This is how we find out that the export fails if the parent directory doesn't exist. While it's unlikely that the OS file picker invoked by the frontend will allow a non-existent folder path to be chosen, we should still shore up the backend to deal with such contingencies. We edit `src-tauri/src/models/database_contents.rs`, in the process also making any errors more observable by including the exact paths in question rather than a generic `The system cannot find the path specified.`:
+
+```rs
+pub async fn write_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+    let serialized = ...;
+    if let Some(parent) = file_path_abs.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            anyhow!(
+                "Error creating parent directory {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
+    }
+    fs::write(&file_path_abs, serialized).map_err(|e| {
+        anyhow!("Error exporting to {}: {}", &file_path_abs.display(), e)
+    })?;
+    Ok(())
+}
+```
+
+Due to a typo in our original sample call file, the expected output directory was not found during test time. We edit `src-tauri/src/test_helpers/api_testing.rs` to also make testing errors more debuggable:
+
+```rs
+...
+use std::fs::ReadDir;
+...
+
+fn debuggable_read_dir(dir: impl AsRef<Path>) -> ReadDir {
+    fs::read_dir(&dir).unwrap_or_else(|e| {
+        panic!(
+            "TEST CODE unable to read directory at {:?}: {}",
+            dir.as_ref().display(),
+            e
+        )
+    })
+}
+
+fn compare_dir_all(
+    ...
+) {
+    let mut expected_outputs = vec![];
+    for entry in debuggable_read_dir(expected_output_dir) {
+        ...
+    }
+
+    let mut actual_outputs = vec![];
+    for entry in debuggable_read_dir(actual_output_dir) {
+        ...
+    }
+
+    ...
+}
+```
+
+#### Testing the import function
+
+We create a new sample call file at `src-tauri/api/sample-calls/import_db-initially-empty.yaml`:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "test-folder/exported-db.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/conversation-edited-2
+    endStateDirectory: db-import-export/conversation-edited-2
+  database:
+    endStateDump: conversation-edited-2
+```
+
+All the files already exist. We just have to edit `src-tauri/src/commands/database/import.rs` to use this sample call file, doing the same `db_path` to `path` edits that we did for the export:
+
+```rs
+async fn import_db_helper(..., path: &str) -> ZammResult<()> {
+    read_database_contents(..., path).await
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn import_db(
+    ...,
+    path: &str,
+) -> ZammResult<()> {
+    import_db_helper(..., path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sample_call::SampleCall;
+    use crate::test_helpers::api_testing::standard_test_subdir;
+    use crate::test_helpers::{
+        SampleCallTestCase, SideEffectsHelpers, ZammResultReturn,
+    };
+    use serde::{Deserialize, Serialize};
+    use stdext::function_name;
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct ImportDbRequest {
+        path: String,
+    }
+
+    struct ImportDbTestCase {
+        test_fn_name: &'static str,
+    }
+
+    impl SampleCallTestCase<ImportDbRequest, ZammResult<()>> for ImportDbTestCase {
+        const EXPECTED_API_CALL: &'static str = "import_db";
+        const CALL_HAS_ARGS: bool = true;
+
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        async fn make_request(
+            &mut self,
+            args: &Option<ImportDbRequest>,
+            side_effects: &SideEffectsHelpers,
+        ) -> ZammResult<()> {
+            import_db_helper(
+                side_effects.db.as_ref().unwrap(),
+                &args.as_ref().unwrap().path,
+            )
+            .await
+        }
+
+        fn serialize_result(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<()>,
+        ) -> String {
+            ZammResultReturn::serialize_result(self, sample, result)
+        }
+
+        async fn check_result(
+            &self,
+            sample: &SampleCall,
+            args: Option<&ImportDbRequest>,
+            result: &ZammResult<()>,
+        ) {
+            ZammResultReturn::check_result(self, sample, args, result).await
+        }
+    }
+
+    impl ZammResultReturn<ImportDbRequest, ()> for ImportDbTestCase {}
+
+    async fn check_get_api_call_sample(test_fn_name: &'static str, file_prefix: &str) {
+        let mut test_case = ImportDbTestCase { test_fn_name };
+        test_case.check_sample_call(file_prefix).await;
+    }
+
+    #[tokio::test]
+    async fn test_import_db_initially_empty() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/import_db-initially-empty.yaml",
+        )
+        .await;
+    }
+}
+```
+
+#### Handling conflicting exports
+
+We don't want our databases to be corrupted by imports from an untrusted source, so we create a new sample call at `src-tauri/api/sample-calls/import_db-conflicting.yaml` to check for the situation where there are conflicts. Currently, such an import would fail anyways due to trying to add rows with the same IDs.
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "conflicting-db.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/conflicting
+    endStateDirectory: db-import-export/conflicting
+  database:
+    startStateDump: conversation-edited
+    endStateDump: conversation-edited-2
+```
+
+Our corresponding database file at `src-tauri/api/sample-disk-writes/db-import-export/conflicting/conflicting-db.yaml` features a `7a35a4cf-f3d9-4388-bca8-2fe6e78c9648` that is exactly the same as elsewhere, and a `0e6bcadf-2b41-43d9-b4cf-81008d4f4771` that is different, including with a link to a different API call:
+
+```yaml
+llm_calls:
+  instances:
+  - id: 0e6bcadf-2b41-43d9-b4cf-81008d4f4771
+    ...
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: This is something completely different
+    completion:
+      role: AI
+      text: Sure sounds like you might be losing some data!
+  - id: 7a35a4cf-f3d9-4388-bca8-2fe6e78c9648
+    ...
+  follow_ups:
+  - previous_call_id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+    next_call_id: 0e6bcadf-2b41-43d9-b4cf-81008d4f4771
+  variants:
+  - canonical_id: c13c1e67-2de3-48de-a34c-a32079c03316
+    variant_id: 7a35a4cf-f3d9-4388-bca8-2fe6e78c9648
+```
+
+We edit `src-tauri/src/commands/database/import.rs` to feature this test too:
+
+```rs
+    #[tokio::test]
+    async fn test_import_db_conflicting() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/import_db-conflicting.yaml",
+        )
+        .await;
+    }
+```
+
+Next, we edit `src-tauri/src/models/database_contents.rs` to filter out all existing API calls, and to make sure that new links must feature at least one new API call:
+
+```rs
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+
+    let new_llm_calls: Vec<NewLlmCallRow> = db_contents
+        .insertable_llm_calls()
+        .into_iter()
+        .filter(|call| {
+            llm_calls::table
+                .filter(llm_calls::id.eq(&call.id))
+                .count()
+                .get_result::<i64>(db)
+                .unwrap_or(0)
+                == 0
+        })
+        .collect();
+    let new_llm_call_ids = new_llm_calls.iter().map(|call| call.id).collect::<Vec<_>>();
+    let new_llm_call_follow_ups: Vec<NewLlmCallFollowUp> = db_contents
+        .insertable_call_follow_ups()
+        .into_iter()
+        .filter(|follow_up| {
+            new_llm_call_ids.contains(&follow_up.previous_call_id)
+                || new_llm_call_ids.contains(&follow_up.next_call_id)
+        })
+        .collect();
+    let new_llm_call_variants: Vec<NewLlmCallVariant> = db_contents
+        .insertable_call_variants()
+        .into_iter()
+        .filter(|variant| {
+            new_llm_call_ids.contains(&variant.canonical_id)
+                || new_llm_call_ids.contains(&variant.variant_id)
+        })
+        .collect();
+
+    db.transaction::<(), diesel::result::Error, _>(|conn| {
+        ...
+        diesel::insert_into(llm_calls::table)
+            .values(&new_llm_calls)
+            .execute(conn)?;
+        diesel::insert_into(llm_call_follow_ups::table)
+            .values(&new_llm_call_follow_ups)
+            .execute(conn)?;
+        diesel::insert_into(llm_call_variants::table)
+            .values(&new_llm_call_variants)
+            .execute(conn)?;
+        Ok(())
+    })?;
+}
+```
+
+##### Handling conflict API keys
+
+You realize that you haven't yet handled the case where the API keys conflict as well. You create `src-tauri/api/sample-calls/import_db-api-key.yaml` as an example of a new API key import:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "different.zamm.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/different-api-key
+    endStateDirectory: db-import-export/different-api-key
+  database:
+    endStateDump: different-openai-api-key
+```
+
+and `src-tauri/api/sample-calls/import_db-conflicting-api-key.yaml` as an example where the API key import is ignored:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "different.zamm.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/different-api-key
+    endStateDirectory: db-import-export/different-api-key
+  database:
+    startStateDump: openai-api-key
+    endStateDump: openai-api-key
+```
+
+For naming consistency, you rename `src-tauri/api/sample-calls/import_db-conflicting.yaml` to `src-tauri/api/sample-calls/import_db-conflicting-llm-call.yaml` and edit the directory:
+
+```yaml
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/conflicting-llm-call
+    endStateDirectory: db-import-export/conflicting-llm-call
+```
+
+wherein you also take the change to rename the folder `src-tauri/api/sample-disk-writes/db-import-export/conflicting/` to `src-tauri/api/sample-disk-writes/db-import-export/conflicting-llm-call/`.
+
+Meanwhile, the new sample database for import is at `src-tauri/api/sample-disk-writes/db-import-export/different-api-key/different.zamm.yaml`:
+
+```yaml
+api_keys:
+- service: OpenAI
+  api_key: 4-d1ff3r3n7-k3y
+```
+
+You edit `src-tauri/src/commands/database/import.rs` accordingly, to also rename `test_import_db_conflicting` to `test_import_db_conflicting_llm_call`:
+
+```rs
+    #[tokio::test]
+    async fn test_import_db_api_key() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/import_db-api-key.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_import_db_conflicting_llm_call() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/import_db-conflicting-llm-call.yaml",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_import_db_conflicting_api_key() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/import_db-conflicting-api-key.yaml",
+        )
+        .await;
+    }
+```
+
+Finally, we add the actual fix in `src-tauri/src/models/database_contents.rs`:
+
+```rs
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<()> {
+    ...
+    let new_api_keys: Vec<NewApiKey> = db_contents
+        .insertable_api_keys()
+        .into_iter()
+        .filter(|key| {
+            api_keys::table
+                .filter(api_keys::service.eq(&key.service))
+                .count()
+                .get_result::<i64>(db)
+                .unwrap_or(0)
+                == 0
+        })
+        .collect();
+    ...
+    db.transaction::<(), diesel::result::Error, _>(|conn| {
+        diesel::insert_into(api_keys::table)
+            .values(&new_api_keys)
+            .execute(conn)?;
+        ...
+    })?;
+    ...
+}
+```
+
+#### Saving the ZAMM version number
+
+For future backwards compatibility purposes, we may want to note which version of ZAMM was used to create this database export.
+
+We create a new export API call at `src-tauri/api/sample-calls/export_db-api-key.yaml`:
+
+```yaml
+request:
+  - export_db
+  - >
+    {
+      "path": "different.zamm.yaml"
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: db-import-export/different-api-key
+  database:
+    startStateDump: different-openai-api-key
+    endStateDump: different-openai-api-key
+```
+
+We edit the existing files at `src-tauri/api/sample-disk-writes/db-import-export/conflicting-llm-call/conflicting-db.yaml`, `src-tauri/api/sample-disk-writes/db-import-export/conversation-edited-2/test-folder/exported-db.yaml`, and `src-tauri/api/sample-disk-writes/db-import-export/different-api-key/different.zamm.yaml` to feature this new line at the top:
+
+```yaml
+zamm_version: 0.1.5
+...
+```
+
+We add a new option to `src-tauri/src/models/database_contents.rs`:
+
+```rs
+#[derive(...)]
+pub struct DatabaseContents {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zamm_version: Option<String>,
+    ...
+}
+
+...
+
+pub async fn get_database_contents(
+    ...,
+    save_version: bool,
+) -> ZammResult<DatabaseContents> {
+    ...
+
+    let zamm_version = if save_version {
+        Some(env!("CARGO_PKG_VERSION").to_string())
+    } else {
+        None
+    };
+    let api_keys = ...;
+    ...
+
+    Ok(DatabaseContents {
+        zamm_version,
+        ...
+    })
+}
+
+pub async fn write_database_contents(
+    ...
+    save_version: bool,
+) -> ZammResult<()> {
+    ...
+    let db_contents = get_database_contents(..., save_version).await?;
+    ...
+}
+```
+
+We make use of this new option in `src-tauri/src/commands/database/export.rs`, and also make use of our new test there:
+
+```rs
+...
+
+async fn export_db_helper(...) -> ZammResult<()> {
+    write_database_contents(..., true).await
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_export_db_api_key() {
+        check_get_api_call_sample(
+            function_name!(),
+            "./api/sample-calls/export_db-api-key.yaml",
+        )
+        .await;
+    }
+}
+```
+
+and set the new option to false in our tests at `src-tauri/src/test_helpers/api_testing.rs`, so as to not have to change out all the regular tests every time we bump our app version number:
+
+```rs
+async fn dump_sql_to_yaml(
+    ...
+) {
+    ...
+    write_database_contents(..., false)
+        ...;
+}
+
+...
+
+    async fn check_sample_call(&mut self, ...) -> SampleCallResult<T, U> {
+        ...
+
+        // check the call against db side-effects
+        if let Some(test_db) = ... {
+            ...
+            write_database_contents(
+                ...,
+                false,
+            )
+            ...;
+
+            ...
+        }
+
+        ...
+    }
+```
+
+We update the release instructions in `RELEASE.md` with references to these new files. We realize that we might as well create Markdown links to the actual files as well:
+
+```md
+...
+9. Bump version number in:
+   ...
+   - [`src-tauri/api/sample-disk-writes/db-import-export/conflicting-llm-call/conflicting-db.yaml`](/src-tauri/api/sample-disk-writes/db-import-export/conflicting-llm-call/conflicting-db.yaml)
+   - [`src-tauri/api/sample-disk-writes/db-import-export/conversation-edited-2/test-folder/exported-db.yaml`](/src-tauri/api/sample-disk-writes/db-import-export/conversation-edited-2/test-folder/exported-db.yaml)
+   - [`src-tauri/api/sample-disk-writes/db-import-export/different-api-key/different.zamm.yaml`](/src-tauri/api/sample-disk-writes/db-import-export/different-api-key/different.zamm.yaml)
+...
+```
+
+### Frontend
+
+#### Refactoring the actions button group
+
+We refactor the button group display logic out of the actions info box for the LLM call screen. We create `src-svelte/src/lib/controls/ButtonGroup.svelte`:
+
+```svelte
+<div class="outer-container">
+  <div class="button-container cut-corners outer">
+    <slot />
+  </div>
+</div>
+
+<style>
+  .outer-container {
+    width: fit-content;
+    margin: 0 auto;
+  }
+  .button-container {
+    display: flex;
+  }
+  .button-container :global(.left-end) {
+    --cut-top-left: 8px;
+  }
+  .button-container :global(.right-end) {
+    --cut-bottom-right: 8px;
+  }
+  @media (max-width: 35rem) {
+    .button-container {
+      flex-direction: column;
+    }
+  }
+</style>
+```
+
+with the corresponding `src-svelte/src/lib/controls/ButtonGroup.stories.ts`:
+
+```ts
+import ButtonGroupComponent from "./ButtonGroupView.svelte";
+import type { StoryObj } from "@storybook/svelte";
+
+export default {
+  component: ButtonGroupComponent,
+  title: "Reusable/Button/Group",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: ButtonGroupComponent,
+  props: args,
+});
+
+export const Wide: StoryObj = Template.bind({}) as any;
+Wide.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+
+export const Narrow: StoryObj = Template.bind({}) as any;
+Narrow.parameters = {
+  viewport: {
+    defaultViewport: "mobile2",
+  },
+};
+```
+
+that relies on a `src-svelte/src/lib/controls/ButtonGroupView.svelte`:
+
+```svelte
+<script lang="ts">
+  import Button from "./Button.svelte";
+  import ButtonGroup from "./ButtonGroup.svelte";
+</script>
+
+<ButtonGroup>
+  <Button unwrapped leftEnd>Edit API call</Button>
+  <Button unwrapped rightEnd>Restore conversation</Button>
+</ButtonGroup>
+```
+
+We can now use this in `src-svelte/src/routes/api-calls/[slug]/Actions.svelte`, and remove the `<style>` tag from that component altogether:
+
+```svelte
+<script lang="ts">
+  ...
+  import ButtonGroup from "$lib/controls/ButtonGroup.svelte";
+  ...
+</script>
+
+<InfoBox title="Actions" childNumber={1}>
+  <ButtonGroup>
+    <Button unwrapped leftEnd on:click={editApiCall}>Edit API call</Button>
+    <Button unwrapped rightEnd on:click={restoreConversation}
+      >Restore conversation</Button
+    >
+  </ButtonGroup>
+</InfoBox>
+```
+
+We can now edit `src-svelte/src/routes/storybook.test.ts` to add new visual tests for the button group, and to remove a now-redundant test for the action info box. We still want to keep at least one screenshot of that box.
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "button", "group"],
+    variants: ["wide", "narrow"],
+  },
+  ...,
+  {
+    path: ["screens", "llm-call", "individual", "actions"],
+    variants: ["wide"],
+    ...
+  },
+  ...
+];
+```
+
+#### Adding a warning info box component
+
+Later on, we'll need to display warning information to the user about their exported data. As such, we'll create a component for this now.
+
+We create the component at `src-svelte/src/lib/Warning.svelte`. Note that we set `display: block;` on the SVG in order to make its `div` container [the same size](https://stackoverflow.com/a/64368064) as it is.
+
+```svelte
+<script lang="ts">
+  import IconWarning from "~icons/streamline/warning-octagon-solid";
+</script>
+
+<div class="warning atomic-reveal">
+  <div class="icon">
+    <IconWarning />
+  </div>
+  <div class="text">
+    <slot />
+  </div>
+</div>
+
+<style>
+  .warning {
+    background: var(--color-caution-background);
+    padding: 0.5rem 1rem;
+    margin-bottom: 1rem;
+    border-radius: var(--corner-roundness);
+    display: flex;
+    flex-direction: row;
+    gap: 1rem;
+    align-items: center;
+  }
+  .icon :global(svg) {
+    transform: scale(1.2);
+    display: block;
+  }
+  .text {
+    text-align: left;
+  }
+</style>
+```
+
+We define the new CSS variable in `src-svelte/src/routes/styles.css`:
+
+```css
+:root {
+  ...
+  --color-caution-background: hsla(40, 100%, 80%, 1);
+  ...
+}
+```
+
+We create a view to display this component at `src-svelte/src/lib/WarningView.svelte`:
+
+```svelte
+<script lang="ts">
+  import Warning from "./Warning.svelte";
+  export let text: string;
+</script>
+
+<Warning>{text}</Warning>
+```
+
+and create a story for it at `src-svelte/src/lib/Warning.stories.ts`:
+
+```ts
+import WarningView from "./WarningView.svelte";
+import type { StoryObj } from "@storybook/svelte";
+
+export default {
+  component: WarningView,
+  title: "Reusable/Warning",
+  argTypes: {},
+};
+
+const Template = ({ ...args }) => ({
+  Component: WarningView,
+  props: args,
+});
+
+export const Short: StoryObj = Template.bind({}) as any;
+Short.args = {
+  text: "This is a warning.",
+};
+Short.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+
+export const Long: StoryObj = Template.bind({}) as any;
+Long.args = {
+  text:
+    "Please note that this is a warning. " +
+    "It is important to pay attention to this warning, " +
+    "or else the integrity of the simulation may be at stake.",
+};
+Long.parameters = {
+  viewport: {
+    defaultViewport: "tablet",
+  },
+};
+```
+
+We capture the screenshots of this story in `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+    {
+    path: ["reusable", "warning"],
+    variants: ["short", "long"],
+  },
+  ...
+];
+
+Because we are using an icon from yet another source, we add attribution in `src-svelte/src/routes/credits/Credits.svelte`:
+
+```svelte
+          <SubInfoBox subheading="Icons">
+            <Grid>
+              ...
+              <Creditor
+                name="Streamline"
+                logo="streamline.svg"
+                url="https://www.streamlinehq.com/"
+              />
+            </Grid>
+          </SubInfoBox>
+```
+
+and copy their logo into `src-svelte/static/logos/streamline.svg`.
+
+#### Calling the functions
+
+First we export the Specta bindings:
+
+```bash
+$ cargo run -- export-bindings
+```
+
+Then, we edit the `EntityId` type to be a string to manually make up for Specta's bug.
+
+We add
+
+```bash
+$ yarn add @tauri-apps/api
+```
+
+This automatically edits `src-svelte/package.json` and `yarn.lock` for us. As usual, we need to reinstall Yarn dependencies from the frozen lockfile afterwards.
+
+We follow the documentation [here](https://tauri.app/v1/api/js/dialog/) to edit `src-tauri/tauri.conf.json`:
+
+```json
+{
+  ...
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": false,
+        "open": true,
+        "save": true
+      },
+      ...
+    },
+    ...
+  }
+}
+```
+
+We then create the database editing component at `src-svelte/src/routes/settings/Database.svelte`. We follow the documentation [here](https://tauri.app/v1/api/js/dialog/#save) on the save and open methods, and the documentation [here](https://tauri.app/v1/api/js/dialog/#opendialogoptions) that tells us about the additional optional "title" parameter, to trigger the OS file picker.
+
+```svelte
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import { importDb, exportDb } from "$lib/bindings";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import Button from "$lib/controls/Button.svelte";
+  import ButtonGroup from "$lib/controls/ButtonGroup.svelte";
+  import Warning from "$lib/Warning.svelte";
+  import { save, open, type DialogFilter } from "@tauri-apps/api/dialog";
+
+  const ZAMM_DB_FILTER: DialogFilter = {
+    name: "ZAMM Database",
+    extensions: ["zamm.yaml"],
+  };
+
+  async function importData() {
+    const filePath = await open({
+      title: "Import ZAMM data",
+      directory: false,
+      multiple: false,
+      filters: [ZAMM_DB_FILTER, { name: "All Files", extensions: ["*"] }],
+    });
+
+    try {
+      if (filePath === null) {
+        return;
+      }
+
+      if (filePath instanceof Array) {
+        throw new Error("More than one file selected");
+      }
+
+      await importDb(filePath);
+    } catch (error) {
+      snackbarError(error as string | Error);
+    }
+  }
+
+  async function exportData() {
+    const filePath = await save({
+      title: "Export ZAMM data",
+      filters: [ZAMM_DB_FILTER],
+    });
+
+    try {
+      if (filePath === null) {
+        return;
+      }
+
+      exportDb(filePath);
+    } catch (error) {
+      snackbarError(error as string | Error);
+    }
+  }
+</script>
+
+<InfoBox title="Data" childNumber={1}>
+  <Warning
+    >Exported files will contain <strong>sensitive information</strong> such as API
+    keys and all correspondence with LLMs.</Warning
+  >
+  <ButtonGroup>
+    <Button unwrapped leftEnd on:click={importData}>Import data</Button>
+    <Button unwrapped rightEnd on:click={exportData}>Export data</Button>
+  </ButtonGroup>
+</InfoBox>
+```
+
+We create a new component that bundles the settings and database info boxes together, at `src-svelte/src/routes/settings/Page.svelte`:
+
+```svelte
+<script lang="ts">
+  import Settings from "./Settings.svelte";
+  import Database from "./Database.svelte";
+</script>
+
+<div class="container">
+  <Settings />
+  <Database />
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+</style>
+```
+
+Then, we edit `src-svelte/src/routes/settings/+page.svelte` to use the new page:
+
+```svelte
+<script lang="ts">
+  import Page from "./Page.svelte";
+</script>
+
+<Page />
+
+```
+
+Interestingly, at some point `src-tauri/Cargo.toml` gets automatically edited for us to enable these new features in the Tauri dependency:
+
+```toml
+[dependencies]
+tauri = { version = "1.4", features = [ "dialog-save", "dialog-open", ... ] }
+...
+```
+
+In the future, we'll likely want to [persist](https://crates.io/crates/tauri-plugin-persisted-scope) the file permissions scope for the app, but we'll wait until we can test this on a Mac.
+
+#### Returning import/export results
+
+At this point, we realize it would be useful to return some data about what had just changed with the import or export.
+
+##### Move dump and load logic
+
+To do this, we first refactor `get_database_contents` and `write_database_contents` out of `src-tauri/src/models/database_contents.rs` and into `src-tauri/src/commands/database/export.rs`. We also move `read_database_contents` into `src-tauri/src/commands/database/import.rs`.
+
+Next, we expose these new functions for the tests in `src-tauri/src/commands/database/mod.rs`:
+
+```rs
+...
+
+#[cfg(test)]
+pub use export::write_database_contents;
+#[cfg(test)]
+pub use import::read_database_contents;
+```
+
+and expose that module itself in `src-tauri/src/commands/mod.rs`:
+
+```rs
+pub mod database;
+...
+```
+
+We edit `src-tauri/src/models/database_contents.rs` to make the data structure fields public:
+
+```rs
+...
+
+#[derive(...)]
+pub struct LlmCallData {
+    pub instances: ...,
+    #[serde(...)]
+    pub follow_ups: ...,
+    #[serde(...)]
+    pub variants: ...,
+}
+
+...
+
+#[derive(...)]
+pub struct DatabaseContents {
+    #[serde(...)]
+    pub zamm_version: ...,
+    #[serde(...)]
+    pub api_keys: ...,
+    #[serde(...)]
+    pub llm_calls: ...,
+}
+```
+
+We also have to export the data structures themselves from `src-tauri/src/models/mod.rs`:
+
+```rs
+...
+pub use database_contents::{DatabaseContents, LlmCallData};
+```
+
+Finally, we edit `src-tauri/src/test_helpers/api_testing.rs` to import the functions from the new place:
+
+```rs
+use crate::commands::database::{read_database_contents, write_database_contents};
+...
+```
+
+##### Add metadata return for data export
+
+We define a new data structure at `src-tauri/src/commands/database/metadata.rs`:
+
+```rs
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct DatabaseCounts {
+    pub num_api_keys: i32,
+    pub num_llm_calls: i32,
+}
+```
+
+Note that we have to also derive `specta::Type`, or else we will eventually get this error in `main.rs`:
+
+```
+the trait bound `impl futures::Future<Output = Result<DatabaseCounts, errors::Error>>: SpectaFunctionResult<_>` is not satisfied
+the trait `SpectaFunctionResult<SpectaFunctionResultResult<TMarker>>` is implemented for `Result<T, E>`
+required for `fn(tauri::State<'_, ZammDatabase>, std::string::String) -> impl futures::Future<Output = Result<DatabaseCounts, errors::Error>>` to implement `SpectaFunction<(_, TauriMarker, SpectaFunctionArgDeserializeMarker)>`rustcClick for full compiler diagnostic
+```
+
+We expose this in `src-tauri/src/commands/database/mod.rs`:
+
+```rs
+...
+mod metadata;
+...
+```
+
+We make use of this in `src-tauri/src/commands/database/export.rs`, making sure to also change all of the test boilerplate (not shown) to use the new return type:
+
+```rs
+use crate::commands::database::metadata::DatabaseCounts;
+...
+
+pub async fn write_database_contents(
+    ...
+) -> ZammResult<DatabaseCounts> {
+    ...
+
+    Ok(DatabaseCounts {
+        num_api_keys: db_contents.api_keys.len() as i32,
+        num_llm_calls: db_contents.llm_calls.instances.len() as i32,
+    })
+}
+
+async fn export_db_helper(
+    ...
+) -> ZammResult<DatabaseCounts> {
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    impl SampleCallTestCase<..., ZammResult<DatabaseCounts>>
+        ...
+    {
+        ...
+    }
+
+    ...
+}
+```
+
+We update our sample call files at `src-tauri/api/sample-calls/export_db-api-key.yaml`:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "num_api_keys": 1,
+      "num_llm_calls": 0
+    }
+...
+```
+
+and `src-tauri/api/sample-calls/export_db-populated.yaml`:
+
+```yaml
+response:
+  message: >
+    {
+      "num_api_keys": 0,
+      "num_llm_calls": 6
+    }
+```
+
+##### Add metadata return for data import
+
+Most of the data structures are already set up for us. We just edit `src-tauri/src/commands/database/import.rs` to feature import counts, both ignored and successful:
+
+```rs
+use crate::commands::database::metadata::DatabaseCounts;
+...
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct DatabaseImportCounts {
+    pub imported: DatabaseCounts,
+    pub ignored: DatabaseCounts,
+}
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<DatabaseImportCounts> {
+    ...
+    Ok(DatabaseImportCounts {
+        imported: DatabaseCounts {
+            num_api_keys: new_api_keys.len() as i32,
+            num_llm_calls: new_llm_calls.len() as i32,
+        },
+        ignored: DatabaseCounts {
+            num_api_keys: (db_contents.api_keys.len() - new_api_keys.len()) as i32,
+            num_llm_calls: (db_contents.llm_calls.instances.len() - new_llm_calls.len())
+                as i32,
+        },
+    })
+}
+
+async fn import_db_helper(
+    ...
+) -> ZammResult<DatabaseImportCounts> {
+    ...
+}
+
+...
+pub async fn import_db(
+    ...
+) -> ZammResult<DatabaseImportCounts> {
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    impl SampleCallTestCase<..., ZammResult<DatabaseImportCounts>>
+        ...
+    {
+        ...
+    }
+
+    ...
+}
+```
+
+We then edit the test files, for example `src-tauri/api/sample-calls/import_db-conflicting-llm-call.yaml`:
+
+```yaml
+response:
+  message: >
+    {
+      "imported": {
+        "num_api_keys": 0,
+        "num_llm_calls": 1
+      },
+      "ignored": {
+        "num_api_keys": 0,
+        "num_llm_calls": 1
+      }
+    }
+```
+
+versus `src-tauri/api/sample-calls/import_db-initially-empty.yaml`:
+
+```yaml
+response:
+  message: >
+    {
+      "imported": {
+        "num_api_keys": 0,
+        "num_llm_calls": 6
+      },
+      "ignored": {
+        "num_api_keys": 0,
+        "num_llm_calls": 0
+      }
+    }
+```
+
+We do similar edits to `src-tauri/api/sample-calls/import_db-api-key.yaml` and `src-tauri/api/sample-calls/import_db-conflicting-api-key.yaml`.

@@ -246,3 +246,24 @@ Failed to clone 'src-svelte/static/fonts'. Retry scheduled
 ```
 
 Follow [the link](https://docs.github.com/en/get-started/getting-started-with-git/about-remote-repositories#cloning-with-https-urls) to see that you'll want to get a PAT. Then repeat this again with the PAT.
+
+## Errors
+
+### Cannot rebase onto multiple branches
+
+As of git `git version 2.43.0.windows.1`, we *sometimes* get the error
+
+```bash
+$ git pull   
+fatal: Cannot rebase onto multiple branches.
+```
+
+This is a fluke, as simply re-running the same command again right after will work just fine:
+
+```bash
+$ git pull
+Updating 430f390..dc0bfb5
+Fast-forward
+ src-svelte/src/lib/bindings.ts | 30 +++++++++++++++++++-----------
+ 1 file changed, 19 insertions(+), 11 deletions(-)
+```
