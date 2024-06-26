@@ -3373,6 +3373,446 @@ def generate_api_call_yaml(i: int) -> str:
 """
 ```
 
+### Removing the option from `make_request` and `serialize_result`
+
+We edit `src-tauri/src/test_helpers/api_testing.rs` to simplify the signatures a bit:
+
+```rs
+...
+
+pub struct SampleCallResult<T, U>
+where
+    ...
+{
+    ...
+    pub args: T,
+    ...
+}
+
+...
+
+pub trait SampleCallTestCase<T, U>
+where
+    ...
+{
+    ...
+
+    async fn make_request(..., args: &T, ...) -> U;
+
+    ...
+
+    async fn check_result(..., args: &T, ...);
+
+    ...
+
+    async fn check_sample_call(...) -> SampleCallResult<T, U> {
+        ...
+
+        // make the call
+        let args = if Self::CALL_HAS_ARGS {
+            self.parse_args(&sample.request[1])
+        } else {
+            self.parse_args("null")
+        };
+        let result = self.make_request(&args, ...).await;
+        ...
+
+        // check the call against sample outputs
+        ...
+        self.check_result(..., &args, ...).await;
+    }
+
+    ...
+}
+
+pub trait DirectReturn<T, U>
+where
+    ...
+{
+    ...
+
+    async fn check_result(..., _args: &T, ...) {}
+}
+
+pub trait ZammResultReturn<T, U>
+where
+    ...
+{
+    ...
+    async fn check_result(
+        ...,
+        _args: &T,
+        ...
+    ) {
+        ...
+    }
+}
+```
+
+We update the test code across various files to match. For example, `src-tauri/src/commands/database/export.rs`:
+
+```rs
+        async fn make_request(
+            ...
+            args: &ExportDbRequest,
+            ...
+        ) -> ZammResult<DatabaseCounts> {
+            export_db_helper(..., &args.path).await
+        }
+
+        ...
+
+        async fn check_result(
+            &self,
+            sample: &SampleCall,
+            args: &ExportDbRequest,
+            result: &ZammResult<DatabaseCounts>,
+        ) {
+            ...
+        }
+```
+
+The ones with no inputs are simplified as well now, such as `src-tauri/src/commands/keys/get.rs`:
+
+```rs
+        async fn make_request(
+            ...,
+            _: &(),
+            ...
+        ) -> ZammResult<ApiKeys> {
+            ...
+        }
+
+        ...
+
+         async fn check_result(
+            ...
+            args: &(),
+            ...
+        ) {
+            ...
+        }
+```
+
+Some of them require more extensive changes, in particular to remove any `unwrap()`'s associated with the former Option. For example, `src-tauri/src/commands/keys/set.rs` is now simplified:
+
+```rs
+        async fn make_request(
+            ...
+            args: &SetApiKeyRequest,
+            ...
+        ) -> ZammResult<()> {
+            set_api_key_helper(
+                ...
+                args.filename.as_deref(),
+                &args.service,
+                args.api_key.clone(),
+            )
+            .await
+        }
+
+        ...
+
+        async fn check_result(
+            ...
+            args: &SetApiKeyRequest,
+            ...
+        ) {
+            ...
+            if args.api_key.is_empty() {
+                ...
+            } else {
+                ...
+                let arg_api_key = Some(args.api_key.clone());
+                ...
+            }
+        }
+```
+
+We also edit `src-tauri/src/commands/sounds.rs` to make `Sound` also derive `Copy`, for simplicity. We had previously avoided doing so to practice and learn how to avoid unnecessary copying, but that is no longer necessary for us.
+
+```rs
+#[derive(..., Copy, ...)]
+pub enum Sound {
+    ...
+}
+```
+
+### Using a macro
+
+We define these macros in `src-tauri/src/test_helpers/api_testing.rs`:
+
+```rs
+#[macro_export]
+macro_rules! impl_result_test_case {
+    ($test_case:ident, $api_call_name:ident, $has_args:ident, $req_type:ident, $resp_type:ty) => {
+        struct $test_case {
+            test_fn_name: &'static str,
+        }
+
+        impl $crate::test_helpers::SampleCallTestCase<$req_type, ZammResult<$resp_type>>
+            for $test_case
+        {
+            const EXPECTED_API_CALL: &'static str = stringify!($api_call_name);
+            const CALL_HAS_ARGS: bool = $has_args;
+
+            fn temp_test_subdirectory(&self) -> String {
+                $crate::test_helpers::api_testing::standard_test_subdir(
+                    Self::EXPECTED_API_CALL,
+                    self.test_fn_name,
+                )
+            }
+
+            async fn make_request(
+                &mut self,
+                args: &$req_type,
+                side_effects: &$crate::test_helpers::SideEffectsHelpers,
+            ) -> ZammResult<$resp_type> {
+                make_request_helper(args, side_effects).await
+            }
+
+            fn serialize_result(
+                &self,
+                sample: &$crate::sample_call::SampleCall,
+                result: &ZammResult<$resp_type>,
+            ) -> String {
+                $crate::test_helpers::ZammResultReturn::serialize_result(
+                    self, sample, result,
+                )
+            }
+
+            async fn check_result(
+                &self,
+                sample: &$crate::sample_call::SampleCall,
+                args: &$req_type,
+                result: &ZammResult<$resp_type>,
+            ) {
+                $crate::test_helpers::ZammResultReturn::check_result(
+                    self, sample, args, result,
+                )
+                .await
+            }
+        }
+
+        impl $crate::test_helpers::ZammResultReturn<$req_type, $resp_type>
+            for $test_case
+        {
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! check_sample {
+    ($test_case:ident, $test_name:ident, $sample_call_file:expr) => {
+        #[tokio::test]
+        async fn $test_name() {
+            let mut test_case = $test_case {
+                test_fn_name: stdext::function_name!(),
+            };
+            $crate::test_helpers::SampleCallTestCase::check_sample_call(
+                &mut test_case,
+                $sample_call_file,
+            )
+            .await;
+        }
+    };
+}
+
+```
+
+Note that we fully qualify our paths so as to make imports less confusing in the places where these macros are used.
+
+We also have to mark that submodule as exporting a macro, in `src-tauri/src/test_helpers/mod.rs`:
+
+```rs
+#[macro_use]
+pub mod api_testing;
+...
+```
+
+
+Now our files such as `src-tauri\src\commands\database\export.rs` feature drastically less testing boilerplate:
+
+```rs
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_result_test_case};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct ExportDbRequest {
+        path: String,
+    }
+
+    async fn make_request_helper(
+        args: &ExportDbRequest,
+        side_effects: &SideEffectsHelpers,
+    ) -> ZammResult<DatabaseCounts> {
+        export_db_helper(side_effects.db.as_ref().unwrap(), &args.path).await
+    }
+
+    impl_result_test_case!(
+        ExportDbTestCase,
+        export_db,
+        true,
+        ExportDbRequest,
+        DatabaseCounts
+    );
+
+    check_sample!(
+        ExportDbTestCase,
+        test_export_llm_calls,
+        "./api/sample-calls/export_db-populated.yaml"
+    );
+
+    check_sample!(
+        ExportDbTestCase,
+        test_export_api_key,
+        "./api/sample-calls/export_db-api-key.yaml"
+    );
+}
+```
+
+While some files like `src-tauri\src\commands\llms\chat.rs` won't benefit from the first macro due to having a custom `output_replacements`, we realize even for that file that the custom `ZammResultReturn::serialize_result` is no longer needed, precisely due to the custom implementation of `output_replacements`. Even then, it could still make use of the `check_sample!` macro.
+
+We skip the following files as well:
+
+- `src-tauri\src\commands\keys\get.rs` due to having a custom test case definition
+- `src-tauri\src\commands\keys\set.rs` due to having custom test case and `check_result` definitions
+
+At some point we run into the problem
+
+```
+error: cannot determine resolution for the macro `check_sample`       
+   --> src\commands\database\import.rs:155:5
+    |
+155 |     check_sample!(
+    |     ^^^^^^^^^^^^
+    |
+    = note: import resolution is stuck, try simplifying macro imports 
+
+error: cannot determine resolution for the macro `impl_result_test_case`
+   --> src\commands\database\import.rs:147:5
+    |
+147 |     impl_result_test_case!(
+    |     ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: import resolution is stuck, try simplifying macro imports 
+```
+
+Based on [this answer](https://stackoverflow.com/questions/77573472/rust-macro-crate-cant-find-crate-import-resolution-is-stuck), we try cleaning the project, but the problem persists. Based on [this issue](https://github.com/rust-lang/rust/issues/57966), it seems as if the compiler somehow cannot find our macros anymore. Upon further inspection, it turns out that one of our pre-commit commands (perhaps cargo clippy, or perhaps pre-commit itself) somehow removed our entire `src-tauri\src\test_helpers\api_testing.rs` file. Fortunately, our editor had a record of the file before it was wiped on disk.
+
+Next, we add a macro for direct returns to `src-tauri/src/test_helpers/api_testing.rs`, and to edit `req_type` for consistent to accept a `ty` so that it can take in `()`:
+
+```rs
+#[macro_export]
+macro_rules! impl_direct_test_case {
+    ($test_case:ident, $api_call_name:ident, $has_args:ident, $req_type:ty, $resp_type:ty) => {
+        struct $test_case {
+            test_fn_name: &'static str,
+        }
+
+        impl $crate::test_helpers::SampleCallTestCase<$req_type, $resp_type>
+            for $test_case
+        {
+            const EXPECTED_API_CALL: &'static str = stringify!($api_call_name);
+            const CALL_HAS_ARGS: bool = $has_args;
+
+            fn temp_test_subdirectory(&self) -> String {
+                $crate::test_helpers::api_testing::standard_test_subdir(
+                    Self::EXPECTED_API_CALL,
+                    self.test_fn_name,
+                )
+            }
+
+            async fn make_request(
+                &mut self,
+                args: &$req_type,
+                side_effects: &$crate::test_helpers::SideEffectsHelpers,
+            ) -> $resp_type {
+                make_request_helper(args, side_effects).await
+            }
+
+            fn serialize_result(
+                &self,
+                sample: &$crate::sample_call::SampleCall,
+                result: &$resp_type,
+            ) -> String {
+                $crate::test_helpers::DirectReturn::serialize_result(
+                    self, sample, result,
+                )
+            }
+
+            async fn check_result(
+                &self,
+                sample: &$crate::sample_call::SampleCall,
+                args: &$req_type,
+                result: &$resp_type,
+            ) {
+                $crate::test_helpers::DirectReturn::check_result(
+                    self, sample, args, result,
+                )
+                .await
+            }
+        }
+
+        impl $crate::test_helpers::DirectReturn<$req_type, $resp_type> for $test_case {}
+    };
+}
+
+#[macro_export]
+macro_rules! impl_result_test_case {
+    (..., $req_type:ty, ...) => {
+    }
+}
+```
+
+Now, our direct return tests are simplified, for example with `src-tauri\src\commands\preferences\read.rs`:
+
+```rs
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_direct_test_case};
+
+    async fn make_request_helper(
+        _: &(),
+        side_effects: &SideEffectsHelpers,
+    ) -> Preferences {
+        get_preferences_helper(&side_effects.disk)
+    }
+
+    impl_direct_test_case!(
+        GetPreferencesTestCase,
+        get_preferences,
+        false,
+        (),
+        Preferences
+    );
+
+    #[cfg(not(target_os = "windows"))]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_without_file,
+        "./api/sample-calls/get_preferences-no-file.yaml"
+    );
+
+    #[cfg(target_os = "windows")]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_without_file,
+        "./api/sample-calls/get_preferences-no-file-windows.yaml"
+    );
+
+    ...
+}
+```
+
+We once again skip doing this for `src-tauri\src\commands\system.rs` because it involves custom test cases.
+
 # Build
 
 ## Update signature

@@ -3615,11 +3615,11 @@ tauri = { version = "1.4", features = [ "dialog-save", "dialog-open", ... ] }
 
 In the future, we'll likely want to [persist](https://crates.io/crates/tauri-plugin-persisted-scope) the file permissions scope for the app, but we'll wait until we can test this on a Mac.
 
-#### Returning import/export results
+### Returning import/export results
 
 At this point, we realize it would be useful to return some data about what had just changed with the import or export.
 
-##### Move dump and load logic
+#### Move dump and load logic
 
 To do this, we first refactor `get_database_contents` and `write_database_contents` out of `src-tauri/src/models/database_contents.rs` and into `src-tauri/src/commands/database/export.rs`. We also move `read_database_contents` into `src-tauri/src/commands/database/import.rs`.
 
@@ -3682,7 +3682,7 @@ use crate::commands::database::{read_database_contents, write_database_contents}
 ...
 ```
 
-##### Add metadata return for data export
+#### Add metadata return for data export
 
 We define a new data structure at `src-tauri/src/commands/database/metadata.rs`:
 
@@ -3771,7 +3771,7 @@ response:
     }
 ```
 
-##### Add metadata return for data import
+#### Add metadata return for data import
 
 Most of the data structures are already set up for us. We just edit `src-tauri/src/commands/database/import.rs` to feature import counts, both ignored and successful:
 
@@ -3864,3 +3864,513 @@ response:
 ```
 
 We do similar edits to `src-tauri/api/sample-calls/import_db-api-key.yaml` and `src-tauri/api/sample-calls/import_db-conflicting-api-key.yaml`.
+
+#### Adding an informational snackbar message
+
+We edit `src-svelte/src/lib/snackbar/Message.svelte` to allow for different message types:
+
+```svelte
+<script lang="ts">
+  ...
+  export let messageType: "error" | "info";
+</script>
+
+<div class={"snackbar " + messageType} ...>
+  ...
+</div>
+
+<style>
+  .snackbar {
+    ... no more `background-color` or `filter` here ...
+  }
+
+  .snackbar.error {
+    background-color: var(--color-error-background);
+    filter: drop-shadow(0px 1px 4px var(--color-error-shadow));
+  }
+
+  .snackbar.info {
+    background-color: var(--color-info-background);
+    filter: drop-shadow(0px 1px 4px var(--color-info-shadow));
+  }
+
+  ...
+</style>
+```
+
+where the new colors are defined in `src-svelte/src/routes/styles.css` (and where `--color-error` is now `--color-error-background` in keeping with the new naming scheme, especially after `--color-caution-background` was introduced):
+
+```css
+:root {
+  ...
+  --color-error-background: hsla(0, 100%, 50%, 1);
+  --color-error-shadow: hsla(0, 100%, 40%, 1);
+  --color-info-background: hsla(200, 100%, 50%, 1);
+  --color-info-shadow: hsla(200, 100%, 40%, 1);
+  ...
+}
+```
+
+We update `src-svelte/src/lib/snackbar/Message.stories.ts` to reflect this new possibility:
+
+```ts
+...
+
+export default {
+  ...,
+  title: "Layout/Snackbar/Message",
+  ...
+};
+
+...
+
+export const Error: StoryObj = Template.bind({}) as any;
+Error.args = {
+  message: "Something is wrong.",
+  messageType: "error",
+  dismiss: ...,
+};
+Error.parameters = {
+  viewport: {
+    defaultViewport: "mobile1",
+  },
+};
+
+export const Info: StoryObj = Template.bind({}) as any;
+Info.args = {
+  message: "Something is known.",
+  messageType: "info",
+  dismiss: () => {
+    console.log("Dismiss button clicked.");
+  },
+};
+Info.parameters = {
+  viewport: {
+    defaultViewport: "mobile1",
+  },
+};
+
+```
+
+We update `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["layout", "snackbar", "message"],
+    variants: ["error", "info"],
+    ...
+  },
+  ...
+];
+```
+
+We move the screenshots folder `src-svelte/screenshots/baseline/layout/snackbar/` to `src-svelte/screenshots/baseline/layout/snackbar/message/`.
+
+Finally, we update `src-svelte/src/lib/snackbar/Snackbar.svelte` to fit, where `addMessage` is largely a copy of the former `snackbarError`:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  interface SnackbarMessage {
+    ...
+    messageType: "error" | "info";
+  }
+
+  ...
+
+  function addMessage(newMessage: string, newMessageType: "error" | "info") {
+    animateDurationMs = baseAnimationDurationMs;
+    const id = nextId++;
+    snackbars.update((current) => [
+      ...current,
+      { id, msg: newMessage, messageType: newMessageType },
+    ]);
+
+    // Auto-dismiss after 'duration'
+    setTimeout(() => {
+      dismiss(id);
+    }, messageDurationMs);
+  }
+
+  export function snackbarError(error: string | Error) {
+    const msg = error instanceof Error ? error.message : error;
+    console.warn(msg);
+    addMessage(msg, "error");
+  }
+
+  export function snackbarInfo(info: string) {
+    addMessage(info, "info");
+  }
+
+  ...
+</script>
+
+...
+
+<div class="snackbars">
+  {#each $snackbars as snackbar (snackbar.id)}
+    <div
+      ...
+    >
+      <Message dismiss={() => dismiss(snackbar.id)} message={snackbar.msg} />
+      <Message
+        dismiss={() => dismiss(snackbar.id)}
+        message={snackbar.msg}
+        messageType={snackbar.messageType}
+      />
+    </div>
+  {/each}
+</div>
+```
+
+#### Displaying result of data import/export
+
+We now modify `src-svelte/src/routes/settings/Database.svelte` to display the new return data in a snackbar message. We also move the `if (filePath === null)` checks earlier to make the `try` blocks slightly more concise:
+
+```ts
+  ...
+  import { ..., type DatabaseCounts } from "$lib/bindings";
+  import { snackbarInfo, ... } from "$lib/snackbar/Snackbar.svelte";
+  ...
+
+  function nounify(counts: DatabaseCounts): string {
+    let noun: string;
+    if (counts.num_api_keys > 0 && counts.num_llm_calls === 0) {
+      noun = "API key";
+    } else if (counts.num_api_keys === 0 && counts.num_llm_calls > 0) {
+      noun = "LLM call";
+    } else {
+      noun = "item";
+    }
+
+    const total = counts.num_api_keys + counts.num_llm_calls;
+    const nounified = `${total} ${noun}`;
+    return total === 0 || total > 1 ? nounified + "s" : nounified;
+  }
+
+  async function importData() {
+    const filePath = await open({
+      ...
+    });
+    if (filePath === null) {
+      return;
+    }
+
+    try {
+      if (filePath instanceof Array) {
+        ...
+      }
+
+      const importCounts = await importDb(filePath);
+      const importMessage = `Imported ${nounify(importCounts.imported)}`;
+      if (
+        importCounts.ignored.num_api_keys > 0 ||
+        importCounts.ignored.num_llm_calls > 0
+      ) {
+        snackbarInfo(
+          `${importMessage}, ignored ${nounify(importCounts.ignored)}`,
+        );
+      } else {
+        snackbarInfo(importMessage);
+      }
+    } catch (error) {
+      ...
+    }
+  }
+
+  async function exportData() {
+    const filePath = await save({
+      ...
+    });
+    if (filePath === null) {
+      return;
+    }
+
+    try {
+      const exportCounts = await exportDb(filePath);
+      snackbarInfo(`Exported ${nounify(exportCounts)}`);
+    } catch (error) {
+      ...
+    }
+  }
+```
+
+Now we test that our API calls to the backend work as expected. We create `src-svelte/src/routes/settings/Database.test.ts` as such:
+
+```ts
+import { expect, test, vi, type Mock } from "vitest";
+import "@testing-library/jest-dom";
+
+import { act, render, screen, waitFor } from "@testing-library/svelte";
+import Snackbar, { clearAllMessages } from "$lib/snackbar/Snackbar.svelte";
+
+import userEvent from "@testing-library/user-event";
+import { TauriInvokePlayback } from "$lib/sample-call-testing";
+import Database from "./Database.svelte";
+
+describe("Individual API call", () => {
+  let tauriIpcMock: Mock;
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriIpcMock = vi.fn();
+    tauriInvokeMock = vi.fn();
+    vi.stubGlobal("__TAURI_IPC__", tauriIpcMock);
+    vi.stubGlobal("__TAURI_INVOKE__", tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+
+    clearAllMessages();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFilePicker(path: string) {
+    tauriIpcMock.mockImplementation((...args) => {
+      const callbackId = args[0].callback;
+      const callbackProp = `_${callbackId}`;
+      window[callbackProp](path);
+    });
+  }
+
+  async function checkForAlert(text: string) {
+    render(Snackbar, {});
+    await waitFor(() => {
+      const alerts = screen.queryAllByRole("alertdialog");
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].textContent).toEqual(text);
+    });
+  }
+
+  test("can export LLM calls", async () => {
+    mockFilePicker("test-folder/exported-db.yaml");
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/export_db-populated.yaml",
+    );
+    render(Database, {});
+
+    const exportButton = screen.getByText("Export data");
+    await act(() => userEvent.click(exportButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+
+    await checkForAlert("Exported 6 LLM calls");
+  });
+
+  test("can export API keys", async () => {
+    mockFilePicker("different.zamm.yaml");
+    playback.addSamples("../src-tauri/api/sample-calls/export_db-api-key.yaml");
+    render(Database, {});
+
+    const exportButton = screen.getByText("Export data");
+    await act(() => userEvent.click(exportButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+
+    await checkForAlert("Exported 1 API key");
+  });
+
+  test("can import LLM calls", async () => {
+    mockFilePicker("conflicting-db.yaml");
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/import_db-conflicting-llm-call.yaml",
+    );
+    render(Database, {});
+
+    const importButton = screen.getByText("Import data");
+    await act(() => userEvent.click(importButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+
+    await checkForAlert("Imported 1 LLM call, ignored 1 LLM call");
+  });
+
+  test("can import API keys", async () => {
+    mockFilePicker("different.zamm.yaml");
+    playback.addSamples("../src-tauri/api/sample-calls/import_db-api-key.yaml");
+    render(Database, {});
+
+    const importButton = screen.getByText("Import data");
+    await act(() => userEvent.click(importButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+
+    await checkForAlert("Imported 1 API key");
+  });
+});
+```
+
+We have to mock `tauriIpcMock` as well now because otherwise we get
+
+```
+TypeError: window.__TAURI_IPC__ is not a function
+ ❯ ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/@tauri-apps/api/tauri.js:55:16
+ ❯ invoke ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/@tauri-apps/api/tauri.js:46:12
+ ❯ invokeTauriCommand ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/@tauri-apps/api/helpers/tauri.js:8:12
+ ❯ Module.save ../../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/src-svelte/node_modules/@tauri-apps/api/dialog.js:123:12        
+ ❯ Button.exportData src/routes/settings/Database.svelte:54:28        
+     52|
+     53|   async function exportData() {
+     54|     const filePath = await save({
+       |                            ^
+     55|       title: "Export ZAMM data",
+     56|       filters: [ZAMM_DB_FILTER],
+```
+
+We also realize that 1) we have to await on `checkForAlert` for the checks to actually run, and 2) we can't use `expect(...).toHaveTextContent` on the alert dialog matching because that only does a substring match, and would erroneously accept `Imported 1 API keys` as label text. We follow [this suggestion](https://stackoverflow.com/a/72503474) to test by retrieving `textContent` ourselves, but then our implementation fails with
+
+```
+- Expected
++ Received
+
+- Exported 1 API key
++ Exported 1 API key
+
+ ❯ src/routes/settings/Database.test.ts:48:37
+     46|       const alerts = screen.queryAllByRole("alertdialog");   
+     47|       expect(alerts).toHaveLength(1);
+     48|       expect(alerts[0].textContent).toEqual(text);
+       |                                     ^
+     49|     });
+     50|   }
+ ❯ runWithExpensiveErrorDiagnosticsDisabled ../node_modules/@testing-library/dom/dist/@testing-library/dom.esm.js:342:12
+ ❯ checkCallback ../node_modules/@testing-library/dom/dist/@testing-library/dom.esm.js:1087:24
+ ❯ Timeout.checkRealTimersCallback ../node_modules/@testing-library/dom/dist/@testing-library/dom.esm.js:1081:16
+```
+
+When we do a
+
+```ts
+      console.log(`'${alerts[0].textContent}'`);
+      console.log(`'${text}'`);
+```
+
+we finally see that there is an extra space:
+
+```
+stdout | src/routes/settings/Database.test.ts > Individual API call > can export API keys
+'Exported 1 API key '
+'Exported 1 API key'
+```
+
+We realize that this is because our `src-svelte\src\lib\snackbar\Message.svelte` looks like this:
+
+```svelte
+<div class={"snackbar " + messageType} role="alertdialog">
+  {message}
+  <button ...>
+    ...
+  </button>
+</div>
+```
+
+We remove the rear spacing around the message, so that it now looks like this:
+
+```svelte
+<div class={"snackbar " + messageType} role="alertdialog">
+  {message}<button ...>
+    ...
+  </button>
+</div>
+```
+
+Sure enough, the tests now pass.
+
+#### End-to-end tests
+
+We have to rebuild our Svelte output before testing. Initially, we encounter the error
+
+```
+Error: Error: Failed to initilialise launcher service unknown: Error: Couldn't initialize "wdio-image-comparison-service".
+Error: Cannot find module '../build/Release/canvas.node'
+Require stack:
+- /root/zamm/node_modules/canvas/lib/bindings.js
+- /root/zamm/node_modules/canvas/lib/canvas.js
+- /root/zamm/node_modules/canvas/index.js
+- /root/zamm/node_modules/webdriver-image-comparison/build/methods/images.js
+- /root/zamm/node_modules/webdriver-image-comparison/build/commands/saveScreen.js
+- /root/zamm/node_modules/wdio-image-comparison-service/build/service.js
+- /root/zamm/node_modules/wdio-image-comparison-service/build/index.js
+    at Function.Module._resolveFilename (node:internal/modules/cjs/loader:1048:15)
+    at Function.Module._resolveFilename.sharedData.moduleResolveFilenameHook.installedValue [as _resolveFilename] (/root/zamm/node_modules/@cspotcode/source-map-support/source-map-support.js:811:30)
+    at Function.Module._load (node:internal/modules/cjs/loader:901:27)
+```
+
+We have already seen this error several times before in this project. Based on [this answer](https://stackoverflow.com/a/63175855), we clean and rebuild the entire project, and find that it is working again afterwards.
+
+It appears that there [isn't really](https://stackoverflow.com/a/8852686) a way for WebDriver to interact with the file picker dialog that Tauri opens. Nor does there seem to be any support in `tauri-driver`. As such, in order to make it possible to test the import feature, we edit `src-svelte/src/routes/settings/Database.svelte` to check for an artificially injected `WEBDRIVER_FILE_PATH` variable:
+
+```svelte
+  async function importData() {
+    const filePath =
+      window.WEBDRIVER_FILE_PATH ??
+      (await open({
+        ...
+      }));
+    ...
+  }
+```
+
+Then, we edit `webdriver/test/specs/e2e.test.js` (note that the test is run from the `webdriver/` directory even if we trigger it from the root via `yarn e2e-test`):
+
+```js
+...
+
+const SAMPLE_DB_PATH =
+  "../src-tauri/api/sample-database-writes/conversation-edited-2/dump.yaml";
+
+describe("App", function () {
+  ...
+
+  it("should be able to import data", async function () {
+    await findAndClick('a[title="Settings"]');
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Settings"]');
+    await browser.execute(`window.WEBDRIVER_FILE_PATH = '${SAMPLE_DB_PATH}';`);
+    await findAndClick("button=Import data");
+    await browser.pause(1000); // for data to be imported
+    await findAndClick('a[title="API Calls"]');
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="API Calls"]');
+    await browser.pause(500); // for API calls to load
+    expect(
+      await browser.checkFullPageScreen("api-calls-populated", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  it("should be able to view single LLM call", async function () {
+    this.retries(2);
+    await findAndClick('a[title="API Calls"]');
+    await browser.pause(500); // for API calls to load
+    // second link is the first in the list because the first link is the + sign
+    await findAndClick(".api-calls-page a:nth-child(2)");
+    await findAndClick('a[title="API Calls"]');
+    await browser.pause(500); // for API calls to load
+    await findAndClick(".api-calls-page a:nth-child(2)");
+    await browser.pause(4_000); // for snackbar messages from previous tests to go away
+    expect(
+      await browser.checkFullPageScreen("api-call-individual", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+});
+```
+
+This runs fine locally when we only run these last two tests. However, it fails on CI due to our new link-saving behavior for the sidebar tabs. We edit it again:
+
+```js
+  it("should be able to import data", async function () {
+    ...
+    // click twice to reset the saved navigation to the "New API Call" page
+    await findAndClick('a[title="API Calls"]');
+    await findAndClick('a[title="API Calls"]');
+    await browser.pause(500); // for API calls to load
+    expect(
+      await browser.checkFullPageScreen("api-calls-populated", {}),
+    )...;
+  });
+```
