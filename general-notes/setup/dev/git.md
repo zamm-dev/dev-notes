@@ -247,6 +247,28 @@ Failed to clone 'src-svelte/static/fonts'. Retry scheduled
 
 Follow [the link](https://docs.github.com/en/get-started/getting-started-with-git/about-remote-repositories#cloning-with-https-urls) to see that you'll want to get a PAT. Then repeat this again with the PAT.
 
+## Global gitignore
+
+If you're on a Mac, you'll want to ignore `.DS_Store` files. But you'll probably want these to be ignored no matter which project you're on, without needing to convince the project managers to accept a PR just for that purpose. You can try [seeing if](https://stackoverflow.com/a/22885996) the global gitignore location is set
+
+```bash
+$ git config --get core.excludesfile
+```
+
+If not, set it
+
+```bash
+$ git config --global core.excludesfile ~/.config/git/ignore
+```
+
+and edit it to include
+
+```
+.DS_Store
+```
+
+You may have to create the parent directory if it doesn't already exist.
+
 ## Errors
 
 ### Cannot rebase onto multiple branches

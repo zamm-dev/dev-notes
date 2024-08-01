@@ -5009,6 +5009,10 @@ $ make update-local-screenshots
 
 and commit everything.
 
+##### Mac cp command
+
+We find out later that the cp command on the Mac needs an additional `-f` flag to actually copy the files over.
+
 ### Local DB read
 
 We change our minds yet again and decide to use the profile init file only as a fallback in case we can't determine the user's current shell. This is so that the user will have access to their new API keys in a new terminal session without having to log out and back in again. This does mean we'll have to also save the API keys to the local database.

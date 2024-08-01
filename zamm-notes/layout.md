@@ -1,5 +1,211 @@
 # App Layout
 
+## UI size on the Mac
+
+We see from [this question](https://stackoverflow.com/questions/9437584/what-does-webkit-min-device-pixel-ratio-2-stand-for) and [this tutorial](https://css-tricks.com/snippets/css/retina-display-media-query/) that it's possible to target Mac Retina displays in CSS. We do so by editing `src-svelte/src/routes/styles.css` to include:
+
+```css
+@media only screen and (-webkit-min-device-pixel-ratio: 2) {
+  :root {
+    font-size: 14px;
+  }
+}
+```
+
+Now we need to set the window size to be smaller as well. We see from [this answer](https://github.com/tauri-apps/tauri/discussions/3225) that we can set the size of the window once we have a reference to the window. We then see from [the docs](https://docs.rs/tauri/latest/tauri/window/struct.Window.html) how to get that reference to the main window. We try editing `src-tauri/src/main.rs`:
+
+```rs
+...
+use anyhow::anyhow;
+...
+use tauri::{LogicalSize, ..., Size};
+...
+
+fn main() {
+    ...
+            tauri::Builder::default()
+                .setup(|app| {
+                    ...
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        app.get_window("main")
+                            .ok_or(anyhow!("No main window"))?
+                            .set_size(Size::Logical(LogicalSize {
+                                width: 600.0,
+                                height: 450.0,
+                            }))?;
+                    }
+
+                    Ok(())
+                }
+                ...;
+    ...
+}
+```
+
+We find that although the pre-commit hooks pass on Mac OS, the new imports get optimized away on other platforms. As such, we change the above to:
+
+```rs
+                    #[cfg(target_os = "macos")]
+                    {
+                        app.get_window("main")
+                            .ok_or(anyhow::anyhow!("No main window"))?
+                            .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                width: 600.0,
+                                height: 450.0,
+                            }))?;
+                    }
+```
+
+Next, we find that we have to adjust the background text size as well. We refactor out root font size and related calculations into `src-svelte/src/lib/preferences.ts`:
+
+```ts
+...
+
+const STANDARD_ROOT_EM = 18;
+
+function getRootFontSize() {
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+  if (isNaN(rem)) {
+    console.warn("Could not get root font size, assuming default of 18px");
+    return 18;
+  }
+  return rem;
+}
+
+export const ROOT_EM = getRootFontSize();
+
+export function getAdjustedFontSize(fontSize: number) {
+  return Math.round(fontSize * (ROOT_EM / STANDARD_ROOT_EM));
+}
+
+```
+
+The `isNaN` check prevents Vitest failures, when there is no styling information available.
+
+We use this in `src-svelte/src/routes/BackgroundUI.svelte`:
+
+```ts
+  ...
+  import { ..., getAdjustedFontSize } from "$lib/preferences";
+  ...
+
+  const CHAR_EM = getAdjustedFontSize(26);
+  ...
+```
+
+and replace the uses of in `src-svelte/src/lib/Switch.svelte` and `src-svelte/src/lib/Slider.svelte`:
+
+```ts
+  ...
+  import { ..., ROOT_EM } from "./preferences";
+  ...
+
+  const overshoot = 0.4 * ROOT_EM; // how much overshoot to allow per-side
+```
+
+We notice that the info box animations now start out oversized. We find that this is because of the hardcoded size in `src-svelte/src/lib/InfoBox.svelte`, which we now edit as well:
+
+```ts
+  ...
+  import {
+    ...,
+    getAdjustedFontSize,
+  } from "./preferences";
+  ...
+
+  function revealOutline(
+    ...
+  ): TransitionConfig {
+    ...
+    const heightPerTitleLinePx = getAdjustedFontSize(26);
+    ...
+  }
+
+  ...
+```
+
+Next, we notice that the settings page credits now look off, only being single-column instead of double column for the window size. We edit `src-svelte/src/routes/credits/Grid.svelte` accordingly, shrinking everything by 25% and rounding to the nearest half-integer:
+
+```css
+  ...
+
+  /* this takes sidebar width into account */
+  @media (min-width: 46rem),
+    only screen and (-webkit-min-device-pixel-ratio: 2) and (min-width: 34.5rem) {
+    .credits-grid {
+      ...
+    }
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 55rem),
+    only screen and (-webkit-min-device-pixel-ratio: 2) and (min-width: 41rem) {
+    .credits-grid {
+      ...
+    }
+  }
+
+  /* this takes sidebar width into account */
+  @media (min-width: 64rem),
+    only screen and (-webkit-min-device-pixel-ratio: 2) and (min-width: 48rem) {
+    .credits-grid {
+      ...
+    }
+  }
+
+  ...
+```
+
+We do this for every other file that has media queries, except for `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` and `src-svelte/src/lib/controls/ButtonGroup.svelte`, where we also edit the media queries to use `min-width` instead of `max-width`, or else the lowered screen size setting won't be triggered on Retina displays:
+
+```css
+  .conversation-links {
+    ...
+    flex-direction: column;
+    ...
+  }
+
+  .conversation.previous-links,
+  .conversation.next-links {
+    flex: none;
+    ...
+  }
+
+  @media (min-width: 46rem),
+    only screen and (-webkit-min-device-pixel-ratio: 2) and (min-width: 34.5rem) {
+    .conversation-links {
+      flex-direction: row;
+    }
+
+    .conversation.previous-links,
+    .conversation.next-links {
+      flex: 1;
+    }
+  }
+```
+
+We also avoid editing the media queries in `src-svelte/src/routes/chat/MessageUI.svelte`, because those ones:
+
+```css
+  /* this takes sidebar width into account */
+  @media (max-width: 635px) {
+    .text {
+      max-width: 400px;
+    }
+  }
+
+  @media (min-width: 635px) {
+    .message .text-container {
+      max-width: calc(80% + 2.1rem);
+    }
+  }
+```
+
+depend on some other settings as well, and editing these alone will result in the background not always covering the text. Manual testing reveals that the existing media queries still work fine on Retina displays.
+
 ## Rounding out the left corners of the main content
 
 It turns out that we need to do a major refactor of our app layout to achieve this effect.

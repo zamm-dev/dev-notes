@@ -1313,3 +1313,17 @@ As noted [here](https://joshcollinsworth.com/blog/great-transitions#9-lean-on-ha
 ```
 
 We see that this does make the animation significantly smoother. This also slightly changes our screenshots, so we update our baseline screenshot tests.
+
+### Flaky test frame not found
+
+When running with a lot of other tests, sometimes the iframe is not found on the Mac. We edit `src-svelte/src/lib/Slider.playwright.test.ts` and `src-svelte/src/lib/Switch.playwright.test.ts` to feature another wait:
+
+```ts
+  const getSwitchAndToggle = async (initialState = "off") => {
+    ...
+
+    await page.waitForSelector("#storybook-preview-iframe");
+    const maybeFrame = page.frame(...);
+    ...
+  }
+```

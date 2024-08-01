@@ -926,7 +926,19 @@ $ cd Documents
 $ git clone --recursive git@github.com:amosjyng/zamm.git
 ```
 
-If asked for your password, provide one from a PAT created [here](https://github.com/settings/tokens/new).
+If asked for your password, provide one from a PAT created [here](https://github.com/settings/tokens/new). Otherwise, you'll get an error such as:
+
+```
+Cloning into '/Users/amos/Documents/zamm/src-svelte/static/fonts'...
+Username for 'https://github.com': amosjyng
+Password for 'https://amosjyng@github.com': 
+remote: Support for password authentication was removed on August 13, 2021.
+remote: Please see https://docs.github.com/get-started/getting-started-with-git/about-remote-repositories#cloning-with-https-urls for information on currently recommended modes of authentication.
+fatal: Authentication failed for 'https://github.com/amosjyng/zamm-fonts.git/'
+fatal: clone of 'https://github.com/amosjyng/zamm-fonts.git' into submodule path '/Users/amos/Documents/zamm/src-svelte/static/fonts' failed
+Failed to clone 'src-svelte/static/fonts'. Retry scheduled
+Cloning into '/Users/amos/Documents/zamm/src-svelte/static/fonts'...
+```
 
 We try `make`, and find that we still need more dependencies:
 
@@ -1364,6 +1376,27 @@ Error: Command failed with exit code 1: yarn tauri build --target universal-appl
 ```
 
 It appears that GitHub CI is running on different Macs now. So, we add `rustup target add x86_64-apple-darwin`.
+
+#### Handling tauri missing error
+
+If you get the error
+
+```
+cargo tauri build 
+error: no such command: `tauri`
+
+	Did you mean `miri`?
+
+	View all installed commands with `cargo --list`
+	Find a package to install `tauri` with `cargo search cargo-tauri`
+make: *** [build] Error 101
+```
+
+then try
+
+```bash
+$ cargo install tauri-cli
+```
 
 ### Building on Linux
 

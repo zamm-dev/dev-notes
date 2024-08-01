@@ -82,6 +82,12 @@ If `wget` doesn't exist yet (for example, because you're on a Mac), you can do
 $ brew install wget
 ```
 
+or use the curl version of the command instead:
+
+```bash
+$ sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+```
+
 If the default shell prompt doesn't pop up, or you say no to it, you can change it manually later:
 
 ```bash
@@ -134,7 +140,17 @@ Source the config file after editing:
 $ . ~/.zshrc
 ```
 
-Now you should see ZSH with autocomplete as the default shell!
+Now you should see ZSH with autocomplete as the default shell! If instead you see
+
+```
+[oh-my-zsh] plugin 'zsh-autosuggestions' not found
+```
+
+then we can follow the instructions [here](https://github.com/zsh-users/zsh-autosuggestions/blob/master/INSTALL.md):
+
+```bash
+$ git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+```
 
 ## Corrupted history file
 

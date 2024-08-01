@@ -364,6 +364,24 @@ mod tests {
 }
 ```
 
+Later, when we're trying to get this to work on the Mac, we edit the function further:
+
+```rs
+    #[test]
+    fn test_can_predict_profile_init() {
+        ...
+        cfg_if! {
+            if #[cfg(target_os = "windows")] {
+                ...
+            } else {
+                let file_path = ...;
+                ...
+                assert!(file_path.ends_with(".profile") || file_path.ends_with(".bash_profile"));
+            }
+        }
+    }
+```
+
 Finally, we fix the `test_invalid_filename` in `src-tauri\src\commands\keys\set.rs`, which is failing because the Windows OS returns a different error when we try to write to `/`. We replace the output, if it appears, with the expected one in Linux. This will be useful for other tests as well, such as ones dealing with timestamps.
 
 ```rs
