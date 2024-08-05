@@ -168,3 +168,29 @@ $ strings ~/.zsh_history_bad > ~/.zsh_history
 $ fc -R ~/.zsh_history
 $ rm ~/.zsh_history_bad
 ```
+
+## Updates
+
+Sometimes you'll see it say
+
+```
+[oh-my-zsh] Would you like to update? [Y/n] 
+```
+
+You can update it by saying `Y`. Then it will output something like
+
+```
+You can see the changelog with `omz changelog`
+         __                                     __   
+  ____  / /_     ____ ___  __  __   ____  _____/ /_  
+ / __ \/ __ \   / __ `__ \/ / / /  /_  / / ___/ __ \ 
+/ /_/ / / / /  / / / / / / /_/ /    / /_(__  ) / / / 
+\____/_/ /_/  /_/ /_/ /_/\__, /    /___/____/_/ /_/  
+                        /____/                       
+
+Hooray! Oh My Zsh has been updated!
+
+To keep up with the latest news and updates, follow us on X: @ohmyzsh
+Want to get involved in the community? Join our Discord: Discord server
+Get your Oh My Zsh swag at: Planet Argon Shop
+```

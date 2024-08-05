@@ -1163,3 +1163,329 @@ mod tests {
     }
 }
 ```
+
+### Adding the command function
+
+We first refactor the `crate::commands::terminal` module by creating `src-tauri/src/commands/terminal/mod.rs`:
+
+```rs
+pub mod models;
+mod run;
+
+#[allow(unused_imports)]
+pub use models::{ActualTerminal, Terminal};
+pub use run::run_command;
+
+```
+
+and move `src-tauri/src/commands/terminal.rs` to `src-tauri/src/commands/terminal/models.rs`. This does require an import change:
+
+```rs
+...
+use crate::commands::errors::ZammResult;
+...
+```
+
+Our first implementation in `src-tauri/src/commands/terminal/run.rs` looks like:
+
+```rs
+async fn run_command_helper(terminal: Box<dyn Terminal>, command: &str) -> ZammResult<String> {
+    let output = terminal.run_command(command).await?;
+    Ok(output)
+}
+```
+
+but then we get the error
+
+```
+error[E0596]: cannot borrow `*terminal` as mutable, as `terminal` is not declared as mutable
+ --> src\commands\terminal\run.rs:9:18
+  |
+9 |     let output = terminal.run_command(command).await?;
+  |                  ^^^^^^^^ cannot borrow as mutable
+  |
+help: consider changing this to be mutable
+  |
+8 | async fn run_command_helper(mut terminal: Box<dyn Terminal>, command: &str) -> ZammResult<String> {
+  |                             +++
+```
+
+We use the recommended fix, but then when we write test code, we run into a problem with converting `side_effects.terminal` into the right argument.
+
+We realize that we need to make the side effects mutable because the test terminal needs to be mutable. As such, we edit `src-tauri/src/test_helpers/api_testing.rs`:
+
+```rs
+...
+
+pub trait SampleCallTestCase<T, U>
+where
+    ...
+{
+    ...
+
+    async fn make_request(
+        ...,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> U;
+
+    ...
+
+    async fn check_sample_call(...) -> SampleCallResult<T, U> {
+        ...
+        let result = self.make_request(&args, &mut side_effects_helpers).await;
+        ...
+    }
+
+    ...
+}
+
+#[macro_export]
+macro_rules! impl_direct_test_case {
+    ...
+
+            async fn make_request(
+                ...,
+                side_effects: &mut $crate::test_helpers::SideEffectsHelpers,
+            ) -> $resp_type {
+                ...
+            }
+    ...
+}
+
+#[macro_export]
+macro_rules! impl_result_test_case {
+    ...
+
+            async fn make_request(
+                ...
+                side_effects: &mut $crate::test_helpers::SideEffectsHelpers,
+            ) -> ZammResult<$resp_type> {
+                ...
+            }
+    
+    ...
+}
+```
+
+We propagae these changes to the rest of the files, for example `src-tauri/src/commands/sounds.rs`:
+
+```rs
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    async fn make_request_helper(..., _: &mut SideEffectsHelpers) {
+        ...
+    }
+    
+    ...
+}
+```
+
+Our final `src-tauri/src/commands/terminal/run.rs` looks like:
+
+```rs
+use specta::specta;
+
+use crate::commands::errors::ZammResult;
+use crate::commands::terminal::models::{ActualTerminal, Terminal};
+
+async fn run_command_helper(
+    terminal: &mut dyn Terminal,
+    command: &str,
+) -> ZammResult<String> {
+    let output = terminal.run_command(command).await?;
+    Ok(output)
+}
+
+#[allow(dead_code)]
+#[tauri::command(async)]
+#[specta]
+pub async fn run_command(command: String) -> ZammResult<String> {
+    let mut terminal = ActualTerminal::new();
+    run_command_helper(&mut terminal, &command).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_result_test_case};
+
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct RunCommandRequest {
+        command: String,
+    }
+
+    async fn make_request_helper(
+        args: &RunCommandRequest,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> ZammResult<String> {
+        let terminal_mut = side_effects.terminal.as_mut().unwrap();
+        run_command_helper(&mut **terminal_mut, &args.command).await
+    }
+
+    impl_result_test_case!(
+        RunCommandTestCase,
+        run_command,
+        true,
+        RunCommandRequest,
+        String
+    );
+
+    check_sample!(
+        RunCommandTestCase,
+        test_date,
+        "./api/sample-calls/run_command-date.yaml"
+    );
+}
+
+```
+
+where the test file at `src-tauri/api/sample-calls/run_command-date.yaml` looks like:
+
+```yaml
+request:
+  - run_command
+  - >
+    {
+      "command": "date \"+%A %B %e, %Y %R %z\""
+    }
+response:
+  message: >
+    "Tuesday July  9, 2024 21:03 +0700"
+sideEffects:
+  terminal:
+    recordingFile: date.cast
+
+```
+
+Note that the response message is enclosed in quotes because the response should be a valid JSON string. This test passes.
+
+We export this in `src-tauri/src/commands/mod.rs`:
+
+```rs
+#[allow(unused_imports)]
+pub use terminal::run_command;
+```
+
+Unfortunately, adding the command to `src-tauri/src/main.rs`:
+
+```rs
+...
+use commands::{
+    ..., run_command, ...
+};
+...
+
+fn main() {
+    ...
+    match ... {
+        #[cfg(debug_assertions)]
+        Some(Commands::ExportBindings {}) => {
+            ts::export(
+                collect_types![
+                    ...,
+                    run_command,
+                ],
+                ...
+            )
+            ...;
+            ...
+        }
+        Some(Commands::Gui {}) | None => {
+            ...
+            tauri::Builder::default()
+                ...
+                .invoke_handler(tauri::generate_handler![
+                    ...,
+                    run_command,
+                ])
+                ...;
+        }
+    }
+}
+```
+
+results in the error
+
+```
+error: future cannot be sent between threads safely                 
+   --> src\commands\terminal\run.rs:15:1
+    |
+15  |   #[tauri::command(async)]
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^ future returned by `run_command` is not `Send`
+    |
+   ::: src\main.rs:85:33
+    |
+85  |                   .invoke_handler(tauri::generate_handler![   
+    |  _________________________________-
+86  | |                     get_api_keys,
+87  | |                     set_api_key,
+88  | |                     play_sound,
+...   |
+97  | |                     run_command,
+98  | |                 ])
+    | |_________________- in this macro invocation
+    |
+    = note: the full trait has been written to 'C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-tauri\target\debug\deps\zamm-3195bc6261177f2f.long-type-8021917870495259518.txt'
+    = help: within `impl Future<Output = Result<..., ...>>`, the trait `std::marker::Send` is not implemented for `dyn commands::terminal::models::Terminal`
+note: captured value is not `Send` because `&mut` references cannot be sent unless their referent is `Send`
+   --> src\commands\terminal\run.rs:7:5
+    |
+7   |     terminal: &mut dyn Terminal,
+    |     ^^^^^^^^ has type `&mut dyn commands::terminal::models::Terminal` which is not `Send`, because `dyn commands::terminal::models::Terminal` is not `Send`
+note: required by a bound in `ResultFutureTag::future`
+   --> C:\Users\Amos Ng\.cargo\registry\src\index.crates.io-6f17d22bba15001f\tauri-1.5.4\src\command.rs:293:42
+    |
+289 |     pub fn future<T, E, F>(self, value: F) -> impl Future<... 
+    |            ------ required by a bound in this associated function
+...
+293 |       F: Future<Output = Result<T, E>> + Send,
+    |                                          ^^^^ required by this bound in `ResultFutureTag::future`
+    = note: this error originates in the macro `__cmd__run_command` which comes from the expansion of the macro `tauri::generate_handler` (in Nightly builds, run with -Z macro-backtrace for more info)    
+```
+
+It turns out all we have to do is edit `src-tauri/src/commands/terminal/models.rs` to declare that the trait `Terminal` must be implemented on `Send` and `Sync` structs:
+
+```rs
+#[async_trait]
+pub trait Terminal: Send + Sync {
+    ...
+}
+```
+
+We now remove as many of the `#[allow(unused_imports)]` and `#[allow(dead_code)]` markers in our code as possible.
+
+#### Storing the cast to the database
+
+At first our tests are failing with
+
+```
+called `Result::unwrap()` on an `Err` value: DeserializationError(Serde { source: Json { source: Error("missing field `timestamp`", line: 1, column: 74) } })
+```
+
+We see in the **asciicast** repo that the file `src/header.rs` has the following line:
+
+```rs
+    #[test]
+    fn test_deserializes_with_optional_data() {
+        // TODO: Figure out why with chrono integration we need this extra
+        // `timestamp`. Using `cargo test --no-default-features` works fine.
+        let data = r#"{"version":2, "width":80, "height":40, "timestamp": null}"#;
+        ...
+    }
+```
+
+We fix that by putting in a non-null timestamp, since we're going to do that in the database anyways. We then run into the problem
+
+```
+assertion `left == right` failed
+  left: AsciiCastData { header: Header { version: 2, width: 80, height: 24, timestamp: Some(2024-07-11T17:40:57Z), duration: Some(1.0), idle_time_limit: None, command: Some("echo hello"), title: None, env: None }, entries: [Entry { time: 0.0, event_type: Input, event_data: "echo hello" }, Entry { time: 1.0, event_type: Output, event_data: "hello" }] }
+ right: AsciiCastData { header: Header { version: 2, width: 80, height: 24, timestamp: Some(2024-07-11T17:40:57.405142500Z), duration: Some(1.0), idle_time_limit: None, command: Some("echo hello"), title: None, env: None }, entries: [Entry { time: 0.0, event_type: Input, event_data: "echo hello" }, Entry { time: 1.0, event_type: Output, event_data: "hello" }] }
+```
+
+We see that there are [built-in methods](https://stackoverflow.com/a/56264863) to deal with this.

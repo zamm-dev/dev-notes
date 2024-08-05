@@ -3017,7 +3017,7 @@ export const PLAYWRIGHT_TIMEOUT =
 export const PLAYWRIGHT_TEST_TIMEOUT = 2.2 * PLAYWRIGHT_TIMEOUT;
 ```
 
-We als notice that in `.github\workflows\tests.yaml`, there are the lines
+We also notice that in `.github\workflows\tests.yaml`, there are the lines
 
 ```yaml
     env:
@@ -3367,3 +3367,92 @@ describe.concurrent("Storybook visual tests", () => {
 Note that we no longer set the `page` in `beforeEach` because we don't know the browser beforehand, which means we no longer need `StorybookTestContext`. We also manually do the `afterEach` action with `page.close` at the end of the test.
 
 Finally, we commit the new screenshot at `src-svelte\screenshots\baseline\reusable\infobox\transparent.png`.
+
+### Rendering the text right-to-left
+
+We realize that traditionally, Chinese text is written from top to bottom, right to left. We edit `src-svelte/src/routes/BackgroundUI.svelte` to reflect this, moving all the constants to a context module:
+
+```svelte
+<script lang="ts" context="module">
+  const CHAR_EM = ...;
+  ...
+  export const DDJ = [
+    ...
+  ];
+
+  export function getDdjLineNumber(column: number, numFullColumns: number) {
+    return (numFullColumns - 1 - column + DDJ.length) % DDJ.length;
+  }
+</script>
+
+<script lang="ts">
+  ...
+  let numColumns = ...;
+  let numFullColumns = 0;
+  let numRows = ...;
+  
+  ...
+
+  function resizeCanvas() {
+    ...
+    // note that BLOCK_SIZE already contains CHAR_GAP
+    // this is just adding CHAR_GAP-sized left padding to the animation
+    numColumns = ...;
+    numFullColumns = Math.round((canvas.width - CHAR_GAP) / BLOCK_SIZE - 0.1);
+    numRows = ...;
+
+    ...
+  }
+
+  function draw() {
+    ...
+
+    for (var column = 0; ...) {
+      const textLine = DDJ[getDdjLineNumber(column, numFullColumns)];
+      ...
+    }
+  }
+
+  ...
+</script>
+```
+
+Note that we do the rounding because we want the first line of the DDJ to be drawn on the rightmost column as long as it is mostly visible (even if it's slightly obscured), but if the rightmost column is so obscured as for the text to be unreadable, then we'd want the DDJ to begin on the second-to-rightmost column instead. We subtract 0.1 from `numFullColumns` before rounding to ensure that if the first line is shown, then it will at least be 60% visible.
+
+We then test the line number logic in `src-svelte/src/routes/BackgroundUI.test.ts`:
+
+```ts
+import { getDdjLineNumber, DDJ } from "./BackgroundUI.svelte";
+
+describe("Dao De Jing positioning", () => {
+  it("should put DDJ's first line on the right if there's one column", () => {
+    expect(getDdjLineNumber(0, 1)).toEqual(0);
+  });
+
+  it("should put DDJ's first line on the right if there's two columns", () => {
+    expect(getDdjLineNumber(0, 2)).toEqual(1);
+    expect(getDdjLineNumber(1, 2)).toEqual(0);
+  });
+
+  it("should loop around if there's enough columns", () => {
+    const numColumns = 25; // DDJ has 10 lines, so this will loop around twice
+    // we start from the right of the screen and read line by line to the left
+    expect(getDdjLineNumber(24, numColumns)).toEqual(0);
+    expect(getDdjLineNumber(23, numColumns)).toEqual(1);
+    // we check that it wraps around twice, each time after it finishes all 10 lines
+    expect(getDdjLineNumber(15, numColumns)).toEqual(9);
+    expect(getDdjLineNumber(14, numColumns)).toEqual(0);
+    expect(getDdjLineNumber(5, numColumns)).toEqual(9);
+    expect(getDdjLineNumber(4, numColumns)).toEqual(0);
+    // the left-most columns end wherever it is in order
+    expect(getDdjLineNumber(1, numColumns)).toEqual(3);
+    expect(getDdjLineNumber(0, numColumns)).toEqual(4);
+  });
+
+  it("should always return last line for partial columns", () => {
+    expect(getDdjLineNumber(1, 1)).toEqual(DDJ.length - 1);
+    expect(getDdjLineNumber(25, 25)).toEqual(DDJ.length - 1);
+  });
+});
+
+```
