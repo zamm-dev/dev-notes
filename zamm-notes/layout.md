@@ -206,6 +206,707 @@ We also avoid editing the media queries in `src-svelte/src/routes/chat/MessageUI
 
 depend on some other settings as well, and editing these alone will result in the background not always covering the text. Manual testing reveals that the existing media queries still work fine on Retina displays.
 
+### Calculating sizes with a script
+
+Upon doing physical measurements with Windows and Linux devices, we find that the equivalent font size on the Mac is actually at 15px. We write a script at `src-svelte/retina-proportions.py` to make doing such calculations simpler:
+
+```py
+#!/usr/bin/env python3
+
+DEFAULT_REM = 18
+RETINA_REM = 15
+RETINA_RATIO = 15 / 18
+# round to nearest half-integer
+ROUNDING_PRECISION = 2
+
+
+def retina_proportion(measurement: float) -> float:
+    return round(measurement * RETINA_RATIO * ROUNDING_PRECISION) / ROUNDING_PRECISION
+
+
+def convert() -> None:
+    measurement = float(input("Original: "))
+    retina = retina_proportion(measurement)
+    print(f"Retina:   \033[1m\033[92m{retina}\033[0m")
+
+
+if __name__ == "__main__":
+    try:
+        while True:
+            convert()
+    except KeyboardInterrupt:
+        pass
+
+```
+
+We then once again edit the Rust and Svelte files to use the updated values.
+
+We find out from [this site](https://www.sitepoint.com/understanding-and-using-rem-units-in-css/#using-rems-with-media-query-breakpoints) that it is indeed impossible to use `rem` or `em` to set media query breakpoints based on the root font size, because:
+
+> Relative units in media queries are based on the initial value, which means that units are never based on results of declarations. For example, in HTML, the em unit is relative to the initial value of font-size, defined by the user agent or the user’s preferences, not any styling on the page.
+
+As such, we should have perhaps used `px` values to begin with.
+
+### Refactoring out root em into a store
+
+We realize that the background text size is still off because the root em size is not updated to its final value by the time the JS to retrieve it is run. As such, we edit `src-svelte/src/lib/preferences.ts` to make it explicitly a store:
+
+```ts
+import { ..., get } from "svelte/store";
+
+...
+
+const STANDARD_ROOT_EM = ...;
+export const rootEm = writable(18);
+
+...
+
+export function updateRootFontSize() {
+  rootEm.set(getRootFontSize());
+}
+
+export function getAdjustedFontSize(fontSize: number) {
+  return Math.round(fontSize * (get(rootEm) / STANDARD_ROOT_EM));
+}
+
+export function newEmStore(initialValue: number) {
+  return derived(rootEm, (_) => getAdjustedFontSize(initialValue));
+}
+
+```
+
+We update `src-svelte/src/lib/Slider.svelte` and `src-svelte/src/lib/Switch.svelte` accordingly:
+
+```ts
+  ...
+  import { rootEm } from "./preferences";
+  ...
+
+  const overshoot = 0.4 * $rootEm; // how much overshoot to allow per-side
+  ...
+```
+
+and edit `src-svelte/src/routes/AppLayout.svelte` to update the root em size after everything has finished loading:
+
+```ts
+  ...
+  import {
+    ...,
+    updateRootFontSize,
+  } from "$lib/preferences";
+  ...
+
+  onMount(async () => {
+    ...
+
+    updateRootFontSize();
+
+    ready = true;
+  });
+```
+
+Finally, we add a few more stores in `src-svelte/src/routes/BackgroundUI.svelte` so that it will always be up to date with the latest root font size:
+
+```ts
+  ...
+  import { derived } from "svelte/store";
+  import { standardDuration, newEmStore } from "$lib/preferences";
+  ...
+
+  let charEm = newEmStore(26);
+  let textFont = derived(
+    charEm,
+    ($charEm) => $charEm + "px 'Zhi Mang Xing', sans-serif",
+  );
+  let blockSize = derived(charEm, ($charEm) => $charEm + CHAR_GAP);
+  ...
+
+  function resizeCanvas() {
+    ...
+    numColumns = Math.ceil((canvas.width - CHAR_GAP) / $blockSize);
+    numRows = Math.ceil(canvas.height / $blockSize);
+    ...
+  }
+
+  function draw() {
+    ...
+    ctx.font = $textFont;
+    ...
+
+    for (var column = 0; column < dropsPosition.length; column++) {
+      ...
+      ctx.fillText(
+        ...,
+        CHAR_GAP + column * $blockSize,
+        dropsPosition[column] * $blockSize,
+      );
+    }
+  }
+```
+
+### Adding root em as a preference
+
+At first, we edit `src-tauri/src/commands/preferences/models.rs` as such:
+
+```rs
+#[derive(...)]
+pub struct Preferences {
+    ...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_font_size: Option<i64>,
+    ...
+}
+```
+
+However, when we try to export our Specta bindings, we get the error
+
+```
+thread 'main' panicked at src/main.rs:59:14:
+Failed to export Specta bindings: BigIntForbidden(Preferences.base_font_size -> i64)
+```
+
+So instead, we use
+
+```rs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_font_size: Option<i32>,
+```
+
+On second thought, we only want a toggle for high DPI adjustments, and if we change the default font size for this high DPI adjustment in the future, it will be awkward to reconcile the two. On the other hand, if we make it a bool now but allow for high DPI adjustments to be more fine-grained in the future, there exists an obvious migration path for converting the default values for the boolean to finer-grained values for DPI. So, we finally use:
+
+```rs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high_dpi_adjust: Option<bool>,
+```
+
+We now have to edit `src-tauri/src/commands/preferences/read.rs` accordingly:
+
+```rs
+...
+
+fn get_preferences_happy_path(
+    ...
+) -> ZammResult<Preferences> {
+    ...
+    #[cfg(target_os = "macos")]
+    if found_preferences.high_dpi_adjust.is_none() {
+        found_preferences.high_dpi_adjust = Some(true);
+    }
+    Ok(found_preferences)
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[cfg(target_os = "linux")]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_without_file,
+        ...
+    );
+
+    ...
+
+    #[cfg(target_os = "macos")]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_without_file,
+        "./api/sample-calls/get_preferences-no-file-mac.yaml"
+    );
+
+    #[cfg(target_os = "linux")]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_sound_override,
+        ...
+    );
+
+    ...
+
+    #[cfg(not(target_os = "macos"))]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_transparency_off,
+        "./api/sample-calls/get_preferences-transparency-off.yaml"
+    );
+
+    ...
+
+    #[cfg(not(target_os = "windows"))]
+    check_sample!(
+        GetPreferencesTestCase,
+        test_high_dpi_adjust,
+        "./api/sample-calls/get_preferences-high-dpi-adjust-on.yaml"
+    );
+}
+```
+
+A lot of the tests have changed to targeting Linux only, because both Mac and Windows are now returning non-null default values for DPI adjustment and transparency, respectively. `test_transparency_off` will now be tested on Linux and Windows but not Mac OS, because the default transparency setting on Windows won't matter here when that setting is overridden. Similarly, `test_high_dpi_adjust` will now be tested on Mac and Linux but not Windows, because the default DPI setting on Mac OS won't matter when that setting is overridden.
+
+No changes to `src-tauri/src/commands/preferences/write.rs` are needed except for additional tests:
+
+```rs
+    check_sample!(
+        SetPreferencesTestCase,
+        test_high_dpi_adjust_on,
+        "./api/sample-calls/set_preferences-high-dpi-adjust-on.yaml"
+    );
+
+    check_sample!(
+        SetPreferencesTestCase,
+        test_high_dpi_adjust_off,
+        "./api/sample-calls/set_preferences-high-dpi-adjust-on.yaml"
+    );
+```
+
+We create `src-tauri/api/sample-calls/get_preferences-no-file-mac.yaml` as such:
+
+```yaml
+request: ["get_preferences"]
+response:
+  message: >
+    {
+      "high_dpi_adjust": true
+    }
+sideEffects:
+  disk:
+    startStateDirectory: empty
+    endStateDirectory: empty
+```
+
+and `src-tauri/api/sample-calls/get_preferences-high-dpi-adjust-on.yaml` as such:
+
+```yaml
+request: ["get_preferences"]
+response:
+  message: >
+    {
+      "high_dpi_adjust": true
+    }
+sideEffects:
+  disk:
+    startStateDirectory: preferences/high-dpi-adjust-on
+    endStateDirectory: preferences/high-dpi-adjust-on
+```
+
+and `src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-off.yaml` as such:
+
+```yaml
+request:
+  - set_preferences
+  - >
+    {
+      "preferences": {
+        "high_dpi_adjust": false
+      }
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: preferences/high-dpi-adjust-off
+```
+
+and `src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-on.yaml` as such:
+
+```yaml
+request:
+  - set_preferences
+  - >
+    {
+      "preferences": {
+        "high_dpi_adjust": true
+      }
+    }
+response:
+  message: "null"
+sideEffects:
+  disk:
+    endStateDirectory: preferences/high-dpi-adjust-on
+```
+
+The corresponding disk write at `src-tauri/api/sample-disk-writes/preferences/high-dpi-adjust-off/preferences.toml` is:
+
+```toml
+high_dpi_adjust = false
+```
+
+and of course the disk write at `src-tauri/api/sample-disk-writes/preferences/high-dpi-adjust-on/preferences.toml` is:
+
+```toml
+high_dpi_adjust = true
+```
+
+We edit `src-tauri/src/main.rs` to only launch a smaller window if the DPI adjustment setting is on:
+
+```rs
+...
+use commands::preferences::get_preferences_file_contents;
+...
+
+fn main() {
+    ...
+
+    match &cli.command {
+        ...
+        Some(Commands::Gui {}) | None => {
+            ...
+
+            tauri::Builder::default()
+                .setup(|app| {
+                    ...
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        let prefs = get_preferences_file_contents(&config_dir)?;
+                        if prefs.high_dpi_adjust.is_none()
+                            || prefs.high_dpi_adjust.unwrap()
+                        {
+                            app.get_window("main")
+                                .ok_or(anyhow::anyhow!("No main window"))?
+                                .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                    width: 666.6,  // 800 * 0.8333...
+                                    height: 500.0, // 600 * 0.8333...
+                                }))?;
+                        }
+                    }
+
+                    ...
+                })
+                ...;
+        }
+    }
+}
+```
+
+Unfortunately, this does mean reading the preferences file *three* times in a single app launch, but we will tackle this inefficiency in a future refactor.
+
+We find that we have to apply a target_os compilation directive to the import in order to avoid the pre-commit hooks failing on non-Mac platforms:
+
+```rs
+#[cfg(target_os = "macos")]
+use commands::preferences::get_preferences_file_contents;
+```
+
+As usual, `src-svelte/src/lib/bindings.ts` gets updated with
+
+```bash
+$ cargo run -- export-bindings
+```
+
+and then we manually edit away changes to the `EntityId` type.
+
+Then, we simplify the logic in `src-svelte/src/lib/preferences.ts`. We are no longer observing the root font size, but instead only ever defining it:
+
+```ts
+...
+
+export const STANDARD_ROOT_EM = 18;
+export const SMALLER_ROOT_EM = 15;
+
+...
+export const highDpiAdjust = writable(false);
+...
+
+export const rootEm = derived(highDpiAdjust, ($highDpiAdjustOn) => {
+  return $highDpiAdjustOn ? SMALLER_ROOT_EM : STANDARD_ROOT_EM;
+});
+
+...
+```
+
+We set this initially in `src-svelte/src/routes/AppLayout.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import {
+    ...
+    highDpiAdjust,
+    ...
+  } from "$lib/preferences";
+
+  ...
+
+  onMount(() => {
+    const rootEmUnsubscribe = rootEm.subscribe((value) => {
+      document.documentElement.style.fontSize = `${value}px`;
+    });
+
+    const updatePrefs = async () => {
+      const prefs = await getPreferences();
+      ...
+      if (prefs.high_dpi_adjust != null) {
+        highDpiAdjust.set(prefs.high_dpi_adjust);
+      }
+
+      ready = true;
+    };
+
+    updatePrefs();
+
+    return () => {
+      rootEmUnsubscribe();
+    };
+  });
+</script>
+
+<div id="app" class:high-dpi-adjust={$highDpiAdjust}>
+  ...
+</div>
+```
+
+The function we pass to `rootEm.subscribe` is based on [this answer](https://stackoverflow.com/a/37802204), which shows us how to change the root element styling. We also see from [this answer](https://stackoverflow.com/a/62118425) that we need to change the async nature of the mount function in order to be able to successfully trigger the unsubscribe. Finally, we set the `high-dpi-adjust` class at the top so that all subsequent components can rely on this to know how they should size themselves. Finally, we see from [this answer](https://stackoverflow.com/a/66819321) that Svelte store subscriptions get invoked as soon as they are created, so there is no need to manually trigger the initial root font size setting.
+
+We now edit all the media queries to check for this class instead of for the DPI. For example, we edit `src-svelte/src/lib/Switch.svelte` from:
+
+```css
+  @media (min-width: 52rem),
+    only screen and (-webkit-min-device-pixel-ratio: 2) and (min-width: 43.5rem) {
+      label {
+      white-space: nowrap;
+    }
+  }
+```
+
+to
+
+```css
+  @media (min-width: 52rem) {
+    label {
+      white-space: nowrap;
+    }
+  }
+
+  @media (min-width: 43.5rem) {
+    :global(.high-dpi-adjust) label {
+      white-space: nowrap;
+    }
+  }
+```
+
+This results in a good deal of CSS duplication, but it appears necessary because there isn't a way to selectively include media queries based on CSS classes.
+
+We remove this media query from `src-svelte/src/routes/styles.css`:
+
+```css
+@media only screen and (-webkit-min-device-pixel-ratio: 2) {
+  ...
+}
+```
+
+We now add some tests to `src-svelte/src/routes/AppLayout.test.ts`:
+
+```ts
+...
+import {
+  ...,
+  highDpiAdjust,
+} from "$lib/preferences";
+...
+
+describe("AppLayout", () => {
+  ...
+
+  test("will set high DPI adjust if preference overridden", async () => {
+    expect(get(highDpiAdjust)).toBe(false);
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_preferences-high-dpi-adjust-on.yaml",
+    );
+
+    render(AppLayout, { currentRoute: "/" });
+    await waitFor(() => {
+      expect(get(highDpiAdjust)).toBe(true);
+    });
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+  });
+});
+```
+
+We have to also subscribe to root em updates in `src-svelte/src/routes/BackgroundUI.svelte`, albeit indirectly through `charEm` as a derived store:
+
+```ts
+  onMount(() => {
+    ...
+    document.fonts.add(fontFile);
+    let charEmUnsubscribe: () => void | undefined;
+
+    fontFile.load().then(
+      () => {
+        ...
+        charEmUnsubscribe = charEm.subscribe(() => {
+          setTimeout(resizeCanvas, 100);
+        });
+      },
+      ...
+    );
+
+    return () => {
+      ...
+      if (charEmUnsubscribe) {
+        charEmUnsubscribe();
+      }
+    };
+  });
+  });
+```
+
+We wait for 100ms before triggering a canvas reset because if we do it immediately, the `numColumns` calculation will be incorrect.
+
+Another place we have to listen for this is `src-svelte/src/routes/SidebarUI.svelte`:
+
+```ts
+  ...
+  import { ..., rootEm } from "$lib/preferences";
+  ...
+
+  onMount(() => {
+    const updateIndicator = ...;
+    const rootEmUnsubscribe = rootEm.subscribe(() => {
+      // update 100ms later in case browser takes time to update
+      setTimeout(updateIndicator, 100);
+    });
+    ...
+
+    return () => {
+      rootEmUnsubscribe();
+      ...
+    };
+  });
+```
+
+Finally, we allow the user to toggle this in `src-svelte/src/routes/settings/Settings.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import {
+    ...
+    highDpiAdjust,
+    ...
+  } from "$lib/preferences";
+  ...
+
+  const onHighDpiAdjust = (newValue: boolean) => {
+    setPreferences({
+      high_dpi_adjust: newValue,
+    });
+  };
+
+  ...
+</script>
+
+<InfoBox title="Settings">
+  ...
+  <div class="container">
+    <SubInfoBox subheading="Other visual effects">
+      ...
+      <SettingsSwitch
+        label="High DPI adjust"
+        bind:toggledOn={$highDpiAdjust}
+        onToggle={onHighDpiAdjust}
+      />
+    </SubInfoBox>
+  </div>
+  ...
+</InfoBox>
+```
+
+We test this in `src-svelte/src/routes/settings/Settings.test.ts`:
+
+```ts
+...
+import {
+  ...,
+  highDpiAdjust,
+} from "$lib/preferences";
+...
+
+describe("Settings", () => {
+  ...
+
+  test("can toggle high-dpi on and off while saving setting", async () => {
+    render(Settings, {});
+    expect(get(highDpiAdjust)).toBe(false);
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+
+    const otherVisualsRegion = screen.getByRole("region", {
+      name: "Other visual effects",
+    });
+    const highDpiSwitch = getByLabelText(otherVisualsRegion, "High DPI adjust");
+    playback.addCalls(playSwitchSoundCall);
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-on.yaml",
+    );
+    await act(() => userEvent.click(highDpiSwitch));
+    expect(get(highDpiAdjust)).toBe(true);
+    expect(tauriInvokeMock).toHaveReturnedTimes(2);
+    expect(playback.unmatchedCalls.length).toBe(0);
+
+    playback.addCalls(playSwitchSoundCall);
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-off.yaml",
+    );
+    await act(() => userEvent.click(highDpiSwitch));
+    expect(get(highDpiAdjust)).toBe(false);
+    expect(tauriInvokeMock).toHaveReturnedTimes(4);
+    expect(playback.unmatchedCalls.length).toBe(0);
+  });
+});
+```
+
+Finally, our screenshot tests reveal that we have to edit `src-svelte/src/lib/Switch.svelte` one more time to avoid justified text in the labels when the labels span multiple lines:
+
+```css
+  label {
+    ...
+    text-align: left;
+  }
+```
+
+We apply the same change to the `label` styling in `src-svelte/src/lib/Slider.svelte` even though we haven't hit the same issue there yet, because the same concern applies.
+
+It turns out our settings page now no longer fits the "Tiny Mobile" viewport on Storybook, so our Playwright screenshot gets cut off at the bottom. We do the quickest fix possible by editing `src-svelte/.storybook/preview.ts` to resize the viewport to fit:
+
+```ts
+const preview = {
+  parameters: {
+    ...,
+    viewport: {
+      viewports: {
+        ...MINIMAL_VIEWPORTS,
+        ...,
+        tallerSmallMobile: {
+          name: "Taller Small Mobile",
+          styles: {
+            width: "320px",
+            height: "650px",
+          },
+        },
+      },
+    },
+  },
+  ...
+};
+
+```
+
+We edit `src-svelte/src/routes/settings/Settings.stories.ts` as well to use this:
+
+```ts
+export const TinyPhoneScreen: StoryObj = ...;
+TinyPhoneScreen.parameters = {
+  viewport: {
+    defaultViewport: "tallerSmallMobile",
+  },
+};
+```
+
 ## Rounding out the left corners of the main content
 
 It turns out that we need to do a major refactor of our app layout to achieve this effect.
@@ -3454,5 +4155,19 @@ describe("Dao De Jing positioning", () => {
     expect(getDdjLineNumber(25, 25)).toEqual(DDJ.length - 1);
   });
 });
+
+### Fixing infinite background speed
+
+When overall animations are off (animation durations set to 0) but background animation is still on, the background animation goes crazy fast instead of turning off. We fix this in `src-svelte/src/routes/Background.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import { animationsOn, backgroundAnimation } from "$lib/preferences";
+
+  $: animated = $animationsOn && $backgroundAnimation;
+</script>
+
+<BackgroundUI bind:animated />
 
 ```

@@ -169,6 +169,33 @@ repository 26719cd1 opened (version 2, compression level auto)
 ...
 ```
 
+If you encounter something such as
+
+```bash
+$ restic -r "$RESTIC_HD/Aero" ls latest --path "/Pictures"
+repository 956886e3 opened (version 2, compression level auto)
+[0:00] 100.00%  16 / 16 index files loaded
+snapshot filter (Paths:[/Pictures] Tags:[] Hosts:[]): no snapshot found
+```
+
+it's because you have to do this instead:
+
+```bash
+$ restic -r "$RESTIC_HD/Aero" ls latest:/Pictures
+```
+
+External disks from Windows would be prefixed by their drive letter. For example, to restore `D:\Zotero`:
+
+```bash
+$ restic -r "$RESTIC_HD/Aero" restore latest:/D/Zotero --target ~/Zotero
+```
+
+If you have multiple hosts backing up to the same repo, you can filter by host:
+
+```bash
+$ restic -r "$RESTIC_HD/Aero" restore latest --host DESKTOP-N5K32L1 --target ~/Downloads/restoration
+```
+
 ## Pruning backups
 
 To keep only some backups, run
