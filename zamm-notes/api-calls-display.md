@@ -6042,3 +6042,562 @@ Next, we find out that `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts` 
     ]);
   });
 ```
+
+### Setting up Ollama calls
+
+Even though Ollama has an OpenAI-compatible API, we decide to use the `ollama-rs` library instead of further modifying the `async-openai` library because there are also API calls that are not OpenAI-compatible that we'll want to make use of as well.
+
+We fork the `ollama-rs` repository, and then add it as a submodule:
+
+```rs
+git submodule add https://github.com/zamm-dev/ollama-rs.git forks/ollama-rs
+Cloning into '/Users/amos/Documents/zamm/forks/ollama-rs'...
+remote: Enumerating objects: 1209, done.
+remote: Counting objects: 100% (277/277), done.
+remote: Compressing objects: 100% (178/178), done.
+remote: Total 1209 (delta 151), reused 159 (delta 97), pack-reused 932
+Receiving objects: 100% (1209/1209), 242.28 KiB | 1.89 MiB/s, done.
+Resolving deltas: 100% (746/746), done.
+```
+
+Like we did with `async-openai`, we edit `forks/ollama-rs/Cargo.toml` to include `request-middleware`:
+
+```toml
+...
+
+[dependencies]
+...
+reqwest-middleware = "0.1.6"
+...
+```
+
+`cargo build` works fine, fortunately. We try `cargo test`, and only one test fails:
+
+```
+---- test_copy_model stdout ----
+thread 'test_copy_model' panicked at tests/copy_model.rs:9:10:
+called `Result::unwrap()` on an `Err` value: Ollama error: {"error":"model \"mario\" not found"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+We look at `forks/ollama-rs/tests/copy_model.rs` and see:
+
+```rs
+#[tokio::test]
+/// This test needs a model named "mario" to work
+async fn test_copy_model() {
+    let ollama = ollama_rs::Ollama::default();
+
+    ollama
+        .copy_model("mario".into(), "mario_copy".into())
+        .await
+        .unwrap();
+}
+
+```
+
+As such, we run `/save mario` in Ollama. This test now runs, although others are failing:
+
+```
+running 2 tests
+test test_create_model ... FAILED
+test test_create_model_stream ... FAILED
+
+failures:
+
+---- test_create_model stdout ----
+thread 'test_create_model' panicked at tests/create_model.rs:44:10:
+called `Result::unwrap()` on an `Err` value: Ollama error: {"error":"error reading modelfile: open /tmp/Modelfile.example: no such file or directory"}
+
+---- test_create_model_stream stdout ----
+thread 'test_create_model_stream' panicked at tests/create_model.rs:15:10:
+called `Result::unwrap()` on an `Err` value: Ollama error: {"error":"error reading modelfile: open /tmp/Modelfile.example: no such file or directory"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_create_model
+    test_create_model_stream
+```
+
+It appears this is stopping at the first failed test file. The most important is the chat functinality. We try running
+
+```bash
+$ cargo test test_send_chat
+...
+---- test_send_chat_messages_with_history stdout ----
+thread 'test_send_chat_messages_with_history' panicked at tests/send_chat_messages.rs:103:10:
+called `Result::unwrap()` on an `Err` value: Ollama error: {"error":"model \"llama2:latest\" not found, try pulling it first"}
+
+---- test_send_chat_messages_with_images stdout ----
+thread 'test_send_chat_messages_with_images' panicked at tests/send_chat_messages.rs:214:10:
+called `Result::unwrap()` on an `Err` value: Ollama error: {"error":"model \"llava:latest\" not found, try pulling it first"}
+
+
+failures:
+    test_send_chat_messages
+    test_send_chat_messages_remove_old_history
+    test_send_chat_messages_remove_old_history_with_limit_less_than_min
+    test_send_chat_messages_stream
+    test_send_chat_messages_with_history
+    test_send_chat_messages_with_history_stream
+    test_send_chat_messages_with_images
+
+test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+error: test failed, to rerun pass `--test send_chat_messages`
+```
+
+We pull `llama2:latest` and run the tests again. This time, only the tests that involve history, and that require `llava`, fail:
+
+```
+running 7 tests
+test test_send_chat_messages_with_images ... FAILED
+test test_send_chat_messages_remove_old_history ... FAILED
+test test_send_chat_messages_with_history ... FAILED
+test test_send_chat_messages ... ok
+test test_send_chat_messages_stream ... ok
+test test_send_chat_messages_with_history_stream ... FAILED
+test test_send_chat_messages_remove_old_history_with_limit_less_than_min ... FAILED
+```
+
+We start implementing our changes in `forks/ollama-rs/src/lib.rs`:
+
+```rs
+#[derive(Debug, Clone)]
+pub struct Ollama {
+    ...
+    pub(crate) reqwest_client: reqwest_middleware::ClientWithMiddleware,
+    pub(crate) streaming_client: reqwest::Client,
+    ...
+}
+
+impl Ollama {
+    ...
+
+    pub fn with_client(mut self, new_client: reqwest_middleware::ClientWithMiddleware) -> Self {
+        self.reqwest_client = new_client;
+        self
+    }
+
+    ...
+}
+
+...
+
+impl Default for Ollama {
+    /// Returns a default Ollama instance with the host set to `http://127.0.0.1:11434`.
+    fn default() -> Self {
+        Self {
+            ...,
+            reqwest_client: reqwest_middleware::ClientBuilder::new(
+                reqwest::Client::new(),
+            ).build(),
+            streaming_client: reqwest::Client::new(),
+            ...
+        }
+    }
+}
+
+```
+
+Note that we add a `with_client` method to replicate the Rust API of `async-openai`, so that we could only swap out that part without needing to worry about initializing the rest of the struct.
+
+We encounter the compilation errors
+
+```
+error[E0308]: mismatched types
+   --> src/lib.rs:149:17
+    |
+148 |             reqwest_client: reqwest_middleware::ClientBuilder::new(
+    |                             -------------------------------------- arguments to this function are incorrect
+149 |                 reqwest::Client::new(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^ expected `Client`, found a different `Client`
+    |
+    = note: `Client` and `Client` have similar names, but are actually distinct types
+note: `Client` is defined in crate `reqwest`
+   --> /Users/amos/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/reqwest-0.12.4/src/async_impl/client.rs:71:1
+    |
+71  | pub struct Client {
+    | ^^^^^^^^^^^^^^^^^
+note: `Client` is defined in crate `reqwest`
+   --> /Users/amos/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/reqwest-0.11.27/src/async_impl/client.rs:69:1
+    |
+69  | pub struct Client {
+    | ^^^^^^^^^^^^^^^^^
+    = note: perhaps two different versions of crate `reqwest` are being used?
+note: associated function defined here
+   --> /Users/amos/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/reqwest-middleware-0.1.6/src/client.rs:23:12
+    |
+23  |     pub fn new(client: Client) -> Self {
+    |            ^^^
+```
+
+We try to edit `forks/ollama-rs/Cargo.toml` to downgrade the version of reqwest:
+
+```toml
+[dependencies]
+reqwest = { version = "0.11.27", ... }
+...
+```
+
+We also edit `forks/ollama-rs/src/generation/completion/mod.rs` to use the streaming client instead:
+
+```rs
+impl Ollama {
+    #[cfg(feature = "stream")]
+    /// Completion generation with streaming.
+    /// Returns a stream of `GenerationResponse` objects
+    pub async fn generate_stream(
+        ...
+    ) -> crate::error::Result<GenerationResponseStream> {
+        ...
+        let res = self
+            .streaming_client
+            .post(...)
+            ...;
+        ...
+    }
+}
+```
+
+Now everything compiles. We commit and turn back to the main project. We edit `src-tauri/Cargo.toml`:
+
+```toml
+...
+
+[dependencies]
+...
+ollama-rs = "0.2.0"
+
+...
+
+[patch.crates-io]
+...
+ollama-rs = { path = "../forks/ollama-rs" }
+...
+```
+
+Note that we have to specify the same version as in `forks/ollama-rs/Cargo.toml`, or else the `patch.crates-io` won't apply.
+
+We edit `src-tauri/src/commands/errors.rs`:
+
+```rs
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    ...,
+    #[error(transparent)]
+    Ollama {
+        #[from]
+        source: ollama_rs::error::OllamaError,
+    },
+    ...
+}
+```
+
+We also edit `src-tauri/src/setup/api_keys.rs` to include Ollama, which in turn means adding a way for the `ApiKeys::update` and `ApiKeys::remove` functions to fail if Ollama is specified, because Ollama does not take in API keys. *That* in turn means editing `setup_api_keys` to add an additional `if-statement` that accounts for the additional failure mode.
+
+```rs
+...
+use crate::{commands::errors::ZammResult, models::ApiKey};
+use anyhow::anyhow;
+...
+
+pub enum Service {
+    OpenAI,
+    Ollama,
+}
+
+...
+
+
+impl ApiKeys {
+    pub fn update(...) -> ZammResult<()> {
+        match service {
+            Service::OpenAI => {
+                ...
+            }
+            Service::Ollama => Err(anyhow!("Ollama doesn't take API keys").into()),
+        }
+    }
+
+    pub fn remove(...) -> ZammResult<()> {
+        match service {
+            Service::OpenAI => {
+                ...
+            }
+            Service::Ollama => Err(anyhow!("Ollama doesn't take API keys").into()),
+        }
+    }
+}
+
+pub fn setup_api_keys(...) -> ApiKeys {
+    ...
+
+    if let Some(conn) = ... {
+        ...
+        if let Ok(api_keys_rows) = ... {
+            for api_key in api_keys_rows {
+                if let Err(e) = api_keys.update(&api_key.service, api_key.api_key) {
+                    eprintln!("Error reading API key for {}: {}", api_key.service, e);
+                }
+            }
+        }
+    }
+
+    ...
+}
+```
+
+We update `src-tauri/src/commands/keys/set.rs` to account for this new failure mode, by simply adding a new question mark at the end of the calls:
+
+```rs
+async fn set_api_key_helper(
+    ...
+) -> ZammResult<()> {
+    ...
+
+    // assign ownership of new API key string to in-memory API keys
+    if api_key.is_empty() {
+        api_keys.remove(service)?;
+    } else {
+        api_keys.update(service, api_key)?;
+    }
+
+    ...
+}
+```
+
+Finally, we edit `src-tauri/src/commands/llms/chat.rs` to handle calls to Ollama as well. We move the OpenAI-specific code into its own match handler, and also name the metadata and completion variables so that Cargo lint/clippy doesn't complain about the same identifiers appearing in different contexts in the same function. We add a new test as well to check that this all works as expected:
+
+```rs
+...
+use anyhow::anyhow;
+...
+use ollama_rs::generation::chat::request::ChatMessageRequest;
+use ollama_rs::generation::chat::ChatMessage as OllamaChatMessage;
+use ollama_rs::Ollama;
+...
+
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+
+    let db = ...;
+    let requested_model = args.llm;
+    let requested_temperature = args.temperature.unwrap_or(1.0);
+
+    let (token_metadata, completion, retrieved_model) = match &args.provider {
+        Service::OpenAI => {
+            let openai_api_key = ...;
+            let config = OpenAIConfig::new().with_api_key(openai_api_key);
+            let openai_client =
+                async_openai::Client::with_config(config).with_http_client(http_client);
+
+            let messages: Vec<ChatCompletionRequestMessage> =
+                ...;
+            let request = ...;
+            let response = ...;
+            let openai_token_metadata = TokenMetadata {
+                ...
+            };
+            let sole_choice = ...;
+            let openai_completion: ChatMessage = sole_choice.try_into()?;
+
+            (openai_token_metadata, openai_completion, response.model)
+        }
+        Service::Ollama => {
+            let ollama = Ollama::default().with_client(http_client);
+            let messages: Vec<OllamaChatMessage> =
+                args.prompt.clone().into_iter().map(|m| m.into()).collect();
+            let response = ollama
+                .send_chat_messages(ChatMessageRequest::new(
+                    requested_model.clone(),
+                    messages,
+                ))
+                .await?;
+            let ollama_completion: ChatMessage = response
+                .message
+                .ok_or_else(|| anyhow!("No message in Ollama response"))?
+                .into();
+            let metadata = response
+                .final_data
+                .ok_or_else(|| anyhow!("No final data in Ollama response"))?;
+            let ollama_token_metadata = TokenMetadata {
+                prompt: Some(i32::from(metadata.prompt_eval_count)),
+                response: Some(i32::from(metadata.eval_count)),
+                total: Some(i32::from(
+                    metadata.prompt_eval_count + metadata.eval_count,
+                )),
+            };
+
+            (
+                ollama_token_metadata,
+                ollama_completion,
+                requested_model.clone(),
+            )
+        }
+    };
+
+    let previous_call_id = ...;
+    ...
+
+    if let Some(conn) = db.as_mut() {
+        diesel::insert_into(llm_calls::table)
+            .values(NewLlmCallRow {
+                ...
+                llm_requested: &requested_model,
+                ...
+            })
+            .execute(conn)?;
+    }
+
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    check_sample!(
+        ChatTestCase,
+        test_start_conversation_ollama,
+        "api/sample-calls/chat-start-conversation-ollama.yaml"
+    );
+
+    ...
+}
+```
+
+This requires editing `src-tauri/src/models/llm_calls/chat_message.rs` to support conversions between our internal ZAMM chat message data structure and the Ollama library one:
+
+```rs
+...
+use ollama_rs::generation::chat::{
+    ChatMessage as OllamaChatMessage, MessageRole as OllamaMessageRole,
+};
+...
+
+impl From<OllamaChatMessage> for ChatMessage {
+    fn from(message: OllamaChatMessage) -> Self {
+        let text = message.content;
+        match message.role {
+            OllamaMessageRole::System => ChatMessage::System { text },
+            OllamaMessageRole::User => ChatMessage::Human { text },
+            OllamaMessageRole::Assistant => ChatMessage::AI { text },
+        }
+    }
+}
+
+...
+
+impl From<ChatMessage> for OllamaChatMessage {
+    fn from(val: ChatMessage) -> Self {
+        match val {
+            ChatMessage::System { text } => OllamaChatMessage::system(text),
+            ChatMessage::Human { text } => OllamaChatMessage::user(text),
+            ChatMessage::AI { text } => OllamaChatMessage::assistant(text),
+        }
+    }
+}
+
+...
+```
+
+Unlike with OpenAI, we don't need `TryFrom` here and can directly use `Try`.
+
+We create `src-tauri/api/sample-calls/chat-start-conversation-ollama.yaml` as such, copy-pasting from the OpenAI equivalent:
+
+```yaml
+request:
+  - chat
+  - >
+    {
+      "args": {
+        "provider": "Ollama",
+        "llm": "llama3:8b",
+        "temperature": null,
+        "prompt": [
+          {
+            "role": "System",
+            "text": "You are ZAMM, a chat program. Respond in first person."
+          },
+          {
+            "role": "Human",
+            "text": "Hello, does this work?"
+          }
+        ]
+      }
+    }
+response:
+  message: >
+    {
+      "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+      "timestamp": "2024-01-16T08:50:19.738093890",
+      "response_message": {
+        "role": "AI",
+        "text": "Hello there! Yes, it looks like I'm functioning properly. I'm ZAMM, a chat program designed to assist and converse with you. I'm happy to be here and help answer any questions or topics you'd like to discuss. What's on your mind today?"
+      }
+    }
+sideEffects:
+  database:
+    endStateDump: conversation-started-ollama
+  network:
+    recordingFile: start-conversation-ollama.json
+
+```
+
+The recording `src-tauri/api/sample-network-requests/start-conversation-ollama.json` gets automatically created on the first run of the test. We edit the API file to return the expected text, so that next `src-tauri/api/sample-database-writes/conversation-started-ollama/dump.yaml` and `src-tauri/api/sample-database-writes/conversation-started-ollama/dump.sql` get automatically created on the second run of the test. The more readable dump file looks like this:
+
+```yaml
+llm_calls:
+  instances:
+  - id: 506e2d1f-549c-45cc-ad65-57a0741f06ee
+    timestamp: 2024-08-07T18:46:15.717997
+    provider: Ollama
+    llm_requested: llama3:8b
+    llm: llama3:8b
+    temperature: 1.0
+    prompt_tokens: 36
+    response_tokens: 57
+    total_tokens: 93
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hello, does this work?
+    completion:
+      role: AI
+      text: Hello there! Yes, it looks like I'm functioning properly. I'm ZAMM, a chat program designed to assist and converse with you. I'm happy to be here and help answer any questions or topics you'd like to discuss. What's on your mind today?
+
+```
+
+The tests still fail. We edit `src-tauri/src/test_helpers/api_testing.rs` to help us debug:
+
+```rs
+fn compare_files(
+    ...
+) {
+    ...
+
+    println!(
+        "Comparing {} to {}",
+        expected_path_abs.display(),
+        actual_path_abs.display()
+    );
+    assert_eq!(...);
+}
+```
+
+We realize that we have to update `src-tauri/api/sample-calls/chat-start-conversation-ollama.yaml` with the new ID and timestamp generated.
+
+While committing, we find that the pre-commit hook for Cargo clippy is now failing because of warnings in the `ollama-rs` project. We edit `src-tauri/clippy.py` to ignore `ollama-rs` warnings as well:
+
+```py
+SEPARATOR = "warning: `ollama-rs` (lib) generated "
+```

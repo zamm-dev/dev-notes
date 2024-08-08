@@ -907,6 +907,162 @@ TinyPhoneScreen.parameters = {
 };
 ```
 
+#### Setting window size cross-platform
+
+First, we remove the `#[cfg(target_os = "macos")]` flag on the `commands::preferences::get_preferences_file_contents` import in `src-tauri/src/main.rs`. Then, we edit the rest of the file:
+
+```rs
+fn main() {
+    ...
+            tauri::Builder::default()
+                .setup(|app| {
+                    ...
+
+                    let prefs = get_preferences_file_contents(&config_dir)?;
+                    #[cfg(target_os = "macos")]
+                    let high_dpi_adjust_on = prefs.high_dpi_adjust.unwrap_or(true);
+                    #[cfg(not(target_os = "macos"))]
+                    let high_dpi_adjust_on = prefs.high_dpi_adjust.unwrap_or(false);
+                    if high_dpi_adjust_on {
+                        app.get_window("main")
+                            .ok_or(anyhow::anyhow!("No main window"))?
+                            .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                width: 666.6,  // 800 * 0.8333...
+                                height: 500.0, // 600 * 0.8333...
+                            }))?;
+                    }
+
+                    Ok(())
+                })
+                ...;
+    ...
+}
+```
+
+Then, we make the default window big enough to turn the preferences screen into a two-column format. We increase the height too to make it slighly more squarish:
+
+```rs
+                    if high_dpi_adjust_on {
+                        app.get_window("main")
+                            .ok_or(anyhow::anyhow!("No main window"))?
+                            .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                width: 708.0,  // 850 * 0.8333...
+                                height: 541.0, // 650 * 0.8333...
+                            }))?;
+                    } else {
+                        app.get_window("main")
+                            .ok_or(anyhow::anyhow!("No main window"))?
+                            .set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                width: 850.0,
+                                height: 650.0,
+                            }))?;
+                    }
+```
+
+It turns out the end-to-end tests are not affected by this. To make sure that the end-to-end screenshots reflect the default app experience as much as possible, we edit `webdriver/test/specs/e2e.test.js`:
+
+```js
+describe("App", function () {
+  beforeAll(function () {
+    browser.setWindowSize(850, 650);
+  });
+
+  ...
+});
+```
+
+We get the error
+
+```
+yarn run v1.22.22
+$ /Users/amos/Documents/zamm/node_modules/.bin/eslint --fix --max-warnings=0 webdriver/test/specs/e2e.test.js webdriver/wdio.conf.ts
+
+/Users/amos/Documents/zamm/webdriver/test/specs/e2e.test.js
+  22:3  error  'beforeAll' is not defined  no-undef
+
+✖ 1 problem (1 error, 0 warnings)
+```
+
+From reading [the WDIO documentation](https://webdriver.io/docs/configurationfile/), it appears we can put this code in `webdriver/wdio.conf.ts` instead:
+
+```ts
+exports.config = {
+  ...
+
+  before: (_capabilities, _specs, browser) => {
+    browser.setWindowSize(850, 650);
+  },
+  
+  ...
+};
+```
+
+Unfortunately, on CI this gives us
+
+```
+$ wdio run ./wdio.conf.ts
+2024-08-06T09:15:37.556Z ERROR @wdio/config:ConfigParser: Failed loading configuration file: file:///home/runner/work/zamm/zamm/webdriver/wdio.conf.ts: ⨯ Unable to compile TypeScript:
+Error: wdio.conf.ts(39,12): error TS7006: Parameter '_capabilities' implicitly has an 'any' type.
+Error: wdio.conf.ts(39,27): error TS7006: Parameter '_specs' implicitly has an 'any' type.
+Error: wdio.conf.ts(39,35): error TS7006: Parameter 'browser' implicitly has an 'any' type.
+
+Error: wdio.conf.ts(39,12): error TS7006: Parameter '_capabilities' implicitly has an 'any' type.
+Error: wdio.conf.ts(39,27): error TS7006: Parameter '_specs' implicitly has an 'any' type.
+Error: wdio.conf.ts(39,35): error TS7006: Parameter 'browser' implicitly has an 'any' type.
+
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+We try instead
+
+```ts
+  before: (
+    _capabilities: Record<string, unknown>[],
+    _specs: string[],
+    browser: WebdriverIO.Browser,
+  ) => {
+    browser.setWindowSize(850, 650);
+  },
+```
+
+based on the documentation types and [this documentation page](https://webdriver.io/docs/api/browser/) that leads [here](https://webdriver.io/docs/api/globals/).
+
+This produces the error
+
+```
+2024-08-06T09:42:44.876Z ERROR @wdio/config:ConfigParser: Failed loading configuration file: file:///home/runner/work/zamm/zamm/webdriver/wdio.conf.ts: ⨯ Unable to compile TypeScript:
+Error: wdio.conf.ts(42,14): error TS2503: Cannot find namespace 'WebdriverIO'.
+```
+
+From [this documentation](https://webdriver.io/docs/typescript/#framework-setup) we see that perhaps we need to create a `webdriver/tsconfig.json` like so:
+
+```json
+{
+  "compilerOptions": {
+      "types": ["node", "@wdio/globals/types"]
+  }
+}
+```
+
+Now, we also edit `webdriver/wdio.conf.ts` so that the images are not suffixed by `800x600` everywhere:
+
+```ts
+exports.config = {
+  ...,
+  services: [
+    [
+      "image-comparison",
+      {
+        ...
+        formatImageName: "{tag}",
+        ...
+      },
+    ],
+  ],
+};
+```
+
 ## Rounding out the left corners of the main content
 
 It turns out that we need to do a major refactor of our app layout to achieve this effect.
@@ -4155,6 +4311,31 @@ describe("Dao De Jing positioning", () => {
     expect(getDdjLineNumber(25, 25)).toEqual(DDJ.length - 1);
   });
 });
+```
+
+We find that the transparent info box screenshot test fails locally because the background takes some time to load. As such, we edit `src-svelte/src/routes/storybook.test.ts`
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "infobox"],
+    variants: [
+      ...,
+      {
+        name: "transparent",
+        ...,
+        additionalAction: async (_) => {
+          // wait for background to load; probably due to fonts
+          await new Promise((r) => setTimeout(r, 2_000));
+        },
+      },
+    ],
+    ...
+  },
+  ...
+];
+```
 
 ### Fixing infinite background speed
 

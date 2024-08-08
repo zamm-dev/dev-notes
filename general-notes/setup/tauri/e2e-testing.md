@@ -956,3 +956,30 @@ let tauriDriver: ChildProcess;
 ```
 
 Note that this appears to also update our `package.json` with unwanted new dependencies. Move these back into `devDependencies`.
+
+### Mac Tauri driver compilation
+
+Installing Tauri driver on the Mac fails with:
+
+```
+error[E0425]: cannot find value `DRIVER_BINARY` in this scope
+  --> /Users/amos/.asdf/installs/rust/1.76.0/registry/src/index.crates.io-6f17d22bba15001f/tauri-driver-0.1.3/src/webdriver.rs:33:32
+   |
+33 |     None => match which::which(DRIVER_BINARY) {
+   |                                ^^^^^^^^^^^^^ not found in this scope
+```
+
+Sure enough, if we look at the actual file, we see
+
+```rs
+// the name of the binary to find in $PATH
+#[cfg(target_os = "linux")]
+const DRIVER_BINARY: &str = "WebKitWebDriver";
+
+#[cfg(target_os = "windows")]
+const DRIVER_BINARY: &str = "msedgedriver.exe";
+```
+
+There is no definition for the Mac.
+
+The lack of Mac OS support is a [known issue](https://github.com/tauri-apps/tauri/issues/7068).
