@@ -6045,6 +6045,8 @@ Next, we find out that `src-svelte\src\routes\api-calls\[slug]\ApiCall.test.ts` 
 
 ### Setting up Ollama calls
 
+#### Adding backend capabilities
+
 Even though Ollama has an OpenAI-compatible API, we decide to use the `ollama-rs` library instead of further modifying the `async-openai` library because there are also API calls that are not OpenAI-compatible that we'll want to make use of as well.
 
 We fork the `ollama-rs` repository, and then add it as a submodule:
@@ -6316,6 +6318,7 @@ impl ApiKeys {
         match service {
             Service::OpenAI => {
                 ...
+                Ok(())
             }
             Service::Ollama => Err(anyhow!("Ollama doesn't take API keys").into()),
         }
@@ -6325,6 +6328,7 @@ impl ApiKeys {
         match service {
             Service::OpenAI => {
                 ...
+                Ok(())
             }
             Service::Ollama => Err(anyhow!("Ollama doesn't take API keys").into()),
         }
@@ -6601,3 +6605,1427 @@ While committing, we find that the pre-commit hook for Cargo clippy is now faili
 ```py
 SEPARATOR = "warning: `ollama-rs` (lib) generated "
 ```
+
+Then, we update Specta bindings to include `Ollama` as another potential value for the `Service` enum.
+
+#### Invoking Ollama from the frontend
+
+##### API call editing
+
+Now that the backend is capable of making calls to Ollama, we edit the frontend to do so. We start with the API call editing page at `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte`:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  interface Model {
+    apiName: string;
+    humanName: string;
+  }
+
+  const OPENAI_MODELS: Model[] = [
+    { apiName: "gpt-4", humanName: "GPT 4" },
+    { apiName: "gpt-4o-mini", humanName: "GPT-4o mini" },
+  ];
+
+  const OLLAMA_MODELS: Model[] = [
+    { apiName: "llama3:8b", humanName: "Llama 3" },
+    { apiName: "gemma2:9b", humanName: "Gemma 2" },
+  ];
+</script>
+
+<script lang="ts">
+  ...
+
+  export let expectingResponse = ...;
+  let provider: "OpenAI" | "Ollama" = "OpenAI";
+  let llm = "gpt-4";
+  let selectModels = OPENAI_MODELS;
+  function onProviderChange(newProvider: string) {
+    selectModels = newProvider === "OpenAI" ? OPENAI_MODELS : OLLAMA_MODELS;
+    llm = selectModels[0].apiName;
+  }
+
+  async function submitApiCall() {
+    ...
+
+    try {
+      const createdLlmCall = await chat({
+        provider,
+        llm,
+        ...
+      });
+      ...
+    } ...
+  }
+
+  $: onProviderChange(provider);
+</script>
+
+<InfoBox title="New API Call">
+  <EmptyPlaceholder>
+    ...
+  </EmptyPlaceholder>
+
+  <div class="model-settings">
+    <div class="setting">
+      <label for="provider">Provider: </label>
+      <div class="select-wrapper">
+        <select name="provider" id="provider" bind:value={provider}>
+          <option value="OpenAI">OpenAI</option>
+          <option value="Ollama">Ollama</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="setting">
+      <label for="model">Model: </label>
+      <div class="select-wrapper">
+        <select name="model" id="model" bind:value={llm}>
+          {#each selectModels as model}
+            <option value={model.apiName}>{model.humanName}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
+
+    {#if $canonicalRef}
+      <div class="setting canonical-display">
+        ...
+      </div>
+    {/if}
+  </div>
+
+  ...
+</InfoBox>
+
+<style>
+  .model-settings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 1rem;
+    row-gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .setting {
+    display: flex;
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+
+  select {
+    -webkit-appearance: none;
+    -ms-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    border: none;
+    padding-right: 1rem;
+    box-sizing: border-box;
+    direction: rtl;
+    width: 100%;
+  }
+
+  select option {
+    direction: ltr;
+  }
+
+  select,
+  .select-wrapper {
+    background-color: transparent;
+    font-family: var(--font-body);
+    font-size: 1rem;
+  }
+
+  .select-wrapper {
+    flex: 1;
+    border-bottom: 1px dotted var(--color-faded);
+    position: relative;
+    display: inline-block;
+  }
+
+  .select-wrapper::after {
+    content: "▼";
+    display: inline-block;
+    position: absolute;
+    right: 0.25rem;
+    top: 0.35rem;
+    color: var(--color-faded);
+    font-size: 0.5rem;
+    pointer-events: none;
+  }
+
+  .setting.canonical-display {
+    ...
+    grid-column: span 2;
+  }
+
+  ...
+</style>
+```
+
+Some implementation notes:
+
+- We see that [this](https://stackoverflow.com/a/23040347) is the way to remove Mac OS's default styling on select elements. There are other equivalent selectors for other browsers.
+- Initially, when we applied the border styling to the select element directly, it appears there are [no simpler ways](https://stackoverflow.com/a/66444857) to remove all borders except for the bottom border in CSS. Using `border: none;` overrides any subsequent `border-bottom` styling.
+- We find that `::after` pseudo-elements on `select` elements [is not supported](https://stackoverflow.com/a/31070926), and so instead we follow the suggestion in that answer to use a wrapper element with `pointer-events: none;` instead.
+- We find that `text-align: right;` does not work here. Instead, we use [this trick](https://stackoverflow.com/a/18646010) to set `direction: rtl;` on the select and then `direction: ltr;` on the option elements.
+- We put the `.canonical-display` div inside the CSS grid, and style it similar to other grid elements
+- We use [this trick](https://stackoverflow.com/a/59284975) to get the link to the existing API call to span two columns.
+
+Next, we update the tests at `src-svelte/src/routes/api-calls/new/ApiCallEditor.test.ts`:
+
+```ts
+...
+
+describe("API call editor", () => {
+  ...
+
+  test("can make a call to Llama 3", async () => {
+    render(ApiCallEditor, {});
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/chat-start-conversation-ollama.yaml",
+    );
+
+    await setNewMessage(
+      "System",
+      "You are ZAMM, a chat program. Respond in first person.",
+    );
+    await addNewMessage();
+    await setNewMessage("Human", "Hello, does this work?");
+
+    const providerSelect = screen.getByRole("combobox", { name: "Provider:" });
+    await userEvent.selectOptions(providerSelect, "Ollama");
+
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    expect(get(mockStores.page).url.pathname).toEqual(
+      "/api-calls/506e2d1f-549c-45cc-ad65-57a0741f06ee",
+    );
+  });
+
+  test("will update model list when provider changes", async () => {
+    render(ApiCallEditor, {});
+
+    const providerSelect = screen.getByRole("combobox", { name: "Provider:" });
+    const modelSelect = screen.getByRole("combobox", { name: "Model:" });
+    expect(providerSelect).toHaveValue("OpenAI");
+    expect(modelSelect).toHaveValue("gpt-4");
+
+    await userEvent.selectOptions(providerSelect, "Ollama");
+    expect(providerSelect).toHaveValue("Ollama");
+    expect(modelSelect).toHaveValue("llama3:8b");
+
+    // test that model can change without affecting provider
+    await userEvent.selectOptions(modelSelect, "gemma2:9b");
+    expect(providerSelect).toHaveValue("Ollama");
+    expect(modelSelect).toHaveValue("gemma2:9b");
+
+    // test that we can switch things back
+    await userEvent.selectOptions(providerSelect, "OpenAI");
+    expect(providerSelect).toHaveValue("OpenAI");
+    expect(modelSelect).toHaveValue("gpt-4");
+  });
+});
+```
+
+We see that the [ARIA `select` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/select_role) is an abstract one that shouldn't be used. Instead, we use the [`combobox` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/combobox_role). For what it's worth, it appears the [actual combobox element](https://stackoverflow.com/a/21958246) may be a bit more involved than the select, so we go with just hard-coded select for the first iteration of this feature.
+
+##### Vertical alignment with emojis
+
+During our manual testing, we discover that LLM responses with emojis (which Gemma 2 produces even without any prompting) changes the vertical alignment of the LLM reference on the API call editing page and the API calls list page.
+
+We create one Storybook story to replicate this visual bug. We first edit `src-svelte/src/routes/api-calls/new/test.data.ts` to add in test data that produces the bug:
+
+```ts
+export const EMOJI_CANONICAL_REF = {
+  id: "e0e97af6-71bc-444f-8661-86a45134638c",
+  snippet: `Ah, excellent question, General! 🤔`,
+};
+```
+
+We then edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.stories.ts` to add a story that makes use of this test data:
+
+```ts
+...
+import { EMOJI_CANONICAL_REF } from "./test.data";
+
+...
+
+// note: this also applies to the API calls list, but it's easier to test here
+export const WithEmoji: StoryObj = Template.bind({}) as any;
+WithEmoji.parameters = {
+  stores: {
+    apiCallEditing: {
+      canonicalRef: EMOJI_CANONICAL_REF,
+      prompt: {
+        type: "Chat",
+        messages: [{ role: "System", text: "" }],
+      },
+    },
+  },
+};
+```
+
+We add this story to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "new"],
+    variants: [..., "with-emoji"],
+    ...
+  },
+  ...
+];
+```
+
+At first, we try editing `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte`:
+
+```css
+  .setting.canonical-display {
+    ...
+    align-items: center;
+  }
+```
+
+However, this doesn't work. Next, we edit `src-svelte/src/lib/ApiCallReferenceLink.svelte` to restrict the API call references to a fixed height, regardless of the text. We remove the italic styling from the `span` as well, opting instead to mark the span's with a `.nolink` class that parent components can style.
+
+```svelte
+...
+
+{#if nolink}
+  ...
+  <span class="nolink">{apiCall.snippet}</span>
+{:else}
+  ...
+{/if}
+
+<style>
+  span,
+  a {
+    ...
+    line-height: 1.22rem;
+  }
+</style>
+```
+
+We then edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` to add the italic styling back in:
+
+```css
+  .variation-links li :global(span.nolink) {
+    font-style: italic;
+  }
+```
+
+We edit `src-svelte/src/routes/api-calls/ApiCalls.svelte` to actually make use of `ApiCallReference` in order to use this styling. For some reason, we can't get rid of the `.text` div here, but we'll just shove the `ApiCallReference` reference in instead of investigating further. This class is why we avoid italic styling in `ApiCallReferenceLink`, because it is not desirable here.
+
+```svelte
+<script lang="ts">
+  ...
+  import ApiCallReference from "$lib/ApiCallReference.svelte";
+
+  ...
+
+  function asReference(call: LightweightLlmCall) {
+    return {
+      id: call.id,
+      snippet: call.response_message.text.trim(),
+    };
+  }
+
+  ...
+</script>
+
+<InfoBox title="LLM API Calls" ...>
+  ...
+          {#each llmCalls as call (call.id)}
+            ...
+                <div class="text-container">
+                  <div class="text">
+                    <ApiCallReference
+                      selfContained
+                      nolink
+                      apiCall={asReference(call)}
+                    />
+                  </div>
+                </div>
+            ...
+          {/each}
+  ...
+</InfoBox>
+```
+
+#### Adding forwards compatibility
+
+##### For unknown service providers
+
+Once a non-Open AI API call is made, past versions of ZAMM will be unable to successfully read from the database anymore. To solve this forwards compatibility problem going forward, we start testing for unrecognized service providers.
+
+We try editing `src-tauri/src/setup/api_keys.rs` to set a [`serde(other)`](https://serde.rs/variant-attrs.html#other) attribute:
+
+```rs
+pub enum Service {
+    OpenAI,
+    #[serde(other)]
+    Unknown,
+}
+```
+
+We find out that this doesn't work to change anything because the failed deserialization of the field happens with the `provider` column with `strum`, not with the `prompt` column with `serde` deserialization. As such, we edit `src-tauri/src/setup/api_keys.rs` again, trying out the [`strum(default)`](https://docs.rs/strum/latest/strum/additional_attributes/index.html) attribute:
+
+```rs
+#[diesel(...)]
+#[strum(...)]
+pub enum Service {
+    OpenAI,
+    #[serde(other)]
+    #[strum(default)]
+    Unknown,
+}
+```
+
+We run into the problem
+
+```
+error: Default only works on newtype structs with a single String field
+  --> src/setup/api_keys.rs:32:5
+   |
+32 | /     #[serde(other)]
+33 | |     #[strum(default)]
+34 | |     Unknown,
+   | |___________^
+```
+
+Implementing `Default` doesn't help:
+
+```rs
+impl Default for Service {
+    fn default() -> Self {
+        Service::Unknown
+    }
+}
+```
+
+Changing it to
+
+```rs
+pub enum Service {
+    OpenAI,
+    #[serde(other)]
+    #[strum(default)]
+    Unknown { name: String },
+}
+```
+
+doesn't help:
+
+```
+error: #[serde(other)] must be on a unit variant
+  --> src/setup/api_keys.rs:32:5
+   |
+32 | /     #[serde(other)]
+33 | |     #[strum(default)]
+34 | |     Unknown { name: String },
+   | |____________________________^
+
+error: Default only works on newtype structs with a single String field
+  --> src/setup/api_keys.rs:32:5
+   |
+32 | /     #[serde(other)]
+33 | |     #[strum(default)]
+34 | |     Unknown { name: String },
+   | |____________________________^
+
+error[E0204]: the trait `std::marker::Copy` cannot be implemented for this type
+  --> src/setup/api_keys.rs:16:5
+   |
+16 |     Copy,
+   |     ^^^^
+...
+34 |     Unknown { name: String },
+   |               ------------ this field does not implement `std::marker::Copy`
+   |
+   = note: this error originates in the derive macro `Copy` (in Nightly builds, run with -Z macro-backtrace for more info)
+```
+
+Getting rid of Serde makes it clear that the problem is indeed with the Strum library:
+
+```
+error: Default only works on newtype structs with a single String field
+  --> src/setup/api_keys.rs:32:5
+   |
+32 | /     #[strum(default)]
+33 | |     Unknown,
+   | |___________^
+```
+
+It turns out that this variation finally works:
+
+```rs
+pub enum Service {
+    OpenAI,
+    #[strum(default)]
+    Unknown(String),
+}
+```
+
+But once we add `#[serde(other)]` back in, we get the error
+
+```
+error: #[serde(other)] must be on a unit variant
+  --> src/setup/api_keys.rs:31:5
+   |
+31 | /     #[serde(other)]
+32 | |     #[strum(default)]
+33 | |     Unknown(String),
+   | |___________________^
+```
+
+It appears Serde [does not support](https://github.com/serde-rs/serde/pull/1382#issuecomment-424706998) the same feature that `strum` does. In this case, we opt for `strum` over `serde` because it captures more information. We try to follow the example code in [this issue](https://github.com/serde-rs/serde/issues/2092) and come up with this:
+
+```rs
+pub enum Service {
+    ...,
+    #[strum(default)]
+    #[serde(serialize_with = "transparent")]
+    Unknown(String),
+}
+
+fn transparent<S>(field: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(field)
+}
+```
+
+It compiles, but doesn't actually make any difference, so we leave this code out.
+
+The final `src-tauri/src/setup/api_keys.rs` looks like this:
+
+```rs
+...
+use crate::{commands::errors::ZammResult, models::ApiKey};
+use anyhow::anyhow;
+...
+
+#[derive(
+    ... no more deriving Copy ...
+)]
+#[diesel(...)]
+#[strum(...)]
+pub enum Service {
+    ...,
+    #[strum(default)]
+    Unknown(String),
+}
+
+...
+
+impl ApiKeys {
+    pub fn update(...) -> ZammResult<()> {
+        match service {
+            Service::OpenAI => {
+                ...
+                Ok(())
+            }
+            Service::Unknown(_) => {
+                Err(anyhow!("Can't update API keys for unknown service").into())
+            }
+        }
+    }
+
+    pub fn remove(...) -> ZammResult<()> {
+        match service {
+            Service::OpenAI => {
+                ...
+                Ok(())
+            }
+            Service::Unknown(_) => {
+                Err(anyhow!("Can't delete API keys for unknown service").into())
+            }
+        }
+    }
+}
+
+pub fn setup_api_keys(...) -> ApiKeys {
+    ...
+
+            for api_key in api_keys_rows {
+                if let Err(e) = api_keys.update(&api_key.service, api_key.api_key) {
+                    eprintln!("Error reading API key for {}: {}", api_key.service, e);
+                }
+            }
+    ...
+}
+```
+
+Note that we copied some code for the `update` and `remove` functions from the Ollama implementation above, because this is in the main branch and not on the Ollama branch that's meant for a future release.
+
+As a result, we need to edit `src-tauri/src/commands/keys/set.rs` to clone the service instead of simply dereferencing it (which should still be plenty fast if it's just an enum value, as it will be most of the time), and to allow for failures from `api_keys.remove` and `api_keys.update`:
+
+```rs
+...
+
+async fn set_api_key_helper(
+    ...
+) -> ZammResult<()> {
+    ...
+    let db_update_result = || -> ZammResult<()> {
+        if let Some(conn) = ... {
+            if api_key.is_empty() {
+                ...
+            } else {
+                diesel::replace_into(...)
+                    .values(crate::models::NewApiKey {
+                        service: service.clone(),
+                        ...
+                    })
+                ...
+            }
+        }
+    }();
+
+    // assign ownership of new API key string to in-memory API keys
+    if api_key.is_empty() {
+        api_keys.remove(service)?;
+    } else {
+        api_keys.update(service, api_key)?;
+    }
+
+    ...
+}
+```
+
+We also need to edit `src-tauri/src/models/api_keys.rs` to clone the service there too:
+
+```rs
+impl ApiKey {
+    pub fn as_insertable(&self) -> NewApiKey {
+        NewApiKey {
+            service: self.service.clone(),
+            ...
+        }
+    }
+    ...
+}
+```
+
+We edit `src-tauri/src/commands/llms/chat.rs` to handle requests for unknown service providers (which the frontend should never send anyways):
+
+```rs
+...
+use anyhow::anyhow;
+...
+
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+
+    let config = match &args.provider {
+        Service::OpenAI => {
+            ...
+            Ok(OpenAIConfig::...)
+        }
+        Service::Unknown(_) => Err(anyhow!("Unknown service provider requested")),
+    }?;
+
+    ...
+}
+```
+
+No changes to the list of API calls is needed, other than a new test at `src-tauri/src/commands/llms/get_api_calls.rs`:
+
+```rs
+    check_sample!(
+        GetApiCallsTestCase,
+        test_unknown_future_provider,
+        "./api/sample-calls/get_api_calls-unknown-future-provider.yaml"
+    );
+```
+
+We originally had this comment for that test:
+
+```rs
+    // API should end up returning the same thing as `get_api_calls-small.yaml` despite
+    // the presence of unknown future providers in one of the API calls
+```
+
+This was because we originally intended to simply filter out any rows that cannot be deserialized. However, it appears it's not the easiest thing to do with Diesel, since we'll have to first deserialize each row into a struct with unparsed JSON, and then filter out the results for which JSON cannot be successfully parsed. We ended up going with adding an extra enum, which means this comment is no longer true.
+
+We add `src-tauri/api/sample-calls/get_api_calls-unknown-future-provider.yaml` to test getting multiple calls successfully:
+
+```yaml
+request:
+  - get_api_calls
+  - >
+    {
+      "offset": 0
+    }
+response:
+  message: >
+    [
+      {
+        "id": "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+        "timestamp": "2024-07-29T17:30:11.073212",
+        "response_message": {
+          "role": "AI",
+          "text": "I'm sorry to hear that. How can I assist you better?"
+        }
+      },
+      {
+        "id": "c13c1e67-2de3-48de-a34c-a32079c03316",
+        "timestamp": "2024-01-16T09:50:19.738093890",
+        "response_message": {
+          "role": "AI",
+          "text": "Sure, here's a joke for you: Why don't scientists trust atoms? Because they make up everything!"
+        }
+      },
+      {
+        "id": "d5ad1e49-f57f-4481-84fb-4d70ba8a7a74",
+        "timestamp": "2024-01-16T08:50:19.738093890",
+        "response_message": {
+          "role": "AI",
+          "text": "Yes, it works. How can I assist you today?"
+        }
+      }
+    ]
+sideEffects:
+  database:
+    startStateDump: future-service-provider
+    endStateDump: future-service-provider-export
+
+```
+
+We create `src-tauri/api/sample-database-writes/future-service-provider/dump.yaml`, which is the "continued" database except that we copied in an API call with the new service provider:
+
+```yaml
+llm_calls:
+  instances:
+  - id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+    ...
+    completion:
+      role: AI
+      text: Yes, it works. How can I assist you today?
+  - id: c13c1e67-2de3-48de-a34c-a32079c03316
+    ...
+    completion:
+      role: AI
+      text: 'Sure, here''s a joke for you: Why don''t scientists trust atoms? Because they make up everything!'
+  - id: 037b28dd-6f24-4e68-9dfb-3caa1889d886
+    timestamp: 2024-07-29T17:30:11.073212
+    provider: Unknown Future Provider
+    llm_requested: unknown-future-llm
+    llm: unknown-future-llm
+    temperature: 1.0
+    prompt_tokens: 47
+    response_tokens: 14
+    total_tokens: 61
+    prompt:
+      type: Chat
+      messages:
+      - role: System
+        text: You are ZAMM, a chat program. Respond in first person.
+      - role: Human
+        text: Hi
+      - role: AI
+        text: Hello! How can I assist you today?
+      - role: Human
+        text: Fuck you!
+    completion:
+      role: AI
+      text: I'm sorry to hear that. How can I assist you better?
+  follow_ups:
+  - previous_call_id: d5ad1e49-f57f-4481-84fb-4d70ba8a7a74
+    next_call_id: c13c1e67-2de3-48de-a34c-a32079c03316
+
+```
+
+We want to generate `src-tauri/api/sample-database-writes/future-service-provider/dump.sql` from the YAML, so we edit `src-tauri/src/test_helpers/api_testing.rs` to do this automatic generation for us:
+
+```rs
+async fn dump_sql_to_yaml(
+    ...
+) {
+    let zamm_db = ZammDatabase(Mutex::new(Some(setup_database(None))));
+    load_sqlite_database(&zamm_db, expected_sql_dump_abs).await;
+    write_database_contents(...)
+        .await
+        .unwrap();
+}
+
+async fn dump_yaml_to_sql(
+    expected_yaml_dump_abs: &Path,
+    expected_sql_dump_abs: &PathBuf,
+) {
+    let sqlite3_db_file = expected_sql_dump_abs.with_extension("sqlite3");
+    let db = setup_database(Some(&sqlite3_db_file));
+    let zamm_db = ZammDatabase(Mutex::new(Some(db)));
+
+    let yaml_dump_abs_str = expected_yaml_dump_abs.to_str().unwrap();
+    read_database_contents(&zamm_db, yaml_dump_abs_str)
+        .await
+        .unwrap();
+    dump_sqlite_database(&sqlite3_db_file, expected_sql_dump_abs);
+    fs::remove_file(sqlite3_db_file).unwrap();
+}
+
+async fn setup_gold_db_files(
+    ...
+) {
+    ...
+
+    if !expected_yaml_dump_abs.exists() ... {
+      ...
+    } else if expected_yaml_dump_abs.exists() && !expected_sql_dump_abs.exists() {
+        dump_yaml_to_sql(
+            &expected_yaml_dump_abs,
+            &expected_sql_dump_abs.to_path_buf(),
+        )
+        .await;
+        panic!(
+            "Dumped SQL from YAML to {}",
+            expected_sql_dump_abs.display()
+        );
+    }
+}
+
+...
+
+    async fn check_sample_call(...) -> SampleCallResult<T, U> {
+        ...
+
+            // prepare db if necessary
+            if side_effects.database.is_some() {
+                ...
+                if let Some(initial_yaml_dump) = sample.db_start_dump() {
+                    ...
+                    let initial_sql_dump_abs =
+                        initial_yaml_dump_abs.with_extension("sql");
+                    if !initial_yaml_dump_abs.exists() {
+                        dump_sql_to_yaml(&initial_sql_dump_abs, &initial_yaml_dump_abs)
+                            .await;
+                        ...
+                    }
+
+                    load_sqlite_database(&test_db, &initial_sql_dump_abs).await;
+                }
+
+                ...
+            }
+        ...
+    }
+```
+
+We also use `load_sqlite_database` instead of `read_database_contents` at the end because, as we will see, the YAML will now become an imperfect representation of the SQL.
+
+We also need to edit `src-tauri/src/test_helpers/sqlite.rs` now to take in a `ZammDatabase` for consistency:
+
+```rs
+use crate::ZammDatabase;
+...
+
+pub async fn load_sqlite_database(zamm_db: &ZammDatabase, dump_path: &PathBuf) {
+    let db = &mut zamm_db.0.lock().await;
+    let conn = db.as_mut().unwrap();
+    ...
+}
+```
+
+We make `src-tauri/api/sample-database-writes/future-service-provider-export/dump.sql` the exact same, as the database contents shouldn't change, but we make `src-tauri/api/sample-database-writes/future-service-provider-export/dump.yaml` different because in this case, the exported YAML is but an imperfect rendition of database contents:
+
+```yaml
+llm_calls:
+  instances:
+  ...
+  - id: 037b28dd-6f24-4e68-9dfb-3caa1889d886
+    ...
+    provider: !Unknown Unknown Future Provider
+    ...
+  follow_ups:
+    ...
+
+```
+
+No changes to the API call retrieval API are needed, other than a new test at `src-tauri/src/commands/llms/get_api_call.rs`:
+
+```rs
+    check_sample!(
+        GetApiCallTestCase,
+        test_future_service_provider,
+        "./api/sample-calls/get_api_call-future-service-provider.yaml"
+    );
+```
+
+We add `src-tauri/api/sample-calls/get_api_call-future-service-provider.yaml` to test getting single calls:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "037b28dd-6f24-4e68-9dfb-3caa1889d886"
+    }
+response:
+  message: >
+    {
+      "id": "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+      "timestamp": "2024-07-29T17:30:11.073212",
+      "llm": {
+        "name": "unknown-future-llm",
+        "requested": "unknown-future-llm",
+        "provider": {
+          "Unknown": "Unknown Future Provider"
+        }
+      },
+      "request": {
+        "prompt": {
+          "type": "Chat",
+          "messages": [
+            {
+              "role": "System",
+              "text": "You are ZAMM, a chat program. Respond in first person."
+            },
+            {
+              "role": "Human",
+              "text": "Hi"
+            },
+            {
+              "role": "AI",
+              "text": "Hello! How can I assist you today?"
+            },
+            {
+              "role": "Human",
+              "text": "Fuck you!"
+            }
+          ]
+        },
+        "temperature": 1.0
+      },
+      "response": {
+        "completion": {
+          "role": "AI",
+          "text": "I'm sorry to hear that. How can I assist you better?"
+        }
+      },
+      "tokens": {
+        "prompt": 47,
+        "response": 14,
+        "total": 61
+      }
+    }
+sideEffects:
+  database:
+    startStateDump: future-service-provider-export
+    endStateDump: future-service-provider-export
+
+```
+
+No changes to the import process are needed, other than a new test at `src-tauri/src/commands/database/import.rs`:
+
+```rs
+    check_sample!(
+        ImportDbTestCase,
+        test_future_service_provider,
+        "./api/sample-calls/import_db-future-service-provider.yaml"
+    );
+```
+
+We add `src-tauri/api/sample-calls/import_db-future-service-provider.yaml` to test that no information is lost in the import process:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "exported.zamm.yaml"
+    }
+response:
+  message: >
+    {
+      "imported": {
+        "num_api_keys": 0,
+        "num_llm_calls": 3
+      },
+      "ignored": {
+        "num_api_keys": 0,
+        "num_llm_calls": 0
+      }
+    }
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/future-service-provider
+    endStateDirectory: db-import-export/future-service-provider
+  database:
+    endStateDump: future-service-provider-export
+```
+
+The corresponding database export file is at `src-tauri/api/sample-disk-writes/db-import-export/future-service-provider/exported.zamm.yaml`, which is an exact copy of `src-tauri/api/sample-database-writes/future-service-provider-export/dump.yaml`.
+
+We update `src-svelte/src/lib/bindings.ts` automatically with Specta. The main change is
+
+```ts
+export type Service = "OpenAI" | { Unknown: string };
+```
+
+We update `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte` to handle the new `Unknown` service provider:
+
+```svelte
+<script lang="ts">
+  ...
+  function extractProvider(apiCall: LlmCall | undefined) {
+    if (!apiCall) {
+      return;
+    }
+
+    const provider = apiCall.llm.provider;
+    if (typeof provider === "string") {
+      return provider;
+    } else {
+      return provider["Unknown"];
+    }
+  }
+  ...
+  $: provider = extractProvider(apiCall);
+</script>
+
+<InfoBox title="API Call">
+  ...
+      <tr>
+        <td>LLM</td>
+        <td>
+          {apiCall?.llm.requested ?? "Unknown"}
+          ...
+          {#if provider}
+            (via {provider})
+          {/if}
+        </td>
+      </tr>
+  ...
+</InfoBox>
+```
+
+We edit `src-svelte/src/routes/api-calls/[slug]/sample-calls.ts` to include the sample backend call:
+
+```ts
+...
+
+export const FUTURE_SERVICE_PROVIDER_CALL = {
+  id: "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+  ...
+};
+```
+
+We update `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.stories.ts` to actually use this:
+
+```ts
+...
+import {
+  ...,
+  FUTURE_SERVICE_PROVIDER_CALL,
+} from "./sample-calls";
+
+...
+
+export const FutureServiceProvider: StoryObj = Template.bind({}) as any;
+FutureServiceProvider.args = {
+  apiCall: FUTURE_SERVICE_PROVIDER_CALL,
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+
+```
+
+and then we add this to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "individual"],
+    variants: [
+      ...,
+      "future-service-provider",
+    ],
+    ...
+  },
+  ...
+];
+```
+
+##### For unknown prompt types
+
+Next, we try to do the same for the `Chat` prompt type. We start by adding an enum variant to `src-tauri/src/models/llm_calls/prompt.rs`:
+
+```rs
+...
+
+pub enum Prompt {
+    ...
+    #[serde(other)]
+    Unknown,
+}
+
+...
+```
+
+We edit `src-tauri/src/commands/database/import.rs` to explicitly reject exports from future versions of ZAMM involving unknown prompt types, so as to not do an import that loses information without the user realizing it:
+
+```rs
+...
+use crate::commands::errors::{Error, ImportError, ZammResult};
+use crate::models::llm_calls::{
+    NewLlmCallFollowUp, NewLlmCallRow, NewLlmCallVariant, Prompt,
+};
+...
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<DatabaseImportCounts> {
+    ...
+    if new_llm_calls
+        .iter()
+        .any(|call| matches!(call.prompt, Prompt::Unknown))
+    {
+        if let Some(import_version) = db_contents.zamm_version {
+            return Err(Error::FutureZammImport {
+                version: import_version,
+                import_error: ImportError::UnknownPromptType {},
+            });
+        } else {
+            return Err(ImportError::UnknownPromptType {}.into());
+        }
+    }
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    check_sample!(
+        ImportDbTestCase,
+        test_unknown_provider,
+        "./api/sample-calls/import_db-unknown-provider.yaml"
+    );
+
+    check_sample!(
+        ImportDbTestCase,
+        test_unknown_provider_prompt,
+        "./api/sample-calls/import_db-unknown-provider-prompt.yaml"
+    );
+}
+```
+
+We edit `src-tauri/src/commands/errors.rs` to add these new import errors:
+
+```rs
+...
+
+#[derive(thiserror::Error, Debug)]
+pub enum ImportError {
+    #[error("Data contains unknown prompt types.")]
+    UnknownPromptType {},
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    ...,
+    #[error("Cannot import from ZAMM version {version}. {import_error}")]
+    FutureZammImport {
+        version: String,
+        import_error: ImportError,
+    },
+    #[error(transparent)]
+    GenericImport {
+        #[from]
+        source: ImportError,
+    },
+    ...
+}
+```
+
+We rename `src-tauri/api/sample-calls/get_api_call-future-service-provider.yaml` to `src-tauri/api/sample-calls/get_api_call-unknown-provider-prompt.yaml` with the changes:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "id": "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+      ...
+      "request": {
+        "prompt": {
+          "type": "Unknown"
+        },
+        ...
+      },
+      ...
+    }
+sideEffects:
+  database:
+    startStateDump: unknown-provider-prompt-export
+    endStateDump: unknown-provider-prompt-export
+```
+
+We do the same rename for `src-tauri/api/sample-calls/get_api_calls-future-service-provider.yaml` to `src-tauri/api/sample-calls/get_api_calls-unknown-provider-prompt.yaml`, with the same renames to the dump. We do create a new `src-tauri/api/sample-calls/import_db-unknown-provider-prompt.yaml` to test the import of new prompt types:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "unknown-provider-prompt.zamm.yaml"
+    }
+response:
+  success: false
+  message: >
+    "Cannot import from ZAMM version 99.0.0. Data contains unknown prompt types."
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/forward-compatibility
+    endStateDirectory: db-import-export/forward-compatibility
+  database:
+    endStateDump: empty
+```
+
+Meanwhile, the previous `src-tauri/api/sample-calls/import_db-future-service-provider.yaml` is now renamed to `src-tauri/api/sample-calls/import_db-unknown-provider.yaml`, with the changes:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "unknown-provider.zamm.yaml"
+    }
+...
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/forward-compatibility
+    endStateDirectory: db-import-export/forward-compatibility
+  database:
+    endStateDump: unknown-provider-import
+
+```
+
+As for the database dumps, the folder `src-tauri/api/sample-database-writes/future-service-provider-export/` gets copied to `src-tauri/api/sample-database-writes/unknown-provider-import/` in order to test that the import with just an unknown provider (but known prompt type) still works as expected. Then, the folder `src-tauri/api/sample-database-writes/future-service-provider-export/` gets renamed to `src-tauri/api/sample-database-writes/unknown-provider-export/`, along with accompanying changes in the imperfect YAML representation.
+
+The folder `src-tauri/api/sample-database-writes/future-service-provider/` gets renamed to `src-tauri/api/sample-database-writes/unknown-provider-prompt/`. `src-tauri/api/sample-database-writes/unknown-provider-prompt/dump.yaml` now has a different prompt type:
+
+```yaml
+  - id: 037b28dd-6f24-4e68-9dfb-3caa1889d886
+    ...
+    prompt:
+      type: UnknownFutureType
+      unknown_field: Fuck you!
+    ...
+```
+
+We edit `src-tauri/api/sample-database-writes/unknown-provider-prompt/dump.yaml` manually to match, because the automatic import/export code can't handle this.
+
+`src-tauri/api/sample-disk-writes/db-import-export/forward-compatibility/unknown-provider-prompt.zamm.yaml` becomes a copy of `src-tauri/api/sample-database-writes/unknown-provider-prompt/dump.yaml`, except with
+
+```yaml
+zamm_version: 99.0.0
+```
+
+at the top to simulate a ZAMM export.
+
+`src-tauri/api/sample-disk-writes/db-import-export/future-service-provider/exported.zamm.yaml` gets moved to `src-tauri/api/sample-disk-writes/db-import-export/forward-compatibility/unknown-provider.zamm.yaml` so that both export files are in the same directory for easier grouping.
+
+`src-tauri/src/commands/llms/get_api_call.rs` gets edited to reflect these renames:
+
+```rs
+    check_sample!(
+        GetApiCallTestCase,
+        test_future_service_provider,
+        "./api/sample-calls/get_api_call-unknown-provider-prompt.yaml"
+    );
+```
+
+Ditto with `src-tauri/src/commands/llms/get_api_calls.rs`:
+
+```rs
+    check_sample!(
+        GetApiCallsTestCase,
+        test_unknown_provider_promptr,
+        "./api/sample-calls/get_api_calls-unknown-provider-prompt.yaml"
+    );
+```
+
+Finally, we have to edit `src-tauri/src/upgrades.rs` to ignore the impossibility of having pre-v0.1.4 ZAMM export unknown prompt types:
+
+```rs
+async fn upgrade_to_v_0_1_4(zamm_db: &ZammDatabase) -> ZammResult<()> {
+    ...
+    let non_initial_calls: Vec<&(EntityId, NaiveDateTime, Prompt)> =
+        llm_calls_without_followups
+            .iter()
+            .filter(|(_, _, prompt)| {
+                match prompt {
+                    Prompt::Chat(chat_prompt) => ...,
+                    _ => false,
+                }
+            })
+            .collect();
+    
+    ...
+
+    for (...) in non_initial_calls {
+        let (...) = match prompt {
+            Prompt::Chat(chat_prompt) => {
+                ...
+            }
+            _ => continue,
+        };
+
+        ...
+    }
+
+    ...
+}
+```
+
+We now handle this on the frontend as well. We create `src-svelte/src/lib/additionalTypes.ts` to refer to the main variant type in a convenient way:
+
+```ts
+import { type ChatPrompt } from "./bindings";
+
+export type ChatPromptVariant = { type: "Chat" } & ChatPrompt;
+
+```
+
+We edit `src-svelte/src/lib/__mocks__/stores.ts` to use this instead:
+
+```ts
+...
+import type { ChatPromptVariant } from "$lib/additionalTypes";
+
+...
+
+interface ApiCallEditing {
+  ...
+  prompt: ChatPromptVariant;
+}
+
+...
+```
+
+and edit `src-svelte/src/routes/api-calls/[slug]/Prompt.svelte` to only ever handle editing this type:
+
+```ts
+  ...
+  import type { ChatPromptVariant } from "$lib/additionalTypes";
+
+  export let prompt: ChatPromptVariant;
+  ...
+```
+
+Ditto for `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte`
+
+```ts
+  import type { LlmCallReference } from "$lib/bindings";
+  import type { ChatPromptVariant } from "$lib/additionalTypes";
+  ...
+
+  export const prompt = writable<ChatPromptVariant>({
+    ...
+  });
+
+  export function getDefaultApiCall(): ChatPromptVariant {
+    ...
+  }
+```
+
+We explictly add code to ignore unknown prompt types in `src-svelte/src/routes/api-calls/[slug]/Actions.svelte`:
+
+```ts
+  ...
+
+  function editApiCall() {
+    ...
+
+    if (apiCall.request.prompt.type === "Unknown") {
+      snackbarError("Can't edit unknown prompt type");
+      return;
+    }
+
+    ...
+  }
+
+  function restoreConversation() {
+    ...
+
+    if (apiCall.request.prompt.type === "Unknown") {
+      snackbarError("Can't restore unknown prompt type");
+      return;
+    }
+
+    ...
+  }
+
+  ...
+```
+
+We edit `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import EmptyPlaceholder from "$lib/EmptyPlaceholder.svelte";
+  ...
+</script>
+
+<InfoBox title="API Call">
+  ...
+
+    {#if apiCall.request.prompt.type === "Chat"}
+      <Prompt prompt={apiCall.request.prompt} />
+    {:else}
+      <EmptyPlaceholder
+        >Prompt not shown because it is from an incompatible future version of
+        ZAMM.</EmptyPlaceholder
+      >
+    {/if}
+  
+  ...
+</InfoBox>
+```
+
+We rename `FUTURE_SERVICE_PROVIDER_CALL` to `UNKNOWN_PROVIDER_PROMPT_CALL` in `src-svelte/src/routes/api-calls/[slug]/ApiCallDisplay.stories.ts`. We have to manually update `UNKNOWN_PROVIDER_PROMPT_CALL` in `src-svelte/src/routes/api-calls/[slug]/sample-calls.ts` to reflect the new backend response:
+
+```ts
+export const UNKNOWN_PROVIDER_PROMPT_CALL = {
+  id: "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+  ...,
+  request: {
+    prompt: {
+      type: "Unknown",
+    },
+    ...
+  },
+};
+```
+
+Having to manually reconcile updates between these two files is unfortunate, and should be addressed as a future TODO.
+
+`src-svelte/src/routes/api-calls/new/test.data.ts` gets its type updated too:
+
+```ts
+import type { ChatPromptVariant } from "$lib/additionalTypes";
+
+...
+
+export const EDIT_PROMPT: ChatPromptVariant = {
+  ...
+};
+```
+
+Finally, we edit `src-svelte/src/routes/storybook.test.ts` as well to reflect the new screenshot variant of `unknown-provider-prompt` instead of `future-service-provider`.
