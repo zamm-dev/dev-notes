@@ -1063,6 +1063,8 @@ exports.config = {
 };
 ```
 
+We find out later that the link to the screenshot in the README needs to be updated to reflect this new path as well.
+
 ## Rounding out the left corners of the main content
 
 It turns out that we need to do a major refactor of our app layout to achieve this effect.

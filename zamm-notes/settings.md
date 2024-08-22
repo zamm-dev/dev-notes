@@ -4374,3 +4374,47 @@ This runs fine locally when we only run these last two tests. However, it fails 
     )...;
   });
 ```
+
+#### Mac file picker
+
+We find out that on the Mac, the import file picker fails to allow us to choose any of the exported `.zamm.yaml` files. Meanwhile, we get this warning message when trying to export data:
+
+> **You cannot save this document with extension “.yaml” at the end of the name. The required extension is “.zamm.yaml”.**
+>
+> You can choose to use both, so that your file name ends in “.yaml.zamm.yaml”.
+
+It appears that not only does Mac OS not recognize extensions with more than one dot in them, it also does not have a dropdown that would allow us to pick the "All Files" option that we specified in JavaScript. As such, we edit `src-svelte/src/routes/settings/Database.svelte` to add an explicit exception for Mac OS:
+
+```ts
+  ...
+  import { systemInfo } from "$lib/system-info";
+  ...
+
+  const ZAMM_DB_FILTER: DialogFilter = {
+    ...
+  };
+
+  const MAC_ZAMM_DB_FILTER: DialogFilter = {
+    name: "ZAMM Database",
+    extensions: ["yaml"],
+  };
+
+  ...
+
+  async function importData() {
+    const defaultImportFilter =
+      $systemInfo?.os === "Mac" ? MAC_ZAMM_DB_FILTER : ZAMM_DB_FILTER;
+    const filePath =
+      ... ??
+      (await open({
+        ...,
+        filters: [
+          defaultImportFilter,
+          { name: "All Files", ... },
+        ],
+      }));
+      ...
+  }
+```
+
+We manually verify that this works on the Mac.

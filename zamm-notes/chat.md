@@ -13384,3 +13384,155 @@ and then run
 ```bash
 $ diesel migration run --database-url /root/.local/share/zamm/zamm.sqlite3
 ```
+
+## Persisting chat text through window switches
+
+We edit `src-svelte/src/routes/chat/Chat.svelte` to store the in-progress chat input text as a writable store, and to bind it to the form message value. We rename `initialMessage` on the module-level export to `DEFAULT_SYSTEM_MESSAGE`, and we remove `initialMessage` from the regular export entirely because we'll rely on the Storybook store parameters to set the initial message instead.
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  export const DEFAULT_SYSTEM_MESSAGE: ChatMessage = {
+    role: "System",
+    ...
+  };
+
+  ...
+  export const conversation = writable<ChatMessage[]>([DEFAULT_SYSTEM_MESSAGE]);
+  export const nextChatMessage = writable<string>("");
+
+  export function resetConversation() {
+    ...
+    conversation.set([DEFAULT_SYSTEM_MESSAGE]);
+    nextChatMessage.set("");
+  }
+</script>
+
+...
+
+    <Form
+      {sendChatMessage}
+      ...
+      bind:currentMessage={$nextChatMessage}
+      ...
+    />
+```
+
+We edit and refactor `src-svelte/src/lib/__mocks__/stores.ts` a bit to encapsulate chat-specific stores:
+
+```ts
+...
+import { ..., nextChatMessage, DEFAULT_SYSTEM_MESSAGE } from "../../routes/chat/Chat.svelte";
+...
+
+interface Chat {
+  conversation?: ChatMessage[];
+  nextChatMessage?: string;
+}
+
+interface Stores {
+  ...
+  chat?: Chat;
+  ...
+}
+
+...
+
+const SvelteStoresDecorator: Decorator = (
+  story: StoryFn,
+  context: StoryContext,
+) => {
+  ...
+
+  systemInfo.set(...);
+  nextChatMessage.set(stores?.chat?.nextChatMessage ?? "");
+  conversation.set(stores?.chat?.conversation || [DEFAULT_SYSTEM_MESSAGE]);
+  canonicalRef.set(...);
+  ...
+}
+```
+
+We proceed to edit all the stories in `src-svelte/src/routes/chat/Chat.stories.ts` to match:
+
+```ts
+...
+
+export const NotEmpty: StoryObj = Template.bind({}) as any;
+NotEmpty.parameters = {
+  stores: {
+    chat: {
+      conversation,
+    },
+  },
+  ...
+};
+
+export const MultilineChat: StoryObj = Template.bind({}) as any;
+MultilineChat.parameters = {
+  stores: {
+    chat: {
+      conversation,
+      nextChatMessage:
+        "This is what happens when the user types in so much text, " +
+        ...,
+    },
+  },
+  ...
+};
+
+...
+```
+
+We also create `src-svelte/src/routes/chat/PersistentChatView.stories.ts` to allow for manual testing in Storybook, instead of having to resort to using the Tauri dev app to test:
+
+```ts
+import ChatComponent from "./PersistentChatView.svelte";
+import MockFullPageLayout from "$lib/__mocks__/MockFullPageLayout.svelte";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+
+export default {
+  component: ChatComponent,
+  title: "Screens/Chat/Conversation",
+  argTypes: {},
+  decorators: [
+    SvelteStoresDecorator,
+    TauriInvokeDecorator,
+    (story: StoryFn) => {
+      return {
+        Component: MockFullPageLayout,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: ChatComponent,
+  props: args,
+});
+
+export const Remountable: StoryObj = Template.bind({}) as any;
+
+```
+
+Finally, we do unit testing for this specific feature in `src-svelte/src/routes/chat/Chat.test.ts`:
+
+```ts
+  test("persists chat text after returning to it", async () => {
+    render(PersistentChatView, {});
+    const message = "testing chat text persistence";
+    const chatInput = screen.getByLabelText("Chat with the AI:");
+    expect(chatInput).toHaveValue("");
+    await userEvent.type(chatInput, message);
+    expect(chatInput).toHaveValue(message);
+
+    await userEvent.click(screen.getByRole("button", { name: "Remount" }));
+    await waitFor(() => {
+      const newChatInput = screen.getByLabelText("Chat with the AI:");
+      expect(newChatInput).toHaveValue(message);
+    });
+  });
+```

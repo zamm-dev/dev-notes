@@ -1508,3 +1508,28 @@ We can add a license to `src-tauri\tauri.conf.json`:
 ```
 
 where we create a `LICENSE.rtf` because that's the format expected by WiX, according to the Tauri documentation.
+
+### Workflow Errors
+
+#### Expired PAT
+
+We start getting this error on CI:
+
+```
+  /usr/bin/git -c protocol.version=2 fetch --no-tags --prune --progress --no-recurse-submodules --depth=1 origin +6cbcb8c5fe75824a9c2f946938e2aa9c212e02fd:refs/remotes/origin/main
+  Error: fatal: could not read Username for 'https://github.com': terminal prompts disabled
+  The process '/usr/bin/git' failed with exit code 128
+  Waiting 14 seconds before trying again
+```
+
+It turns out our fonts PAT has expired, so we renew it on GitHub. We see that others have [also run into](https://github.com/actions/checkout/issues/664#issuecomment-1152342086) this problem with a misleading error message.
+
+#### Apple notarization
+
+We see a new error with specifically the Mac portion of the publish script:
+
+```
+Error failed to bundle project: failed to upload app to Apple's notarization servers.
+```
+
+As we see from [this issue](https://github.com/tauri-apps/tauri/issues/7665), we need to go to the [Apple Developer Portal](https://developer.apple.com/account) as mentioned, and accept the new user agreement.

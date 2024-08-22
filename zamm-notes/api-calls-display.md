@@ -6608,6 +6608,37 @@ SEPARATOR = "warning: `ollama-rs` (lib) generated "
 
 Then, we update Specta bindings to include `Ollama` as another potential value for the `Service` enum.
 
+##### Rebasing on main
+
+After the code for forward compatibility was merged into main, we resolve the merge conflict in `src-tauri/src/commands/llms/chat.rs` by returning an `Ok(...)` in the code for
+
+```rs
+async fn chat_helper(
+    ...
+) -> ZammResult<LightweightLlmCall> {
+    ...
+
+    let (token_metadata, completion, retrieved_model) = match &args.provider {
+        Service::OpenAI => {
+            ...
+            Ok((openai_token_metadata, openai_completion, response.model))
+        }
+        Service::Ollama => {
+            ...
+            Ok((
+                ollama_token_metadata,
+                ollama_completion,
+                requested_model.clone(),
+            ))
+        }
+        Service::Unknown(_) => Err(anyhow!(...)),
+    }?;
+    ...
+}
+```
+
+Then, we have to regenerate `bindings.ts`, and to add both `EMOJI_CANONICAL_REF` and `EDIT_PROMPT` to `src-svelte/src/routes/api-calls/new/test.data.ts`.
+
 #### Invoking Ollama from the frontend
 
 ##### API call editing
