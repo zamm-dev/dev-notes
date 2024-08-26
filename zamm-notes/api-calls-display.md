@@ -6990,6 +6990,263 @@ We edit `src-svelte/src/routes/api-calls/ApiCalls.svelte` to actually make use o
 </InfoBox>
 ```
 
+##### Preserving provider and model on page change and submission
+
+We edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte` to change the provider and model variables into stores, and to also differentiate between resetting the prompt (which is done after every API submission) and resetting the entire form (which is mostly only done for tests):
+
+```svelte
+<script lang="ts" context="module">
+  ...
+  export const provider = writable<"OpenAI" | "Ollama">("OpenAI");
+  export const llm = writable<string>("gpt-4");
+  ...
+
+  function resetApiCallConversation() {
+    canonicalRef.set(...);
+    prompt.set(...);
+  }
+
+  export function resetNewApiCall() {
+    resetApiCallConversation();
+    provider.set("OpenAI");
+    llm.set("gpt-4");
+  }
+</script>
+
+<script lang="ts">
+  ...
+  import { onMount } from "svelte";
+
+  ...
+
+  async function submitApiCall() {
+    ...
+
+    try {
+      const createdLlmCall = await chat({
+        provider: $provider,
+        llm: $llm,
+        ...
+      });
+      resetApiCallConversation();
+      ...
+    } ...
+  }
+
+  onMount(() => {
+    let initial = true;
+
+    const unsubscribeProvider = provider.subscribe((newProvider: string) => {
+      if (initial) {
+        initial = false;
+        selectModels = newProvider === "OpenAI" ? OPENAI_MODELS : OLLAMA_MODELS;
+        return;
+      }
+
+      selectModels = newProvider === "OpenAI" ? OPENAI_MODELS : OLLAMA_MODELS;
+      llm.set(selectModels[0].apiName);
+    });
+
+    return unsubscribeProvider;
+  });
+</script>
+
+<InfoBox title="New API Call">
+  ...
+
+  <div class="model-settings">
+    ...
+        <select name="provider" id="provider" bind:value={$provider}>
+          ...
+        </select>
+    ...
+        <select name="model" id="model" bind:value={$llm}>
+          ...
+        </select>
+    ...
+  </div>
+  ...
+</InfoBox>
+```
+
+We use [this answer](https://stackoverflow.com/a/71570648) to add a variable to check whether or not this is the initial subscription or not.
+
+Then, we edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.test.ts` to test for this new functionality, refactoring some parts of `setNewMessage` into`getLastMessageComponents`:
+
+```ts
+...
+import { ..., waitFor } from "@testing-library/svelte";
+import ..., {
+  ...,
+  provider,
+  llm,
+  ...
+} from "./ApiCallEditor.svelte";
+...
+import PersistentApiCallEditorView from "./PersistentApiCallEditorView.svelte";
+
+describe("API call editor", () => {
+  ...
+
+  async function getLastMessageComponents() {
+    const messageDivs = ...;
+    const lastMessageDiv = ...;
+
+    ...
+
+    const messageInput = ...;
+    ...
+
+    return {
+      lastMessageDiv,
+      roleToggle,
+      messageInput,
+    };
+  }
+
+  async function setNewMessage(role: string, message: string) {
+    const { roleToggle, messageInput } = await getLastMessageComponents();
+    ...
+  }
+
+  ...
+
+  test("can make a call to Llama 3", async () => {
+    ...
+
+    // test that the provider is preserved
+    expect(get(provider)).toEqual("Ollama");
+    expect(get(llm)).toEqual("llama3:8b");
+  });
+
+  ...
+
+  test("will preserve all settings on page change", async () => {
+    render(PersistentApiCallEditorView, {});
+
+    // get controls
+    const { roleToggle, messageInput } = await getLastMessageComponents();
+    const providerSelect = screen.getByRole("combobox", { name: "Provider:" });
+    const modelSelect = screen.getByRole("combobox", { name: "Model:" });
+    // make changes
+    await userEvent.selectOptions(providerSelect, "Ollama");
+    await userEvent.selectOptions(modelSelect, "gemma2:9b");
+    await userEvent.click(roleToggle);
+    await userEvent.type(messageInput, "Hello, does this work?");
+    // affirm changes
+    expect(roleToggle.textContent).toBe("Human");
+    expect(messageInput).toHaveValue("Hello, does this work?");
+    expect(providerSelect).toHaveValue("Ollama");
+    expect(modelSelect).toHaveValue("gemma2:9b");
+
+    await userEvent.click(screen.getByRole("button", { name: "Remount" }));
+    await waitFor(async () => {
+      const {
+        roleToggle: refreshedRoleToggle,
+        messageInput: refreshedMessageInput,
+      } = await getLastMessageComponents();
+      const refreshedProviderSelect = screen.getByRole("combobox", {
+        name: "Provider:",
+      });
+      const refreshedModelSelect = screen.getByRole("combobox", {
+        name: "Model:",
+      });
+      expect(refreshedRoleToggle.textContent).toBe("Human");
+      expect(refreshedMessageInput).toHaveValue("Hello, does this work?");
+      expect(refreshedProviderSelect).toHaveValue("Ollama");
+      expect(refreshedModelSelect).toHaveValue("gemma2:9b");
+    });
+  });
+});
+```
+
+All of a sudden during development, we get the error
+
+```
+ FAIL  src/routes/api-calls/new/ApiCallEditor.test.ts [ src/routes/api-calls/new/ApiCallEditor.test.ts ]
+Error: Failed to resolve import "vitest/dist/reporters-1evA5lom.js" from "src/routes/api-calls/new/ApiCallEditor.test.ts". Does the file exist?
+ ❯ formatError ../node_modules/vite/dist/node/chunks/dep-stQc5rCc.js:50500:46
+```
+
+It turns out that somewhere along the way, VS Code somehow automatically inserted the import
+
+```ts
+import { e } from "vitest/dist/reporters-1evA5lom.js";
+```
+
+We remove this import and the test works again.
+
+We create `src-svelte/src/routes/api-calls/new/PersistentApiCallEditorView.svelte`:
+
+```svelte
+<script lang="ts">
+  import ApiCallEditor from "./ApiCallEditor.svelte";
+  import MockRemount from "$lib/__mocks__/MockRemount.svelte";
+</script>
+
+<MockRemount>
+  <ApiCallEditor />
+</MockRemount>
+```
+
+where the `MockRemount` component is one we define at `src-svelte/src/lib/__mocks__/MockRemount.svelte`:
+
+
+```svelte
+<script lang="ts">
+  let visible = true;
+
+  function remount() {
+    visible = false;
+    setTimeout(() => (visible = true), 50);
+  }
+</script>
+
+<button on:click={remount}>Remount</button>
+
+{#if visible}
+  <slot />
+{/if}
+
+```
+
+and one we refactored out of `src-svelte/src/lib/__mocks__/MockRemount.svelte`, which now looks like this:
+
+```svelte
+<script lang="ts">
+  import Chat from "./Chat.svelte";
+  import MockRemount from "$lib/__mocks__/MockRemount.svelte";
+</script>
+
+<MockRemount>
+  <Chat />
+</MockRemount>
+
+```
+
+Finally, we edit `src-svelte/src/routes/api-calls/new/PersistentApiCallEditor.stories.ts` to also make it possible to test this out manually in the browser:
+
+```ts
+import PersistentApiCallEditor from "./PersistentApiCallEditorView.svelte";
+import type { StoryObj } from "@storybook/svelte";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+
+export default {
+  component: PersistentApiCallEditor,
+  title: "Screens/LLM Call/New",
+  argTypes: {},
+  decorators: [SvelteStoresDecorator],
+};
+
+const Template = ({ ...args }) => ({
+  Component: PersistentApiCallEditor,
+  props: args,
+});
+
+export const Remountable: StoryObj = Template.bind({}) as any;
+
+```
+
 #### Adding forwards compatibility
 
 ##### For unknown service providers
