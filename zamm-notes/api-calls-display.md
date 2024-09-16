@@ -6608,6 +6608,45 @@ SEPARATOR = "warning: `ollama-rs` (lib) generated "
 
 Then, we update Specta bindings to include `Ollama` as another potential value for the `Service` enum.
 
+Later on, we get
+
+```
+warning: use of deprecated field `types::chat::ChatCompletionFunctions::name`
+   --> /home/runner/work/zamm/zamm/forks/async-openai/async-openai/src/types/impls.rs:503:13
+    |
+503 |             name: value.0,
+    |             ^^^^^^^^^^^^^
+
+...
+
+warning: `async-openai` (lib) generated 19 warnings (run `cargo clippy --fix --lib -p async-openai` to apply 1 suggestion)
+    Checking diesel_migrations v2.1.0
+    Finished dev [unoptimized + debuginfo] target(s) in 1m 45s
+```
+
+We update `src-tauri/clippy.py` to allow for multiple cutoffs:
+
+```py
+...
+
+def cut_off_separate(output: str, separator: str) -> str:
+    if separator not in output:
+        return output
+    separator_line = output.split(separator)[1]
+    return "\n".join(separator_line.split("\n")[1:])
+
+...
+
+clippy_output = ...
+
+zamm_output = cut_off_separate(
+    clippy_output, "warning: `async-openai` (lib) generated "
+)
+zamm_output = cut_off_separate(zamm_output, "warning: `ollama-rs` (lib) generated ")
+
+...
+```
+
 ##### Rebasing on main
 
 After the code for forward compatibility was merged into main, we resolve the merge conflict in `src-tauri/src/commands/llms/chat.rs` by returning an `Ok(...)` in the code for
@@ -7245,6 +7284,133 @@ const Template = ({ ...args }) => ({
 
 export const Remountable: StoryObj = Template.bind({}) as any;
 
+```
+
+##### Updating provider and model when editing API call
+
+We edit `src-svelte/src/routes/api-calls/[slug]/Actions.svelte`:
+
+```ts
+  ...
+  import {
+    ...
+    provider,
+    llm,
+  } from "../new/ApiCallEditor.svelte";
+  ...
+
+  function editApiCall() {
+    ...
+    if (typeof apiCall.llm.provider === "string") {
+      provider.set(apiCall.llm.provider);
+    }
+    llm.set(apiCall.llm.requested);
+    goto(...);
+  }
+```
+
+and we update the tests at `src-svelte/src/routes/api-calls/[slug]/ApiCall.test.ts` to test for this change in both the regular case and in the case with an Ollama API call:
+
+```ts
+...
+import {
+  ...
+  provider,
+  llm,
+  ...
+} from "../new/ApiCallEditor.svelte";
+import {
+  ...,
+  START_PROMPT,
+} from "../new/test.data";
+...
+
+  test("can edit API call", async () => {
+    ...
+    expect(get(provider)).toEqual("OpenAI");
+    expect(get(llm)).toEqual("gpt-4");
+    expect(get(mockStores.page).url.pathname).toEqual(...);
+  });
+
+  test("can edit Ollama API call", async () => {
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_api_call-ollama.yaml",
+    );
+    render(ApiCall, { id: "506e2d1f-549c-45cc-ad65-57a0741f06ee" });
+    // everything else is the same as the previous test, starting now ...
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    await waitFor(() => {
+      screen.getByText("Hello, does this work?");
+    });
+    expect(get(canonicalRef)).toBeUndefined();
+    expect(get(prompt)).toEqual(getDefaultApiCall());
+    expect(get(mockStores.page).url.pathname).toEqual("/");
+
+    const editButton = await waitFor(() => screen.getByText("Edit API call"));
+    userEvent.click(editButton);
+    await waitFor(() => {
+      expect(get(prompt)).toEqual(START_PROMPT);
+    });
+    expect(get(canonicalRef)).toEqual({
+      id: "506e2d1f-549c-45cc-ad65-57a0741f06ee",
+      snippet:
+        // eslint-disable-next-line max-len
+        "Hello there! Yes, it looks like I'm functioning properly. I'm ZAMM, a chat program designed to assist and converse with you. I'm happy to be here and help answer any questions or topics you'd like to discuss. What's on your mind today?",
+    });
+    // ... until now
+    expect(get(provider)).toEqual("Ollama");
+    expect(get(llm)).toEqual("llama3:8b");
+    expect(get(mockStores.page).url.pathname).toEqual("/api-calls/new/");
+  });
+```
+
+We update `src-svelte/src/routes/api-calls/new/test.data.ts` with the new data:
+
+```ts
+export const START_PROMPT: ChatPromptVariant = {
+  type: "Chat",
+  messages: [
+    {
+      role: "System",
+      text: "You are ZAMM, a chat program. Respond in first person.",
+    },
+    {
+      role: "Human",
+      text: "Hello, does this work?",
+    },
+  ],
+};
+```
+
+and create a new API call sample at `src-tauri/api/sample-calls/get_api_call-ollama.yaml`:
+
+```yaml
+request:
+  - get_api_call
+  - >
+    {
+      "id": "506e2d1f-549c-45cc-ad65-57a0741f06ee"
+    }
+response:
+  message: >
+    {
+      "id": "506e2d1f-549c-45cc-ad65-57a0741f06ee",
+      ...
+    }
+sideEffects:
+  database:
+    startStateDump: conversation-started-ollama
+    endStateDump: conversation-started-ollama
+```
+
+We test this sample in `src-tauri/src/commands/llms/get_api_call.rs` just to make sure that it works as we expect:
+
+```rs
+    check_sample!(
+        GetApiCallTestCase,
+        test_ollama,
+        "./api/sample-calls/get_api_call-ollama.yaml"
+    );
 ```
 
 #### Adding forwards compatibility

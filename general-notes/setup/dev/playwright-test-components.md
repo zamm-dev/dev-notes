@@ -1747,6 +1747,72 @@ Require stack:
 
 this appears to be due to [a problem](https://stackoverflow.com/a/63175855) with the canvas installation script. Nuking the `node_modules` folder and reinstalling it with `yarn` appears to fix the problem.
 
+### Shorter than expected timeouts
+
+The `ApiCalls.playwright.test.ts` on CI keeps being flaky:
+
+```
+ FAIL  src/routes/api-calls/ApiCalls.playwright.test.ts > Api Calls endless scroll test > loads more messages when scrolled to end
+Error: Timed out 5000ms waiting for expect(locator).toHaveText(expected)
+
+Locator: locator('.scroll-contents').locator('a:nth-last-child(2) .message.instance .text-container')
+Expected string: "Mocking number 0."
+Received string: "Mocking number 10."
+Call log:
+  - locator._expect with timeout 5000ms
+  - waiting for locator('.scroll-contents').locator('a:nth-last-child(2) .message.instance .text-container')
+  -   locator resolved to <div class="text-container s-Ilk2P2oxwgg7">…</div>
+  -   unexpected value "Mocking number 10."
+  ...
+```
+
+We refactor that file to create a fresh new page for each test instead of for all tests, before realizing that it doesn't matter because there's only a single test. We keep the changes anyway because it is good for any future extensions to the file.
+
+```ts
+  beforeAll(async () => {
+    ...
+    context.setDefaultTimeout(...);
+  });
+
+  ...
+
+  beforeEach(async () => {
+    page = await context.newPage();
+    if (DEBUG_LOGGING) {
+      ...
+    }
+  });
+```
+
+[Playwright documentation](https://playwright.dev/docs/test-assertions) notes this of `expect`:
+
+> It will re-fetch the element and check it over and over, until the condition is met or until the timeout is reached.
+
+So, element caching shouldn't be a problem here, and we are still unable to reproduce this locally.
+
+The odd thing is that the locator is using a timeout of 5,000ms ([the default](https://playwright.dev/docs/test-timeouts) for Playwright) instead of our default of 9,000ms for `PLAYWRIGHT_TIMEOUT` and a 60,000ms override for that environment variable on CI. They do also mention in the documentation for the function that
+
+> **NOTE** [page.setDefaultNavigationTimeout(timeout)](https://playwright.dev/docs/api/class-page#page-set-default-navigation-timeout), [page.setDefaultTimeout(timeout)](https://playwright.dev/docs/api/class-page#page-set-default-timeout) and [browserContext.setDefaultNavigationTimeout(timeout)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-default-navigation-timeout) take priority over [browserContext.setDefaultTimeout(timeout)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-default-timeout).
+
+We edit the file again as such:
+
+```
+  beforeEach(async () => {
+    page = ...;
+    page.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);
+    ...
+  });
+
+  ...
+
+  const expectLastMessage = async (
+    ...
+  ) => {
+    ...
+    await expect(lastMessageContainer).toHaveText(expectedValue, { timeout: PLAYWRIGHT_TIMEOUT });
+  };
+```
+
 ## Debugging
 
 You can use JavaScript to access the Storybook iframe during development. For example:

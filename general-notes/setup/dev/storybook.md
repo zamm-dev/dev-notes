@@ -518,6 +518,8 @@ Dynamic.args = {
 
 ## Errors and warnings
 
+### No story files
+
 If you see this warning when starting Storybook up:
 
 ```
@@ -547,6 +549,12 @@ const config: StorybookConfig = {
 };
 export default config;
 ```
+
+### Blank page on Safari
+
+If you see a blank page on Safari, even after reloading the page, you see no errors in the console, and it works fine on Firefox, it should work fine again on Safari after you quit and restart Safari.
+
+There is [this issue](https://github.com/storybookjs/storybook/issues/23564) but it comes with a console error and does not seem to be applicable.
 
 ## Tips and tricks
 
