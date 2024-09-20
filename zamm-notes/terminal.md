@@ -1489,3 +1489,752 @@ assertion `left == right` failed
 ```
 
 We see that there are [built-in methods](https://stackoverflow.com/a/56264863) to deal with this.
+
+#### Changing the API to allow for interactive programs
+
+We add a new test to `src-tauri/src/commands/terminal/models.rs`:
+
+```rs
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_capture_output_without_blocking() {
+        let mut terminal = ActualTerminal::new();
+        let output = terminal
+            .run_command("bash")
+            .await
+            .unwrap();
+
+            assert_eq!(output, "bash-3.2$ ");
+    }
+```
+
+As expected, this test hangs because the `bash` process does not exit.
+
+Despite the existence of [an issue](https://github.com/oconnor663/duct.rs/issues/69) regarding live streaming command output, it appears that the `duct` crate does not really have great support for this despite the implementation of [`ReaderHandle`](https://docs.rs/duct/latest/duct/struct.ReaderHandle.html).
+
+Some resources we find are:
+
+- [This question](https://stackoverflow.com/q/34611742) that explains the difficulty of reading from OS pipes in a non-blocking manner
+- [This answer](https://stackoverflow.com/a/73463169) appears to give an example for retrieving non-blocking reads from `stdin`. This is not quite our use case, as we want to do non-blocking reads from `stdout`. Nonetheless, the use of `tokio::select` is useful to note down.
+- There is the `interactive_process` crate, but it appears not to support [general non-blocking reads](https://github.com/paulgb/interactive_process/issues/1) or [stderr reads](https://github.com/paulgb/interactive_process/issues/5)
+- [This example code](https://andres.svbtle.com/convert-subprocess-stdout-stream-into-non-blocking-iterator-in-rust) that uses `std::process::Command` with `std::sync::mpsc`
+
+We find out from `zamm/actions/use_terminal/terminal.py` of v0.0.5 of the original commandline version that we were using the `pexpect` package with its [`read_nonblocking`](https://pexpect.readthedocs.io/en/3.x/api/pexpect.html) function. As such, we try to use the Rust equivalent `rexpect` with its [`try_read`](https://docs.rs/rexpect/0.5.0/rexpect/reader/struct.NBReader.html#method.try_read) function. Incidentally, the implementation for that function also makes use of `std::sync::mpsc` channels and `try_recv`.
+
+We replace `duct` with `rexpect` in `src-tauri/Cargo.toml`, and then edit `src-tauri/src/commands/terminal/models.rs` to replace `duct` there too:
+
+```rs
+...
+use rexpect::spawn;
+...
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    async fn run_command(...) -> ZammResult<String> {
+        ...
+        let mut session = spawn(command, None)?;
+        let output = session.exp_eof()?;
+        ...
+    }
+
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_command_output() {
+        ...
+        assert_eq!(output, "hello world\r\n");
+    }
+
+    #[tokio::test]
+    async fn test_capture_interleaved_output() {
+        ...
+        assert_eq!(output, "stdout\r\nstderr\r\nstdout\r\n");
+    }
+}
+```
+
+For some reason, the results here now include the carriage return `\r`, even on Mac OS.
+
+We then add a new error to `src-tauri/src/commands/errors.rs`:
+
+```rs
+#[derive(...)]
+pub enum Error {
+    ...,
+    #[error(transparent)]
+    Rexpect {
+        #[from]
+        source: rexpect::error::Error,
+    },
+    ...
+}
+```
+
+Next, we try to see if we can use the non-blocking read instead:
+
+```rs
+pub struct ActualTerminal {
+    pub session: Option<PtySession>,
+    ...
+}
+
+impl ActualTerminal {
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            ...
+        }
+    }
+}
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        ...
+        let reader = &session.reader;
+        let mut output = String::new();
+        while let Some(chunk) = reader.try_read() {
+            output.push_str(&chunk);
+        }
+        ...
+        self.session = Some(session);
+        Ok(output)
+    }
+    
+    ...
+}
+```
+
+We run into the compilation error
+
+```
+error[E0277]: `std::sync::mpsc::Receiver<Result<reader::PipedChar, reader::PipeError>>` cannot be shared between threads safely
+   --> src/commands/terminal/models.rs:28:19
+    |
+28  | impl Terminal for ActualTerminal {
+    |                   ^^^^^^^^^^^^^^ `std::sync::mpsc::Receiver<Result<reader::PipedChar, reader::PipeError>>` cannot be shared between threads safely
+    |
+    = help: within `commands::terminal::models::ActualTerminal`, the trait `Sync` is not implemented for `Receiver<Result<..., ...>>`
+note: required because it appears within the type `NBReader
+```
+
+We eventually find that we can fix it with
+
+```rs
+...
+use anyhow::anyhow;
+...
+use rexpect::session::PtySession;
+...
+use std::sync::{Arc, Mutex};
+use std::thread::sleep;
+use std::time::Duration;
+
+...
+
+pub struct ActualTerminal {
+    pub session: Option<Arc<Mutex<PtySession>>>,
+    ...
+}
+
+impl ActualTerminal {
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            ...
+        }
+    }
+
+    fn drain_read_buffer(&mut self) -> ZammResult<String> {
+        let mut output = String::new();
+        if let Some(session) = self.session.as_mut() {
+            let reader = &mut session.lock()?.reader;
+            while let Some(chunk) = reader.try_read() {
+                output.push(chunk);
+            }
+        }
+        Ok(output)
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let mut output = String::new();
+        loop {
+            sleep(Duration::from_millis(100));
+            let new_output = self.drain_read_buffer()?;
+            if new_output.is_empty() {
+                break;
+            }
+            output.push_str(&new_output);
+        }
+
+        let output_time = chrono::Utc::now();
+        let duration = output_time
+            - self
+                .session_data
+                .header
+                .timestamp
+                .ok_or(anyhow!("No timestamp"))?;
+        self.session_data.entries.push(asciicast::Entry {
+            time: duration.num_milliseconds() as f64 / 1000.0,
+            event_type: asciicast::EventType::Output,
+            event_data: output.clone(),
+        });
+        Ok(output)
+    }
+}
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        if self.session.is_some() {
+            return Err(anyhow!("Session already started").into());
+        }
+
+        ...
+
+        self.session_data.header.timestamp = ...;
+
+        let session = spawn(command, Some(1_000))?;
+        self.session = Some(Arc::new(Mutex::new(session)));
+
+        let result = self.read_updates()?;
+        Ok(result)
+    }
+
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_output_without_blocking() {
+        let mut terminal = ActualTerminal::new();
+        let output = terminal.run_command("bash").await.unwrap();
+
+        assert!(output.ends_with("bash-3.2$ "), "Output: {}", output);
+    }
+}
+
+```
+
+The original example we set out to use now works! We realize that we can simplify this further by removing `drain_read_buffer` and instead using `rexpect`'s built-in timeout functionality to get the output thus far:
+
+```rs
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let session = self.session.as_mut().ok_or(anyhow!("No session"))?;
+        let reader = &mut session.lock()?.reader;
+        let output = match reader.read_until(&ReadUntil::EOF) {
+            Ok((_, output)) => output,
+            Err(e) => {
+                match e {
+                    rexpect::error::Error::Timeout { got, .. } => {
+                        got
+                    }
+                    _ => return Err(e.into()),
+                }
+            }
+        };
+
+        ...
+    }
+```
+
+We also change the session to start with only 100ms to get tests to run faster:
+
+```rs
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        ...
+
+        let session = spawn(command, Some(100))?;
+        ...
+    }
+```
+
+We then edit this further to try to get interactivity going:
+
+```rs
+...
+use chrono::DateTime;
+...
+
+impl ActualTerminal {
+    ...
+
+    fn start_time(&self) -> ZammResult<DateTime<chrono::Utc>> {
+        let result = self
+            .session_data
+            .header
+            .timestamp
+            .ok_or(anyhow!("No timestamp"))?;
+        Ok(result)
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            let session_mutex = self.session.as_mut().ok_or(anyhow!("No session"))?;
+            let mut session = session_mutex.lock()?;
+            match session.exp_eof() {
+                Ok(output) => output,
+                Err(e) => {
+                    match e {
+                        rexpect::error::Error::Timeout { got, .. } => got
+                            .replace("`\\n`\n", "\n")
+                            .replace("`\\r`", "\r")
+                            .replace("`^`", "\u{1b}"),
+                        _ => return Err(e.into()),
+                    }
+                }
+            }
+        };
+
+        let output_time = ...;
+        let relative_time = output_time - self.start_time()?;
+        self.session_data.entries.push(asciicast::Entry {
+            time: relative_time.num_milliseconds() as f64 / 1000.0,
+            ...
+        });
+        Ok(output)
+    }
+
+    #[cfg(test)]
+    async fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        let session_mutex = self.session.as_mut().ok_or(anyhow!("No session"))?;
+        {
+            let mut session = session_mutex.lock()?;
+            session.send(input)?;
+            session.flush()?;
+        }
+
+        let relative_time = chrono::Utc::now() - self.start_time()?;
+        self.session_data.entries.push(asciicast::Entry {
+            time: relative_time.num_milliseconds() as f64 / 1000.0,
+            event_type: asciicast::EventType::Input,
+            event_data: input.to_string(),
+        });
+
+        self.read_updates()
+    }
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        let mut terminal = ActualTerminal::new();
+        terminal.run_command("bash").await.unwrap();
+
+        let output = terminal
+            .send_input("python api/sample-terminal-sessions/interleaved.py\n")
+            .await
+            .unwrap();
+        assert_eq!(output, "stdout\r\nstderr\r\nstdout\r\n");
+    }
+}
+```
+
+Note that we:
+
+- refactor out `start_time` for reusability
+- simplify the read further with `session.exp_eof` instead of using `session.reader`
+- do all the `got.replace(...)` to restore the original output
+- hide `send_input` behind a `#[cfg(test)]` for now because it's unused in regular code
+
+Unfortunately, this fails with
+
+```
+---- commands::terminal::models::tests::test_capture_interaction stdout ----
+thread 'commands::terminal::models::tests::test_capture_interaction' panicked at src/commands/terminal/models.rs:157:9:
+assertion `left == right` failed
+  left: "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+ right: "stdout\r\nstderr\r\nstdout\r\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+It turns out that the buffer does not advance when there's a timeout. As such, we revert to the original implementation:
+
+```rs
+impl ActualTerminal {
+    ...
+
+    fn drain_read_buffer(&mut self) -> ZammResult<String> {
+        ...
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let mut output = String::new();
+        loop {
+            ...
+        }
+
+        ...
+    }
+```
+
+and now the test passes when we change the assert to
+
+```rs
+assert_eq!(output, "stdout\r\nstderr\r\nstdout\r\nbash-3.2$ ");
+```
+
+Because we sleep ourselves, we can even change the timeout to
+
+```rs
+let session = spawn(command, Some(0))?;
+```
+
+We realize that we need to only add in new Asciicast entries when the output is non-empty. As such, we add logic and a new test for that:
+
+```rs
+impl ActualTerminal {
+    ...
+
+    pub fn read_updates(&mut self) -> ZammResult<String> {
+        ...
+
+        if !output.is_empty() {
+            let output_time = ...;
+            ...
+            self.session_data.entries.push(asciicast::Entry {
+                ...
+            });
+        }
+        Ok(output)
+    }
+
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_command_output() {
+        ...
+        assert_eq!(terminal.get_cast().entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_interleaved_output() {
+        ...
+        assert_eq!(terminal.get_cast().entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_output_without_blocking() {
+        ...
+        assert_eq!(terminal.get_cast().entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_no_entry_on_empty_capture() {
+        let mut terminal = ActualTerminal::new();
+        terminal.run_command("bash").await.unwrap();
+        terminal.read_updates().unwrap();
+        assert_eq!(terminal.get_cast().entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        ...
+        assert_eq!(terminal.get_cast().entries.len(), 3);
+    }
+}
+
+```
+
+Unfortunately, when running all Cargo tests, we now find that this test fails:
+
+```
+---- commands::terminal::models::tests::test_capture_interleaved_output stdout ----
+thread 'commands::terminal::models::tests::test_capture_interleaved_output' panicked at src/commands/terminal/models.rs:144:9:
+assertion `left == right` failed
+  left: ""
+ right: "stdout\r\nstderr\r\nstdout\r\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+It appears to only fail when running all tests -- not when running it as part of the terminal-specific tests. Sometimes this other test also fails non-deterministically:
+
+```
+---- commands::terminal::models::tests::test_capture_interaction stdout ----
+thread 'commands::terminal::models::tests::test_capture_interaction' panicked at src/commands/terminal/models.rs:187:9:
+assertion `left == right` failed
+  left: ""
+ right: "stdout\r\nstderr\r\nstdout\r\nbash-3.2$ "
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+We edit the function again, this time combining both approaches:
+
+```rs
+    pub fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            let session_mutex = self.session.as_mut().ok_or(anyhow!("No session"))?;
+            let output_until_eof = {
+                let mut session = session_mutex.lock()?;
+                session.exp_eof().ok()
+            };
+            match output_until_eof {
+                Some(full_output) => full_output,
+                None => {
+                    let mut interim_output = String::new();
+                    loop {
+                        sleep(Duration::from_millis(100));
+                        let new_output = self.drain_read_buffer()?;
+                        if new_output.is_empty() {
+                            break;
+                        }
+                        interim_output.push_str(&new_output);
+                    }
+                    interim_output
+                },
+            }
+        };
+
+        ...
+    }
+```
+
+Now the tests pass the vast majority of the time. We also raise the default timeout to 100ms.
+
+##### Replaying interactivity
+
+We edit `src-tauri/src/commands/terminal/models.rs` to move `read_updates` from the implementation to the trait:
+
+```rs
+pub trait Terminal: Send + Sync {
+    ...
+    fn read_updates(&mut self) -> ZammResult<String>;
+    ...
+}
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    ...
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        ...
+    }
+
+    ...
+}
+```
+
+We add `either`:
+
+```bash
+$ cargo add either
+```
+
+and refactor `src-tauri/src/test_helpers/terminal.rs` to use this instead of keeping track of the mode:
+
+```rs
+...
+use either::Either::{self, Left, Right};
+use std::thread::sleep;
+use std::time::Duration;
+
+pub struct TestTerminal {
+    recording_file: String,
+    terminal: Either<AsciiCastData, ActualTerminal>,
+    entry_index: usize,
+}
+
+impl TestTerminal {
+    pub fn new(recording_file: &str) -> Self {
+        let terminal = match std::fs::metadata(recording_file) {
+            Ok(_) => Either::Left(AsciiCastData::load(recording_file).unwrap()),
+            Err(_) => Either::Right(ActualTerminal::new()),
+        };
+        Self {
+            recording_file: recording_file.to_string(),
+            terminal,
+            entry_index: 0,
+        }
+    }
+
+    fn next_entry(&mut self) -> &asciicast::Entry {
+        match &self.terminal {
+            Left(cast) => {
+                let entry = &cast.entries[self.entry_index];
+                self.entry_index += 1;
+                entry
+            }
+            Right(_) => panic!("Expected recording"),
+        }
+    }
+}
+
+impl Drop for TestTerminal {
+    fn drop(&mut self) {
+        if let Right(terminal) = &self.terminal {
+            terminal.get_cast().save(&self.recording_file).unwrap();
+        }
+    }
+}
+
+#[async_trait]
+impl Terminal for TestTerminal {
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        match &mut self.terminal {
+            Left(cast) => {
+                let expected_command = cast.header.command.as_ref().unwrap();
+                assert_eq!(command, expected_command);
+
+                let entry = self.next_entry();
+                assert_eq!(entry.event_type, EventType::Output);
+                Ok(entry.event_data.clone())
+            }
+            Right(actual_terminal) => actual_terminal.run_command(command).await,
+        }
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        match &mut self.terminal {
+            Left(_) => {
+                let entry = self.next_entry();
+                assert_eq!(entry.event_type, EventType::Output);
+                Ok(entry.event_data.clone())
+            }
+            Right(actual_terminal) => actual_terminal.read_updates(),
+        }
+    }
+
+    fn get_cast(&self) -> &AsciiCastData {
+        match &self.terminal {
+            Left(cast) => cast,
+            Right(actual_terminal) => actual_terminal.get_cast(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_terminal_replay() {
+        ...
+        assert_eq!(output, "Friday September 20, 2024 18:23 +0700\r\n");
+    }
+
+    #[tokio::test]
+    async fn test_terminal_pause() {
+        let mut terminal = TestTerminal::new("api/sample-terminal-sessions/pause.cast");
+        terminal
+            .run_command("python api/sample-terminal-sessions/pause.py")
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(1_000));
+        let output = terminal.read_updates().unwrap();
+        assert_eq!(output, "Second\r\n");
+    }
+}
+
+```
+
+We rerun and update `src-tauri/api/sample-terminal-sessions/date.cast`, `src-tauri/api/sample-calls/run_command-date.yaml`, `src-tauri/api/sample-database-writes/command-run-date/dump.sql`, and `src-tauri/api/sample-database-writes/command-run-date/dump.yaml` to reflect the new changes -- namely, that `\r\n` now appears at the end.
+
+We create a `src-tauri/api/sample-terminal-sessions/pause.py` that pauses for a second:
+
+```python
+#!/usr/bin/env python3
+
+import sys
+import time
+
+print("First")
+sys.stdout.flush()
+
+time.sleep(0.5)
+print("Second")
+sys.stdout.flush()
+
+```
+
+The ensuing `src-tauri/api/sample-terminal-sessions/pause.cast` is recorded as:
+
+```asciicast
+{"version":2,"width":80,"height":24,"timestamp":1726831353,"command":"python api/sample-terminal-sessions/pause.py"}
+[0.315,"o","First\r\n"]
+[1.319,"o","Second\r\n"]
+```
+
+Now we do the same for input interactivity. `src-tauri/src/commands/terminal/models.rs` is once again edited to move `send_input` into the `Terminal` trait, with the `#[cfg(test)]` marker now removed:
+
+```rs
+pub trait Terminal: Send + Sync {
+    ...
+    async fn send_input(&mut self, input: &str) -> ZammResult<String>;
+    ...
+}
+
+```
+
+`src-tauri/src/test_helpers/terminal.rs` is edited to implement this new method, along with a new test:
+
+```rs
+#[async_trait]
+impl Terminal for TestTerminal {
+    ...
+
+    async fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        match &mut self.terminal {
+            Left(_) => {
+                let input_entry = self.next_entry();
+                assert_eq!(input_entry.event_type, EventType::Input);
+                assert_eq!(input_entry.event_data, input);
+
+                let output_entry = self.next_entry();
+                assert_eq!(output_entry.event_type, EventType::Output);
+                Ok(output_entry.event_data.clone())
+            }
+            Right(actual_terminal) => actual_terminal.send_input(input).await,
+        }
+    }
+
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_interactivity() {
+        let mut terminal = TestTerminal::new("api/sample-terminal-sessions/bash.cast");
+        terminal.run_command("bash").await.unwrap();
+        let output = terminal
+            .send_input("python api/sample-terminal-sessions/interleaved.py\n")
+            .await
+            .unwrap();
+        assert_eq!(output, "stdout\r\nstderr\r\nstdout\r\nbash-3.2$ ");
+    }
+}
+```
+
+The recorded `src-tauri/api/sample-terminal-sessions/bash.cast` now looks like this:
+
+```asciicast
+{"version":2,"width":80,"height":24,"timestamp":1726835972,"command":"bash"}
+[0.313,"o","\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "]
+[0.313,"i","python api/sample-terminal-sessions/interleaved.py\n"]
+[0.622,"o","stdout\r\nstderr\r\nstdout\r\nbash-3.2$ "]
+```
