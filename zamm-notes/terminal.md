@@ -2238,3 +2238,314 @@ The recorded `src-tauri/api/sample-terminal-sessions/bash.cast` now looks like t
 [0.313,"i","python api/sample-terminal-sessions/interleaved.py\n"]
 [0.622,"o","stdout\r\nstderr\r\nstdout\r\nbash-3.2$ "]
 ```
+
+##### Windows compatibility
+
+The `rexpect` crate doesn't compile on Windows. While we can conditionally include it as a dependency based on platform, we decide instead to use the [`portable-pty`](https://docs.rs/portable-pty/0.8.1/portable_pty/index.html) crate, as found in [this answer](https://www.reddit.com/r/rust/comments/ip8wsk/comment/g4iw7u9/).
+
+We do
+
+```bash
+$ cargo add portable-pty
+```
+
+and remove `rexpect` from `src-tauri/Cargo.toml`. We also remove that error from `src-tauri/src/commands/errors.rs`. Then, we edit `src-tauri/src/commands/terminal/models.rs`:
+
+```rs
+...
+use portable_pty::{
+    native_pty_system, Child, CommandBuilder, MasterPty, PtySize, SlavePty,
+};
+use std::io::{Read, Write};
+...
+
+struct PtySession {
+    #[allow(dead_code)]
+    master: Box<dyn MasterPty + Send>,
+    #[allow(dead_code)]
+    slave: Box<dyn SlavePty + Send>,
+    #[allow(dead_code)]
+    child: Box<dyn Child + Send + Sync>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+}
+
+impl PtySession {
+    fn new(command: &str) -> ZammResult<Self> {
+        let cmd_and_args = shlex::split(command)
+            .ok_or_else(|| anyhow!("Failed to split command '{}'", command))?;
+        let parsed_cmd = cmd_and_args
+            .first()
+            .ok_or_else(|| anyhow!("Failed to get command"))?;
+        let parsed_args = &cmd_and_args[1..];
+        let mut cmd_builder = CommandBuilder::new(parsed_cmd);
+        cmd_builder.args(parsed_args);
+        let current_dir = std::env::current_dir()?;
+        cmd_builder.cwd(current_dir);
+
+        let session = native_pty_system().openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let child = session.slave.spawn_command(cmd_builder)?;
+        let reader = session.master.try_clone_reader()?;
+        let writer = session.master.take_writer()?;
+        Ok(Self {
+            master: session.master,
+            slave: session.slave,
+            child,
+            reader,
+            writer,
+        })
+    }
+}
+
+pub struct ActualTerminal {
+    session: Option<Arc<Mutex<PtySession>>>,
+    ...
+}
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        ...
+        let session = PtySession::new(command)?;
+        ...
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            let session_mutex = ...;
+            let mut session = session_mutex.lock()?;
+            let mut partial_output = String::new();
+            let buf = &mut [0; 1024];
+            let mut bytes_read = session.reader.read(buf)?;
+            while bytes_read > 0 {
+                partial_output.push_str(&String::from_utf8_lossy(&buf[..bytes_read]));
+                sleep(Duration::from_millis(100));
+                bytes_read = session.reader.read(buf)?;
+            }
+            partial_output
+        };
+
+        if !output.is_empty() {
+            ...
+        }
+        ...
+    }
+
+    async fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        ...
+        {
+            let mut session = ...;
+            session.writer.write_all(input.as_bytes())?;
+            session.writer.flush()?;
+        }
+
+        ...
+    }
+
+    ...
+}
+```
+
+where `drain_read_buffer` is no longer needed. Now the `test_capture_command_output` and `test_capture_interleaved_output` tests pass, but `test_capture_output_without_blocking` and so on still fail by blocking.
+
+We try to see if we can patch the dependency. We do
+
+```bash
+$ git submodule add https://github.com/wez/wezterm.git
+Cloning into '/Users/amos/Documents/zamm/forks/wezterm'...
+remote: Enumerating objects: 73366, done.
+remote: Counting objects: 100% (5404/5404), done.
+remote: Compressing objects: 100% (511/511), done.
+remote: Total 73366 (delta 5088), reused 5030 (delta 4889), pack-reused 67962 (from 1)
+Receiving objects: 100% (73366/73366), 298.05 MiB | 2.10 MiB/s, done.
+Resolving deltas: 100% (51881/51881), done.
+```
+
+ We add the following to `src-tauri/Cargo.toml`:
+
+```toml
+[patch.crates-io]
+...
+portable-pty = { path = "../forks/wezterm/pty" }
+
+```
+
+We now get the error
+
+```bash
+$ cargo build
+    Updating crates.io index
+error: failed to select a version for `libc`.
+    ... required by package `nix v0.28.0`
+    ... which satisfies dependency `nix = "^0.28"` of package `portable-pty v0.8.1 (/Users/amos/Documents/zamm/forks/wezterm/pty)`
+    ... which satisfies dependency `portable-pty = "^0.8.1"` (locked to 0.8.1) of package `zamm v0.1.7 (/Users/amos/Documents/zamm/src-tauri)`
+versions that meet the requirements `^0.2.153` are: 0.2.158, 0.2.157, 0.2.156, 0.2.155, 0.2.153
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `libc v0.2.152`
+    ... which satisfies dependency `libc = "^0.2"` (locked to 0.2.152) of package `portable-pty v0.8.1 (/Users/amos/Documents/zamm/forks/wezterm/pty)`
+    ... which satisfies dependency `portable-pty = "^0.8.1"` (locked to 0.8.1) of package `zamm v0.1.7 (/Users/amos/Documents/zamm/src-tauri)`
+
+failed to select a version for `libc` which could resolve this conflict
+```
+
+We try editing `Cargo.toml` again:
+
+```toml
+[dependencies]
+...
+libc = "0.2.153"
+```
+
+Now it compiles. It appears there have been [previous complaints](https://github.com/rust-lang/cargo/issues/10189) about the resolver not being good enough.
+
+We try editing `forks/wezterm/pty/src/unix.rs` to [set a non-blocking file descriptor](https://docs.rs/filedescriptor/0.8.1/filedescriptor/struct.FileDescriptor.html#method.set_non_blocking):
+
+```rs
+fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
+    ...
+
+    let master = UnixMasterPty {
+        fd: PtyFd(unsafe { 
+            let mut master_fd = FileDescriptor::from_raw_fd(master);
+            master_fd.set_non_blocking(true)?;
+            master_fd
+        }),
+        ...
+    };
+    ...
+}
+```
+
+Unfortunately, our tests now just fail with
+
+```
+---- commands::terminal::models::tests::test_capture_output_without_blocking stdout ----
+thread 'commands::terminal::models::tests::test_capture_output_without_blocking' panicked at src/commands/terminal/models.rs:190:57:
+called `Result::unwrap()` on an `Err` value: Io { source: Os { code: 35, kind: WouldBlock, message: "Resource temporarily unavailable" } }
+```
+
+We reset. It appears that there's [no way](https://github.com/wez/wezterm/discussions/3739) around the fact that pty reads are blocking; we'll have to create a separate thread. As such, we edit `src-tauri/src/commands/terminal/models.rs`, removing `reader` and replacing it with `input_receiver`, and now getting input echo:
+
+```rs
+...
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+...
+use std::thread::{..., spawn};
+...
+
+struct PtySession {
+    ...
+    input_receiver: Receiver<char>,
+}
+
+impl PtySession {
+    fn new(command: &str) -> ZammResult<Self> {
+        ...
+
+        let (tx, rx): (Sender<char>, Receiver<char>) = mpsc::channel();
+        let mut reader = session.master.try_clone_reader()?;
+        spawn(move || {
+            let buf = &mut [0; 1];
+            loop {
+                let bytes_read = reader.read(buf).unwrap();
+                if bytes_read == 0 {
+                    break;
+                }
+                tx.send(buf[0] as char).unwrap();
+            }
+        });
+
+        ...
+
+        Ok(Self {
+            ...,
+            input_receiver: rx,
+        })
+    }
+}
+
+...
+
+impl ActualTerminal {
+    ...
+
+    fn read_once(&mut self) -> ZammResult<String> {
+        let session_mutex = self.session.as_mut().ok_or(anyhow!("No session"))?;
+        let session = session_mutex.lock()?;
+        let mut partial_output = String::new();
+        while let Ok(c) = session.input_receiver.try_recv() {
+            partial_output.push(c);
+        }
+        Ok(partial_output)
+    }
+}
+
+#[async_trait]
+impl Terminal for ActualTerminal {
+    ...
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            let mut partial_output = String::new();
+            loop {
+                sleep(Duration::from_millis(100));
+                let partial = self.read_once()?;
+                if partial.is_empty() {
+                    break;
+                }
+                partial_output.push_str(&partial);
+            }
+            partial_output
+        };
+
+        ...
+    }
+
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        ...
+
+        let output = ...;
+        assert_eq!(output, "python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ ");
+        ...
+    }
+}
+
+```
+
+`src-tauri/api/sample-terminal-sessions/bash.cast` gets updated again:
+
+```asciicast
+{"version":2,"width":80,"height":24,"timestamp":1727195245,"command":"bash"}
+[0.208,"o","\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "]
+[0.208,"i","python api/sample-terminal-sessions/interleaved.py\n"]
+[0.412,"o","python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "]
+```
+
+and with that, the playback test at `src-tauri/src/test_helpers/terminal.rs` needs to be updated again:
+
+```rs
+    #[tokio::test]
+    async fn test_interactivity() {
+        ...
+        assert_eq!(
+            output,
+            "python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "
+        );
+    }
+```
