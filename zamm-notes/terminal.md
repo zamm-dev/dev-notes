@@ -2431,7 +2431,9 @@ thread 'commands::terminal::models::tests::test_capture_output_without_blocking'
 called `Result::unwrap()` on an `Err` value: Io { source: Os { code: 35, kind: WouldBlock, message: "Resource temporarily unavailable" } }
 ```
 
-We reset. It appears that there's [no way](https://github.com/wez/wezterm/discussions/3739) around the fact that pty reads are blocking; we'll have to create a separate thread. As such, we edit `src-tauri/src/commands/terminal/models.rs`, removing `reader` and replacing it with `input_receiver`, and now getting input echo:
+We reset. It appears that there's [no way](https://github.com/wez/wezterm/discussions/3739) around the fact that pty reads are blocking; we'll have to create a separate thread. There's also [no way](https://users.rust-lang.org/t/tokio-timeout-not-timeouting/85895/7) to enforce a timeout on CPU reads.
+
+As such, we edit `src-tauri/src/commands/terminal/models.rs`, removing `reader` and replacing it with `input_receiver`, and now getting input echo. We use [this function](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html#method.try_recv) along with [this example](https://doc.rust-lang.org/rust-by-example/std_misc/channels.html).
 
 ```rs
 ...
@@ -2549,3 +2551,213 @@ and with that, the playback test at `src-tauri/src/test_helpers/terminal.rs` nee
         );
     }
 ```
+
+Now when we run on Windows, we finally do get failing but compiling tests. We edit `src-tauri/src/commands/terminal/models.rs` as such:
+
+```rs
+mod tests {
+    ...
+
+    #[cfg(target_os = "windows")]
+    const SHELL_COMMAND: &str = "cmd";
+    #[cfg(not(target_os = "windows"))]
+    const SHELL_COMMAND: &str = "bash";
+
+    #[tokio::test]
+    async fn test_capture_command_output() {
+        let (command, expected_output) = if cfg!(target_os = "windows") {
+            ("cmd /C \"echo hello world\"", "\u{1b}[?25l\u{1b}[2J\u{1b}[m\u{1b}[Hhello world\r\n\u{1b}]0;C:\\WINDOWS\\system32\\cmd.EXE\u{7}\u{1b}[?25h")
+        } else {
+            ("echo hello world", "hello world\r\n")
+        };
+
+        let mut terminal = ActualTerminal::new();
+        let output = terminal.run_command(command).await.unwrap();
+        assert_eq!(output, expected_output);
+        ...
+    }
+
+    #[tokio::test]
+    async fn test_capture_interleaved_output() {
+        ...
+
+        // No trailing newline on Windows
+        #[cfg(target_os = "windows")]
+        assert!(
+            output.contains("stdout\r\nstderr\r\nstdout"),
+            "Output: {:?}",
+            output
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(output, "stdout\r\nstderr\r\nstdout\r\n");
+
+        ...
+    }
+
+    #[tokio::test]
+    async fn test_capture_output_without_blocking() {
+        let mut terminal = ActualTerminal::new();
+        let output = terminal.run_command(SHELL_COMMAND).await.unwrap();
+
+        // Windows output contains a whole lot of control characters, so we don't test
+        // directly with `starts_with` or `ends_with` here
+        #[cfg(target_os = "windows")]
+        assert!(
+            output.contains("(c) Microsoft Corporation. All rights reserved.")
+                && output.contains("src-tauri>"),
+            "Output: {:?}",
+            output
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            output.ends_with("$ ") || output.ends_with("# "),
+            "Output: {}",
+            output
+        );
+
+        ...
+    }
+
+    #[tokio::test]
+    async fn test_no_entry_on_empty_capture() {
+        ...
+        terminal.run_command(SHELL_COMMAND).await.unwrap();
+        ...
+    }
+
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        let input = if cfg!(target_os = "windows") {
+            "python api/sample-terminal-sessions/interleaved.py\r\n"
+        } else {
+            "python api/sample-terminal-sessions/interleaved.py\n"
+        };
+
+        let mut terminal = ActualTerminal::new();
+        terminal.run_command(SHELL_COMMAND).await.unwrap();
+
+        let output = terminal.send_input(input).await.unwrap();
+        #[cfg(target_os = "windows")]
+        assert!(
+            output.contains("stdout\r\nstderr\r\nstdout"),
+            "Output: {:?}",
+            output
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            output.contains("stdout\r\nstderr\r\nstdout\r\n")
+                && (output.ends_with("$ ") || output.ends_with("# ")),
+            "Output: {:?}",
+            output
+        );
+
+        ...
+    }
+}
+```
+
+Now all tests on Windows pass. It fails on the Mac again because we accidentally left out the `\r` when we edited `test_capture_command_output`, so we fix that.
+
+##### Linux compatibility
+
+Finally, we edit this test to get an assert that will pass on both Linux and Mac:
+
+```rs
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        ...
+
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            output.contains("stdout\r\nstderr\r\nstdout\r\n")
+                && (output.ends_with("$ ") || output.ends_with("# ")),
+            "Output: {:?}",
+            output
+        );
+
+        ...
+    }
+```
+
+##### Exit codes
+
+We edit `src-tauri/src/commands/terminal/models.rs` to record exit codes and exit time:
+
+```rs
+struct PtySession {
+    ...
+    exit_code: Option<u32>,
+}
+
+impl PtySession {
+    fn new(command: &str) -> ZammResult<Self> {
+        ...
+        Ok(Self {
+            ...,
+            exit_code: None,
+        })
+    }
+}
+
+...
+
+impl ActualTerminal {
+    ...
+
+    #[allow(dead_code)]
+    fn exit_code(&self) -> Option<u32> {
+        let session_mutex = self.session.as_ref().unwrap();
+        let mut session = session_mutex.lock().unwrap();
+        match session.exit_code {
+            Some(code) => Some(code),
+            None => {
+                let status = session
+                    .child
+                    .try_wait()
+                    .unwrap_or(None)
+                    .map(|status| status.exit_code());
+                if let Some(code) = status {
+                    session.exit_code = Some(code);
+                    // todo: record exit code and total runtime
+                }
+                status
+            }
+        }
+    }
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_command_output() {
+        ...
+        assert_eq!(terminal.exit_code(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_capture_interleaved_output() {
+        ...
+        assert_eq!(terminal.exit_code(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_capture_output_without_blocking() {
+        ...
+        assert_eq!(terminal.exit_code(), None);
+    }
+
+    ...
+
+    #[tokio::test]
+    async fn test_capture_interaction() {
+        ...
+        assert_eq!(terminal.exit_code(), None);
+    }
+}
+```
+
+As it turns out, the `asciicast::EventType` enum does not include the "marker" type that is specified in the asciicast format, and the asciicast format does not include exit codes. We'll either have to fork asciicast to add a new type to the enum, or we'll have to extend the Asciicast Header type to include exit codes. We avoid doing this for now.
