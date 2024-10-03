@@ -2761,3 +2761,328 @@ mod tests {
 ```
 
 As it turns out, the `asciicast::EventType` enum does not include the "marker" type that is specified in the asciicast format, and the asciicast format does not include exit codes. We'll either have to fork asciicast to add a new type to the enum, or we'll have to extend the Asciicast Header type to include exit codes. We avoid doing this for now.
+
+#### Storing terminal sessions
+
+Now we store live terminal sessions. We edit `src-tauri/src/main.rs` to store this new data:
+
+```rs
+...
+use std::collections::HashMap;
+...
+use commands::terminal::Terminal;
+...
+use models::llm_calls::EntityId;
+...
+
+pub struct ZammApiKeys(...);
+pub struct ZammTerminalSessions(Mutex<HashMap<EntityId, Box<dyn Terminal>>>);
+
+fn main() {
+    ...
+        Some(Commands::Gui {}) | None => {
+            ...
+            let api_keys = ...;
+            let terminal_sessions = HashMap::new();
+
+            tauri::Builder::default()
+                ...
+                .manage(ZammTerminalSessions(Mutex::new(terminal_sessions)))
+                ...;
+}
+```
+
+We edit `src-tauri/src/commands/terminal/run.rs` accordingly to use this data:
+
+```rs
+...
+use crate::{..., ZammTerminalSessions};
+...
+
+async fn run_command_helper(
+    zamm_db: ...,
+    zamm_sessions: &ZammTerminalSessions,
+    session_id: &EntityId,
+    command: &str,
+) -> ZammResult<RunCommandResponse> {
+    ...
+    let mut sessions = zamm_sessions.0.lock().await;
+    let terminal = sessions
+        .get_mut(session_id)
+        .ok_or_else(|| anyhow!("No session found"))?;
+    ...
+
+    if let Some(conn) = db.as_mut() {
+        ...
+        diesel::insert_into(asciicasts::table)
+            .values(NewAsciiCast {
+                id: session_id,
+                ...,
+                cast: &cast,
+            })
+            .execute(conn)?;
+    }
+
+    Ok(RunCommandResponse {
+        id: session_id.clone(),
+        ...
+    })
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn run_command(
+    database: ...,
+    sessions: State<'_, ZammTerminalSessions>,
+    command: ...,
+) -> ZammResult<RunCommandResponse> {
+    let terminal = ActualTerminal::new();
+    let new_session_id = EntityId::new();
+    sessions
+        .0
+        .lock()
+        .await
+        .insert(new_session_id.clone(), Box::new(terminal));
+
+    run_command_helper(&database, &sessions, &new_session_id, &command).await
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    impl SampleCallTestCase<RunCommandRequest, ZammResult<RunCommandResponse>>
+        for RunCommandTestCase
+    {
+        ...
+
+        async fn make_request(
+            ...
+        ) -> ZammResult<RunCommandResponse> {
+            let terminal_helper = side_effects.terminal.as_ref().unwrap();
+            run_command_helper(
+                side_effects.db.as_ref().unwrap(),
+                &terminal_helper.sessions,
+                &terminal_helper.mock_session_id,
+                &args.command,
+            )
+            .await
+        }
+
+        fn output_replacements(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<RunCommandResponse>,
+        ) -> HashMap<String, String> {
+            ...
+            let expected_os = if sample
+                .side_effects
+                .as_ref()
+                .unwrap()
+                .terminal
+                .as_ref()
+                .unwrap()
+                .recording_file
+                .ends_with("bash.cast")
+            {
+                "Mac"
+            } else {
+                "Linux"
+            };
+            HashMap::from([
+                ...,
+                #[cfg(target_os = "windows")]
+                ("Windows".to_string(), expected_os.to_string()),
+                #[cfg(target_os = "macos")]
+                ("Mac".to_string(), expected_os.to_string()),
+                #[cfg(target_os = "linux")]
+                ("Linux".to_string(), expected_os.to_string()),
+            ])
+        }
+
+        ...
+    }
+
+    ...
+
+    check_sample!(
+        RunCommandTestCase,
+        test_start_bash,
+        "./api/sample-calls/run_command-bash.yaml"
+    );
+}
+```
+
+where `src-tauri/api/sample-calls/run_command-bash.yaml` is a new API recording we've created that looks like this:
+
+```yaml
+request:
+  - run_command
+  - >
+    {
+      "command": "bash"
+    }
+response:
+  message: >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      "timestamp": "2024-09-24T16:27:25",
+      "output": "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+    }
+sideEffects:
+  database:
+    endStateDump: command-run-bash
+  terminal:
+    recordingFile: bash.cast
+```
+
+Note that because this is run on the Mac, we change the test to expect a different operating system based on the recording filename.
+
+We edit `src-tauri/src/models/llm_calls/entity_id.rs` to implement the `new` function:
+
+```rs
+impl Default for EntityId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl EntityId {
+    pub fn new() -> Self {
+        EntityId {
+            uuid: Uuid::new_v4(),
+        }
+    }
+}
+```
+
+where the `Default` is automatically implemented by Clippy.
+
+We also have to edit `src-tauri/src/test_helpers/api_testing.rs`:
+
+```rs
+pub struct TerminalHelper {
+    pub sessions: ZammTerminalSessions,
+    pub mock_session_id: EntityId,
+}
+
+#[derive(Default)]
+pub struct SideEffectsHelpers {
+    ...
+    pub terminal: Option<TerminalHelper>,
+}
+
+    async fn check_sample_call(...) -> SampleCallResult<T, U> {
+            // prepare terminal if necessary
+            if side_effects.terminal.is_some() {
+                ...
+                let new_session_id = EntityId::new();
+                let sessions = ZammTerminalSessions(Mutex::new(HashMap::from([(
+                    new_session_id.clone(),
+                    terminal as Box<dyn Terminal>,
+                )])));
+                side_effects_helpers.terminal = Some(TerminalHelper {
+                    sessions,
+                    mock_session_id: new_session_id,
+                });
+            }
+
+            ...
+    }
+```
+
+We see that `src-tauri/api/sample-database-writes/command-run-bash/dump.sql` looks like this:
+
+```sql
+INSERT INTO asciicasts VALUES('3717ed48-ab52-4654-9f33-de5797af5118','2024-09-24 16:27:25','bash','Mac',replace('{"version":2,"width":80,"height":24,"timestamp":1727195245,"command":"bash"}\012[0.208,"o","\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "]','\012',char(10)));
+```
+
+We see that the use of the `replace` function is [expected](https://stackoverflow.com/q/44989176) from changes to SQLite. The corresponding `src-tauri/api/sample-database-writes/command-run-bash/dump.yaml` is:
+
+```yaml
+terminal_sessions:
+- id: 3717ed48-ab52-4654-9f33-de5797af5118
+  timestamp: 2024-09-24T16:27:25
+  command: bash
+  os: Mac
+  cast:
+    header:
+      version: 2
+      width: 80
+      height: 24
+      timestamp: 1727195245
+      command: bash
+    entries:
+    - - 0.208
+      - 'o'
+      - "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+```
+
+Initially, the entries returned the *full* AsciiCast, not just the cast so far. As such, this requires editing `src-tauri/src/commands/terminal/models.rs` to return a new struct instead of a reference to one:
+
+```rs
+pub trait Terminal: Send + Sync {
+    ...
+    fn get_cast(&self) -> AsciiCastData;
+}
+
+...
+
+impl Terminal for ActualTerminal {
+    ...
+
+    fn get_cast(&self) -> AsciiCastData {
+        self.session_data.clone()
+    }
+}
+```
+
+We also need to edit `src-tauri/src/test_helpers/terminal.rs` to do the same:
+
+```rs
+    fn get_cast(&self) -> AsciiCastData {
+        match &self.terminal {
+            Left(cast) => AsciiCastData {
+                header: cast.header.clone(),
+                entries: cast.entries[..self.entry_index].to_vec(),
+            },
+            ...
+        }
+    }
+```
+
+#### Continuing from stored terminal sessions
+
+During implementation, we run into
+
+```
+error[E0581]: return type references an anonymous lifetime, which is not constrained by the fn input types
+  --> src/commands/terminal/send_input.rs:19:1
+   |
+19 | / pub async fn send_input(
+20 | |     database: State<'_, ZammDatabase>,
+21 | |     sessions: State<'_, ZammTerminalSessions>,
+22 | |     session_id: String,
+23 | |     input: String,
+24 | | ) -> ZammResult<String> {
+   | |_______________________^
+   |
+   = note: lifetimes appearing in an associated or opaque type are not considered constrained
+   = note: consider introducing a named lifetime parameter
+```
+
+It turns out this is because we haven't yet imported `use tauri::State;` in the new file.
+
+#### Flaky tests
+
+We notice that we get this failing test once on the Mac:
+
+```
+---- commands::terminal::models::tests::test_capture_interaction stdout ----
+thread 'commands::terminal::models::tests::test_capture_interaction' panicked at src/commands/terminal/models.rs:301:9:
+Output: "python api/sample-terminal-sessions/interleaved.py\r\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+thread '<unnamed>' panicked at src/commands/terminal/models.rs:64:41:
+called `Result::unwrap()` on an `Err` value: SendError { .. }
+```
+
+A rerun failed to produce the same error again.
