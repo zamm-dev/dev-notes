@@ -3052,7 +3052,52 @@ We also need to edit `src-tauri/src/test_helpers/terminal.rs` to do the same:
 
 #### Continuing from stored terminal sessions
 
-During implementation, we run into
+We update `src-tauri/api/sample-call-schema.json` to allow for the current state of the terminal recording to be specified as well:
+
+```json
+            "terminal": {
+              ...,
+              "properties": {
+                ...,
+                "startingIndex": {
+                  "type": "integer"
+                }
+              },
+              ...
+            }
+```
+
+`src-tauri/src/sample_call.rs` gets updated as well when we run `make quicktype`. We have to edit `src-tauri/src/test_helpers/api_testing.rs` as well to make use of this new functionality:
+
+```rs
+            // prepare terminal if necessary
+            if let Some(terminal_info) = &side_effects.terminal {
+                let recording_path = ...;
+                let mut terminal =
+                    ...;
+                if let Some(recording_index) = terminal_info.starting_index {
+                    terminal.set_entry_index(recording_index.try_into().unwrap());
+                }
+
+                ...
+            }
+```
+
+and to add this functionality to `src-tauri/src/test_helpers/terminal.rs`:
+
+```rs
+impl TestTerminal {
+    ...
+
+    pub fn set_entry_index(&mut self, index: usize) {
+        self.entry_index = index;
+    }
+
+    ...
+}
+```
+
+During implementation of `src-tauri/src/commands/terminal/send_input.rs`, we run into
 
 ```
 error[E0581]: return type references an anonymous lifetime, which is not constrained by the fn input types
@@ -3070,7 +3115,194 @@ error[E0581]: return type references an anonymous lifetime, which is not constra
    = note: consider introducing a named lifetime parameter
 ```
 
-It turns out this is because we haven't yet imported `use tauri::State;` in the new file.
+It turns out this is because we haven't yet imported `use tauri::State;` in the new file. We end up with a file that looks like this:
+
+```rs
+use crate::commands::errors::ZammResult;
+use crate::models::llm_calls::EntityId;
+use crate::schema::asciicasts;
+
+use crate::{ZammDatabase, ZammTerminalSessions};
+use anyhow::anyhow;
+use diesel::prelude::*;
+use specta::specta;
+use tauri::State;
+use uuid::Uuid;
+
+async fn send_command_input_helper(
+    zamm_db: &ZammDatabase,
+    zamm_sessions: &ZammTerminalSessions,
+    session_id: &Uuid,
+    input: &str,
+) -> ZammResult<String> {
+    let db = &mut zamm_db.0.lock().await;
+    let mut sessions = zamm_sessions.0.lock().await;
+    let session_entity_id = EntityId { uuid: *session_id };
+    let terminal = sessions
+        .get_mut(&session_entity_id)
+        .ok_or_else(|| anyhow!("No session found"))?;
+    let result = terminal.send_input(input).await?;
+
+    if let Some(conn) = db.as_mut() {
+        let result = diesel::update(asciicasts::table)
+            .filter(asciicasts::id.eq(session_entity_id))
+            .set(asciicasts::cast.eq(terminal.get_cast()))
+            .execute(conn)?;
+        if result == 0 {
+            return Err(anyhow!("Couldn't update session in database").into());
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn send_command_input(
+    database: State<'_, ZammDatabase>,
+    sessions: State<'_, ZammTerminalSessions>,
+    session_id: Uuid,
+    input: String,
+) -> ZammResult<String> {
+    send_command_input_helper(&database, &sessions, &session_id, &input).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_result_test_case};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct SendInputRequest {
+        session_id: Uuid,
+        input: String,
+    }
+
+    async fn make_request_helper(
+        args: &SendInputRequest,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> ZammResult<String> {
+        let terminal_helper = side_effects.terminal.as_mut().unwrap();
+        let mock_terminal = terminal_helper
+            .sessions
+            .0
+            .lock()
+            .await
+            .remove(&terminal_helper.mock_session_id)
+            .unwrap();
+        terminal_helper.sessions.0.lock().await.insert(
+            EntityId {
+                uuid: args.session_id,
+            },
+            mock_terminal,
+        );
+        send_command_input_helper(
+            side_effects.db.as_mut().unwrap(),
+            &terminal_helper.sessions,
+            &args.session_id,
+            &args.input,
+        )
+        .await
+    }
+
+    impl_result_test_case!(
+        SendInputTestCase,
+        send_command_input,
+        true,
+        SendInputRequest,
+        String
+    );
+
+    check_sample!(
+        SendInputTestCase,
+        test_bash_interleaved,
+        "./api/sample-calls/send_command_input-bash-interleaved.yaml"
+    );
+}
+
+```
+
+Note that we have to swap the key of the hashmap in the test, because otherwise the right database row won't be updated if we're only updating the wrong session ID in the hashmap.
+
+We export this command in `src-tauri/src/commands/terminal/mod.rs`:
+
+```rs
+...
+mod send_input;
+
+...
+pub use send_input::send_command_input;
+```
+
+and again in `src-tauri/src/commands/mod.rs`:
+
+```rs
+pub use terminal::{..., send_command_input};
+```
+
+and consume it in `src-tauri/src/main.rs`:
+
+```rs
+...
+use commands::{
+    ...
+    send_command_input,
+    ...
+};
+
+fn main() {
+    ...
+            ts::export(
+                collect_types![
+                    ...,
+                    send_command_input,
+                ],
+                ...
+            );
+    ...
+            tauri::Builder::default()
+                ...
+                .invoke_handler(tauri::generate_handler![
+                    ...
+                    send_command_input,
+                    ...
+                ])
+                ...;
+}
+```
+
+The request at `src-tauri/api/sample-calls/send_command_input-bash-interleaved.yaml` looks like this:
+
+```yaml
+request:
+  - send_command_input
+  - >
+    {
+      "session_id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      "input": "python api/sample-terminal-sessions/interleaved.py\n"
+    }
+response:
+  message: >
+    "python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "
+sideEffects:
+  database:
+    startStateDump: command-run-bash
+    endStateDump: command-run-bash-interleaved
+  terminal:
+    recordingFile: bash.cast
+    startingIndex: 1
+```
+
+The resulting dump at `src-tauri/api/sample-database-writes/command-run-bash-interleaved/dump.sql` contains the new input/output lines:
+
+```sql
+INSERT INTO asciicasts VALUES('3717ed48-ab52-4654-9f33-de5797af5118','2024-09-24 16:27:25','bash','Mac',replace('{"version":2,"width":80,"height":24,"timestamp":1727195245,"command":"bash"}\012[0.208,"o","\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "]\012[0.208,"i","python api/sample-terminal-sessions/interleaved.py\n"]\012[0.412,"o","python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "]','\012',char(10)));
+```
+
+Ditto for the YAML dump at `src-tauri/api/sample-database-writes/command-run-bash-interleaved/dump.yaml`.
 
 #### Flaky tests
 
@@ -3086,3 +3318,351 @@ called `Result::unwrap()` on an `Err` value: SendError { .. }
 ```
 
 A rerun failed to produce the same error again.
+
+#### Frontend
+
+We update the bindings again with `cargo run -- export-bindings`.
+
+We refactor `src-svelte/src/routes/chat/Form.svelte` into `src-svelte/src/lib/controls/SendInputForm.svelte`, in the process renaming `submitChat` to `submitInput`:
+
+```svelte
+<script lang="ts">
+  ...
+  export let sendInput: (message: string) => void;
+  export let accessibilityLabel: string;
+  export let isBusy = false;
+  export let currentMessage = "";
+  export let placeholder = "Type your message here...";
+  ...
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter" && ...) {
+      ...
+      submitInput();
+    }
+  }
+
+  function submitInput() {
+    ...
+    if (message && !isBusy) {
+      sendInput(currentMessage);
+      ...
+    }
+  }
+</script>
+
+...
+
+<form
+  ...
+  on:submit|preventDefault={submitInput}
+>
+  <label for="message" ...>{accessibilityLabel}</label>
+  <textarea
+    ...
+    {placeholder}
+    ...
+  />
+  <Button ... disabled={isBusy} ...
+    >...</Button
+  >
+</form>
+```
+
+We edit `src-svelte/src/routes/chat/Chat.svelte` to use this newly refactored component:
+
+```svelte
+...
+
+<script lang="ts">
+  ...
+  import SendInputForm from "$lib/controls/SendInputForm.svelte";
+  ...
+</script>
+
+...
+    <SendInputForm
+      accessibilityLabel="Chat with the AI:"
+      sendInput={sendChatMessage}
+      isBusy={expectingResponse}
+      ...
+    />
+...
+```
+
+We can now use this in `src-svelte/src/routes/terminal/TerminalSession.svelte`, where we use the same resize logic as the Chat component:
+
+```svelte
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import SendInputForm from "$lib/controls/SendInputForm.svelte";
+  import { runCommand, sendCommandInput } from "$lib/bindings";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import EmptyPlaceholder from "$lib/EmptyPlaceholder.svelte";
+  import Scrollable from "$lib/Scrollable.svelte";
+
+  export let sessionId: string | undefined = undefined;
+  export let command: string | undefined = undefined;
+  export let output = "";
+  let expectingResponse = false;
+  let growable: Scrollable | undefined;
+  $: awaitingSession = sessionId === undefined;
+  $: accessibilityLabel = awaitingSession
+    ? "Enter command to run"
+    : "Enter input for command";
+  $: placeholder = awaitingSession
+    ? "Enter command to run (e.g. /bin/bash)"
+    : "Enter input for command";
+
+  function resizeTerminalView() {
+    growable?.resizeScrollable();
+    setTimeout(() => {
+      growable?.scrollToBottom();
+    }, 100);
+  }
+
+  async function sendCommand(newInput: string) {
+    try {
+      if (sessionId === undefined) {
+        // start new command
+        let result = await runCommand(newInput);
+        command = newInput;
+        sessionId = result.id;
+        output += result.output.trimStart();
+      } else {
+        let result = await sendCommandInput(sessionId, newInput + "\n");
+        output += result;
+      }
+      resizeTerminalView();
+    } catch (error) {
+      snackbarError(error as string);
+    }
+  }
+</script>
+
+<InfoBox title="Terminal Session" fullHeight>
+  <div class="terminal-container composite-reveal full-height">
+    {#if command}
+      <p>Current command: <span class="command">{command}</span></p>
+    {:else}
+      <EmptyPlaceholder>
+        No running process.<br />Get started by entering a command below.
+      </EmptyPlaceholder>
+    {/if}
+
+    <Scrollable bind:this={growable}>
+      <pre>{output}</pre>
+    </Scrollable>
+
+    <SendInputForm
+      {accessibilityLabel}
+      {placeholder}
+      sendInput={sendCommand}
+      isBusy={expectingResponse}
+      onTextInputResize={resizeTerminalView}
+    />
+  </div>
+</InfoBox>
+
+<style>
+  .terminal-container {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  p {
+    margin: 0;
+    padding: 0.5rem 1rem;
+    background: var(--color-background);
+    border-radius: var(--corner-roundness);
+  }
+
+  span.command {
+    font-weight: bold;
+  }
+</style>
+
+```
+
+We create new stories at `src-svelte/src/routes/terminal/TerminalSession.stories.ts`:
+
+```ts
+import TerminalSession from "./TerminalSession.svelte";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import MockFullPageLayout from "$lib/__mocks__/MockFullPageLayout.svelte";
+
+export default {
+  component: TerminalSession,
+  title: "Screens/Terminal/Session",
+  argTypes: {},
+  decorators: [
+    SvelteStoresDecorator,
+    TauriInvokeDecorator,
+    (story: StoryFn) => {
+      return {
+        Component: MockFullPageLayout,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: TerminalSession,
+  props: args,
+});
+
+export const New: StoryObj = Template.bind({}) as any;
+New.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/run_command-bash.yaml",
+    "/api/sample-calls/send_command_input-bash-interleaved.yaml",
+  ],
+};
+
+export const InProgress: StoryObj = Template.bind({}) as any;
+InProgress.args = {
+  sessionId: "3717ed48-ab52-4654-9f33-de5797af5118",
+  command: "bash",
+  output:
+    // eslint-disable-next-line max-len
+    "The default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ ",
+};
+InProgress.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/send_command_input-bash-interleaved.yaml",
+  ],
+};
+
+```
+
+When interacting with these stories, we get the error
+
+```
+No matching call found for ["send_command_input",{"sessionId":"3717ed48-ab52-4654-9f33-de5797af5118","input":"python api/sample-terminal-sessions/interleaved.py\n"}].
+Candidates are ["send_command_input",{"input":"python api/sample-terminal-sessions/interleaved.py\n","sessionId":"3717ed48-ab52-4654-9f33-de5797af5118"}]
+```
+
+We see that [this](https://stackoverflow.com/a/16168003) is the way to have `JSON.stringify` be consistent in the order of keys. As such, we modify `src-svelte/src/lib/sample-call-testing.ts`:
+
+```ts
+...
+
+function stringify(obj: any): string {
+  if (typeof obj === "object") {
+    return JSON.stringify(obj, Object.keys(obj).sort());
+  }
+  return JSON.stringify(obj);
+}
+
+export class TauriInvokePlayback {
+  ...
+
+  mockCall(
+    ...
+  ): Promise<Record<string, string>> {
+    const jsonArgs = stringify(args);
+    const matchingCallIndex = this.unmatchedCalls.findIndex(
+      (call) => stringify(call.request) === jsonArgs,
+    );
+    if (matchingCallIndex === -1) {
+      const candidates = this.unmatchedCalls
+        .map((call) => stringify(call.request))
+        .join("\n");
+        ...
+    }
+    ...
+  }
+}
+```
+
+We add the new screenshots to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "terminal", "session"],
+    variants: ["new", "in-progress"],
+    screenshotEntireBody: true,
+  },
+];
+```
+
+Apart from manual testing with Storybook stories, we also create `src-svelte/src/routes/terminal/TerminalSession.test.ts` to properly test the callbacks:
+
+```ts
+import { expect, test, vi, type Mock } from "vitest";
+import "@testing-library/jest-dom";
+import { render, screen, waitFor } from "@testing-library/svelte";
+import TerminalSession from "./TerminalSession.svelte";
+import userEvent from "@testing-library/user-event";
+import { TauriInvokePlayback } from "$lib/sample-call-testing";
+
+describe("Terminal session", () => {
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    vi.stubGlobal("__TAURI_INVOKE__", tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+
+    window.IntersectionObserver = vi.fn(() => {
+      return {
+        observe: vi.fn(),
+        unobserve: vi.fn(),
+        disconnect: vi.fn(),
+      };
+    }) as unknown as typeof IntersectionObserver;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("Terminal session", async () => {
+    render(TerminalSession, {});
+    const commandInput = screen.getByLabelText("Enter command to run");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+
+    expect(tauriInvokeMock).not.toHaveBeenCalled();
+    playback.addSamples("../src-tauri/api/sample-calls/run_command-bash.yaml");
+
+    expect(commandInput).toHaveValue("");
+    await userEvent.type(commandInput, "bash");
+    await userEvent.click(sendButton);
+    expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          new RegExp("The default interactive shell is now zsh"),
+        ),
+      ).toBeInTheDocument();
+    });
+
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/send_command_input-bash-interleaved.yaml",
+    );
+    expect(commandInput).toHaveValue("");
+    await userEvent.type(
+      commandInput,
+      "python api/sample-terminal-sessions/interleaved.py",
+    );
+    await userEvent.click(sendButton);
+    expect(tauriInvokeMock).toHaveReturnedTimes(2);
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp("stderr"))).toBeInTheDocument();
+    });
+  });
+});
+
+```
