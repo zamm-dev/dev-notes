@@ -3666,3 +3666,682 @@ describe("Terminal session", () => {
 });
 
 ```
+
+Next, we refactor out the API calls table into its own component at `src-svelte/src/routes/api-calls/ApiCallsTable.svelte`:
+
+```svelte
+<script lang="ts">
+  import { getApiCalls, type LightweightLlmCall } from "$lib/bindings";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import Scrollable from "$lib/Scrollable.svelte";
+  import ApiCallReference from "$lib/ApiCallReference.svelte";
+  import { onMount } from "svelte";
+  import EmptyPlaceholder from "$lib/EmptyPlaceholder.svelte";
+
+  const PAGE_SIZE = 50;
+  const MIN_MESSAGE_WIDTH = "5rem";
+  const MIN_TIME_WIDTH = "12.5rem";
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+  let llmCalls: LightweightLlmCall[] = [];
+  let llmCallsPromise: Promise<void> | undefined = undefined;
+  let allCallsLoaded = false;
+  let messageWidth = MIN_MESSAGE_WIDTH;
+  let timeWidth = MIN_TIME_WIDTH;
+  let headerMessageWidth = MIN_MESSAGE_WIDTH;
+
+  const formatter = new Intl.DateTimeFormat(dateTimeLocale, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: true,
+    timeZone,
+  });
+
+  export function formatTimestamp(timestamp: string): string {
+    const timestampUTC = timestamp + "Z";
+    const date = new Date(timestampUTC);
+    return formatter.format(date);
+  }
+
+  function getWidths(selector: string) {
+    const elements = document.querySelectorAll(selector);
+    const results = Array.from(elements)
+      .map((el) => el.getBoundingClientRect().width)
+      .filter((width) => width > 0);
+    return results;
+  }
+
+  function resizeMessageWidth() {
+    messageWidth = MIN_MESSAGE_WIDTH;
+    // time width doesn't need a reset because it never decreases
+
+    setTimeout(() => {
+      const textWidths = getWidths(".api-calls-page .text-container");
+      const timeWidths = getWidths(".api-calls-page .time");
+      const minTextWidth = Math.floor(Math.min(...textWidths));
+      messageWidth = `${minTextWidth}px`;
+      const maxTimeWidth = Math.ceil(Math.max(...timeWidths));
+      timeWidth = `${maxTimeWidth}px`;
+
+      headerMessageWidth = messageWidth;
+    }, 10);
+  }
+
+  function loadApiCalls() {
+    if (llmCallsPromise) {
+      return;
+    }
+
+    if (allCallsLoaded) {
+      return;
+    }
+
+    llmCallsPromise = getApiCalls(llmCalls.length)
+      .then((newCalls) => {
+        llmCalls = [...llmCalls, ...newCalls];
+        allCallsLoaded = newCalls.length < PAGE_SIZE;
+        llmCallsPromise = undefined;
+
+        requestAnimationFrame(resizeMessageWidth);
+      })
+      .catch((error) => {
+        snackbarError(error);
+      });
+  }
+
+  function asReference(call: LightweightLlmCall) {
+    return {
+      id: call.id,
+      snippet: call.response_message.text.trim(),
+    };
+  }
+
+  onMount(() => {
+    resizeMessageWidth();
+    window.addEventListener("resize", resizeMessageWidth);
+
+    return () => {
+      window.removeEventListener("resize", resizeMessageWidth);
+    };
+  });
+
+  $: minimumWidths =
+    `--message-width: ${messageWidth}; ` +
+    `--header-message-width: ${headerMessageWidth}; ` +
+    `--time-width: ${timeWidth}`;
+</script>
+
+<div class="container api-calls-page full-height" style={minimumWidths}>
+  <div class="message header">
+    <div class="text-container">
+      <div class="text">Message</div>
+    </div>
+    <div class="time">Time</div>
+  </div>
+  <div class="scrollable-container full-height">
+    <Scrollable on:bottomReached={loadApiCalls}>
+      {#if llmCalls.length > 0}
+        {#each llmCalls as call (call.id)}
+          <a href={`/api-calls/${call.id}`}>
+            <div class="message instance">
+              <div class="text-container">
+                <div class="text">
+                  <ApiCallReference
+                    selfContained
+                    nolink
+                    apiCall={asReference(call)}
+                  />
+                </div>
+              </div>
+              <div class="time">{formatTimestamp(call.timestamp)}</div>
+            </div>
+          </a>
+        {/each}
+      {:else}
+        <div class="message placeholder">
+          <div class="text-container">
+            <EmptyPlaceholder>
+              Looks like you haven't made any calls to an LLM yet.<br />Get
+              started via <a href="/chat">chat</a> or by making one
+              <a href="/api-calls/new/">from scratch</a>.
+            </EmptyPlaceholder>
+          </div>
+          <div class="time"></div>
+        </div>
+      {/if}
+    </Scrollable>
+  </div>
+</div>
+
+<style>
+  .container {
+    gap: 0.25rem;
+  }
+
+  .scrollable-container {
+    --side-padding: 0.8rem;
+    margin: 0 calc(-1 * var(--side-padding));
+    width: calc(100% + 2 * var(--side-padding));
+    box-sizing: border-box;
+  }
+
+  .message {
+    display: flex;
+    color: black;
+  }
+
+  .message.placeholder :global(p) {
+    margin-top: 0.5rem;
+  }
+
+  .message.header {
+    margin-bottom: 0.5rem;
+  }
+
+  .message.header .text-container,
+  .message.header .time {
+    text-align: center;
+    font-weight: bold;
+  }
+
+  .message .text-container {
+    flex: 1;
+  }
+
+  .message.instance {
+    padding: 0.2rem var(--side-padding);
+    border-radius: var(--corner-roundness);
+    transition: background 0.5s;
+    height: 1.62rem;
+    box-sizing: border-box;
+  }
+
+  .message.instance:hover {
+    background: var(--color-hover);
+  }
+
+  .message .text-container .text {
+    max-width: var(--message-width);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .message.header .text-container .text {
+    max-width: var(--header-message-width);
+  }
+
+  .message .time {
+    min-width: var(--time-width);
+    box-sizing: border-box;
+    text-align: right;
+  }
+</style>
+
+```
+
+and the main database page at `src-svelte/src/routes/api-calls/ApiCalls.svelte` just appears as:
+
+```svelte
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import IconAdd from "~icons/mingcute/add-fill";
+  import ApiCallsTable from "./ApiCallsTable.svelte";
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+</script>
+
+<InfoBox title="LLM API Calls" fullHeight>
+  <div class="container full-height">
+    <a class="new-api-call" href="/api-calls/new/" title="New API call">
+      <IconAdd />
+    </a>
+    <ApiCallsTable {dateTimeLocale} {timeZone} />
+  </div>
+</InfoBox>
+
+<style>
+  .container {
+    gap: 0.25rem;
+  }
+
+  a.new-api-call {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+  }
+
+  a.new-api-call :global(svg) {
+    transform: scale(1.2);
+    color: var(--color-faded);
+  }
+</style>
+
+```
+
+Next, we refactor out the select element from the new API editor page, into a reusable component at `src-svelte/src/lib/controls/Select.svelte`:
+
+```svelte
+<script lang="ts">
+  import getComponentId from "$lib/label-id";
+
+  export let name: string;
+  export let value: string;
+  export let label: string;
+  let id = getComponentId("select");
+</script>
+
+<div class="setting">
+  <label for={id}>{label}</label>
+  <div class="select-wrapper">
+    <select {name} {id} bind:value>
+      <slot />
+    </select>
+  </div>
+</div>
+
+<style>
+  .setting {
+    display: flex;
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+
+  select {
+    -webkit-appearance: none;
+    -ms-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    border: none;
+    padding-right: 1rem;
+    box-sizing: border-box;
+    direction: rtl;
+    width: 100%;
+  }
+
+  select :global(option) {
+    direction: ltr;
+  }
+
+  select,
+  .select-wrapper {
+    background-color: transparent;
+    font-family: var(--font-body);
+    font-size: 1rem;
+  }
+
+  .select-wrapper {
+    flex: 1;
+    border-bottom: 1px dotted var(--color-faded);
+    position: relative;
+    display: inline-block;
+  }
+
+  .select-wrapper::after {
+    content: "▼";
+    display: inline-block;
+    position: absolute;
+    right: 0.25rem;
+    top: 0.35rem;
+    color: var(--color-faded);
+    font-size: 0.5rem;
+    pointer-events: none;
+  }
+</style>
+
+```
+
+and then we edit `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte` to use this new component, where we update `selectModels` immediately on component load to avoid problems with the `value` being updated but not displaying as such in the HTML render:
+
+```svelte
+<script lang="ts">
+  ...
+  import Select from "$lib/controls/Select.svelte";
+  ...
+
+  let selectModels = $provider === "OpenAI" ? OPENAI_MODELS : OLLAMA_MODELS;
+
+</script>
+
+...
+
+  <div class="model-settings">
+    <Select name="provider" label="Provider: " bind:value={$provider}>
+      <option value="OpenAI">OpenAI</option>
+      <option value="Ollama">Ollama</option>
+    </Select>
+    <Select name="model" label="Model: " bind:value={$llm}>
+      {#each selectModels as model}
+        <option value={model.apiName}>{model.humanName}</option>
+      {/each}
+    </Select>
+    ...
+  </div>
+...
+```
+
+Now we edit `src-svelte/src/routes/api-calls/ApiCalls.svelte` to use this select, in the process renaming the CSS class `.new-api-call` to `.new-button`:
+
+```svelte
+<script lang="ts" context="module">
+  import { writable } from "svelte/store";
+
+  type DataTypeEnum = "llm-calls" | "terminal";
+  export const dataType = writable<DataTypeEnum>("llm-calls");
+</script>
+
+<script lang="ts">
+  ...
+  import Select from "$lib/controls/Select.svelte";
+  import EmptyPlaceholder from "$lib/EmptyPlaceholder.svelte";
+
+  $: infoBoxTitle =
+    $dataType === "llm-calls" ? "LLM API Calls" : "Terminal Sessions";
+  $: newHref = $dataType === "llm-calls" ? "/api-calls/new/" : "/terminal/new/";
+  $: newTitle =
+    $dataType === "llm-calls" ? "New API call" : "New Terminal Session";
+</script>
+
+<InfoBox title={infoBoxTitle} ...>
+  <div class="container full-height">
+    <a class="new-button" href={newHref} title={newTitle}>
+      <IconAdd />
+    </a>
+    <Select name="data-type" label="Showing " bind:value={$dataType}>
+      <option value="llm-calls">LLM Calls</option>
+      <option value="terminal">Terminal</option>
+    </Select>
+    {#if $dataType === "llm-calls"}
+      <ApiCallsTable {dateTimeLocale} {timeZone} />
+    {:else}
+      <EmptyPlaceholder>
+        Terminal sessions cannot be viewed yet.<br />You may
+        <a href="/terminal/new/">start</a> a new one.
+      </EmptyPlaceholder>
+    {/if}
+  </div>
+</InfoBox>
+
+<style>
+  ...
+
+  .container :global(.select-wrapper) {
+    flex: 0;
+  }
+
+  .container :global(select) {
+    width: fit-content;
+  }
+
+  a.new-button {
+    ...
+  }
+
+  a.new-button :global(svg) {
+    ...
+  }
+</style>
+```
+
+Note that we have to update the CSS for both the select wrapper and the actual select element to make the select element fit the width of its internal content.
+
+We create the corresponding file at `src-svelte/src/routes/terminal/new/+page.svelte` to avoid a 404:
+
+```svelte
+<script lang="ts">
+  import TerminalSession from "../TerminalSession.svelte";
+</script>
+
+<TerminalSession />
+
+```
+
+We realize upon manual testing that we've never updated, so we edit `src-svelte/src/routes/terminal/TerminalSession.svelte`:
+
+```ts
+  async function sendCommand(newInput: string) {
+    try {
+      expectingResponse = true;
+      ...
+    } catch (error) {
+      ...
+    } finally {
+      expectingResponse = false;
+    }
+  }
+```
+
+Upon manual testing, we also find out that we cannot navigate away from the terminal session page once we go there. This is because the new path is not shown in the sidebar.
+
+##### Refactoring paths to fix sidebar
+
+We move our files around to fit the new schema and fix the sidebar:
+
+- The folder `src-svelte/src/routes/api-calls/[slug]/` is moved to `src-svelte/src/routes/database/api-calls/[slug]/`
+- `src-svelte/src/routes/api-calls/new/` is moved to `src-svelte/src/routes/database/api-calls/new/`
+- `src-svelte/src/routes/terminal/` is moved to `src-svelte/src/routes/database/terminal-sessions/`
+
+We rename `src-svelte/src/routes/api-calls/+page.svelte`
+
+We move `src-svelte/src/routes/database/+page.svelte`
+
+Stories such as `src-svelte/src/routes/database/DatabaseView.full-page.stories.ts` are edited:
+
+```ts
+import ApiCallsComponent from "./DatabaseView.svelte";
+...
+
+export default {
+  component: DatabaseView,
+  title: "Screens/Database/List",
+  ...
+};
+
+...
+```
+
+The corresponding tests in files such as `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` are edited:
+
+```ts
+  const getScrollElement = async () => {
+    const url = `http://localhost:6006/?path=/story/screens-database-list--full`;
+    ...
+  };
+```
+
+`src-svelte/src/routes/storybook.test.ts` is updated as well:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "database", "llm-call", "new"],
+    ...
+  },
+  {
+    path: ["screens", "database", "llm-call", "import"],
+    ...
+  },
+  {
+    path: ["screens", "database", "llm-call"],
+    ...
+  },
+  {
+    path: ["screens", "database", "llm-call", "actions"],
+    ...
+  },
+  {
+    path: ["screens", "database", "list"],
+    ...
+  },
+  {
+    path: ["screens", "database", "terminal-session"],
+    ...
+  },
+  ...
+];
+```
+
+We move the screenshot folders to correspond:
+
+- `src-svelte/screenshots/baseline/screens/llm-call/list/` to `src-svelte/screenshots/baseline/screens/database/list/`
+- `src-svelte/screenshots/baseline/screens/llm-call/import/` to `src-svelte/screenshots/baseline/screens/database/llm-call/import/`
+- `src-svelte/screenshots/baseline/screens/llm-call/individual/` to `src-svelte/screenshots/baseline/screens/database/llm-call/individual/`
+- `src-svelte/screenshots/baseline/screens/llm-call/new/` to `src-svelte/screenshots/baseline/screens/database/llm-call/new/`
+- `src-svelte/screenshots/baseline/screens/terminal/session/` to `src-svelte/screenshots/baseline/screens/database/terminal-session/`
+
+It's initially unclear whether Jest image snapshot will pass on CI if images are missing, especially given that [this issue](https://github.com/americanexpress/jest-image-snapshot/issues/281) initially implied that it would. But from tests, we see that it does fail, and we update the issue with our findings.
+
+However, when run locally with `CI` set to true, this gets mixed in with all the actual screenshot failures. As such, we do this to allow our tests to fail fast:
+
+```ts
+...
+import { existsSync } from "fs";
+...
+
+      test(
+        `${testName} should render the same`,
+        async ({ expect }) => {
+          if (process.env.CI === "true") {
+            const goldFilePath = `${SCREENSHOTS_BASE_DIR}/baseline/${storybookPath}/${variantConfig.name}.png`;
+            expect(existsSync(goldFilePath), `No baseline found for ${goldFilePath}`).toBeTruthy();
+          }
+          ...
+        },
+      );
+```
+
+and then we find that we have to move everything in `src-svelte/screenshots/baseline/screens/database/llm-call/individual/` to the `src-svelte/screenshots/baseline/screens/database/llm-call/` folder.
+
+We still have one test failing due to dynamic image comparison. Thus, we do:
+
+```ts
+if (process.env.CI === "true" && !variantConfig.assertDynamic) {
+  ...
+}
+```
+
+Now all the quick checks pass.
+
+We edit links in files such as `src-svelte/src/lib/ApiCallReferenceLink.svelte`:
+
+```svelte
+  <a href="/database/api-calls/{apiCall.id}">{apiCall.snippet}</a>
+```
+
+and imports in files such as `src-svelte/src/lib/__mocks__/stores.ts`:
+
+```ts
+import {
+  canonicalRef,
+  getDefaultApiCall,
+  prompt,
+} from "../../routes/database/api-calls/new/ApiCallEditor.svelte";
+```
+
+The Sidebar itself at `src-svelte/src/routes/SidebarUI.svelte` is edited:
+
+```ts
+  const routes: App.Route[] = [
+    ...
+    {
+      name: "Database",
+      path: "/database",
+      icon: IconDatabase,
+    },
+    ...
+  ];
+```
+
+The various tests at `src-svelte/src/routes/SidebarUI.test.ts` have to be edited accordingly too, for example:
+
+```ts
+ test("highlights right icon for sub-paths", () => {
+    render(SidebarUI, {
+      currentRoute: "/database/api-calls/1234",
+      ...
+    });
+    ...
+    const apiCallsLink = screen.getByTitle("Database");
+    ...
+  });
+```
+
+When building the whole project, we get the error
+
+```
+SvelteKitError: Not found: /api-calls/new/
+    at resolve2 (file:///Users/amos/Documents/zamm/src-svelte/.svelte-kit/output/server/index.js:2853:18)
+    at resolve (file:///Users/amos/Documents/zamm/src-svelte/.svelte-kit/output/server/index.js:2685:34)
+    at #options.hooks.handle (file:///Users/amos/Documents/zamm/src-svelte/.svelte-kit/output/server/index.js:2928:71)
+    at respond (file:///Users/amos/Documents/zamm/src-svelte/.svelte-kit/output/server/index.js:2683:43) {
+  status: 404,
+  text: 'Not Found'
+}
+
+node:internal/event_target:1054
+  process.nextTick(() => { throw err; });
+                           ^
+Error: 404 /api-calls/new/
+To suppress or handle this error, implement `handleHttpError` in https://kit.svelte.dev/docs/configuration#prerender
+    at file:///Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/core/config/options.js:202:13
+```
+
+This turns out to be because we haven't updated `src-svelte/svelte.config.js`:
+
+```js
+const config = {
+  ...
+
+  kit: {
+    ...,
+    prerender: {
+      crawl: false,
+      entries: [
+        "*",
+        "/database/api-calls/new/",
+        "/database/api-calls/[slug]",
+        "/database/terminal-sessions/new/",
+      ],
+    },
+  },
+};
+```
+
+The one failing test is at `src-svelte/src/routes/SidebarUI.test.ts`. It is unknown why it was passing before and failing now, but it passes if we run just the failing test of "plays whoosh sound with right speed and volume." We therefore edit the tests to reset the mock API invocations before each test, merging the `beforeAll` into the `beforeEach`, and only adding the mock API call in the tests where it's actually expected to be called:
+
+```ts
+describe("Sidebar interactions", () => {
+  ...
+  const whooshSample = "../src-tauri/api/sample-calls/play_sound-whoosh.yaml";
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    vi.stubGlobal("__TAURI_INVOKE__", tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      ...
+    );
+
+    render(SidebarUI, {
+      ...
+    });
+    ...
+  });
+
+  test("can change page path", async () => {
+    playback.addSamples(whooshSample);
+    ...
+  });
+
+  test("plays whoosh sound with right speed and volume", async () => {
+    playback.addSamples(whooshSample);
+    ...
+  });
+});
+```
