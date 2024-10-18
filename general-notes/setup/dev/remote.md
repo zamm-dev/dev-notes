@@ -81,7 +81,7 @@ Now on your local machine:
 ssh -L 59000:localhost:5901 -C -N -l root hetzner
 ```
 
-and connect to `localhost:59000` with your local VNC client. On Ubuntu, this would be Vinagre. On KDE, this would be KRDC.
+and connect to `localhost:59000` with your local VNC client. On Ubuntu, this would be Vinagre. On KDE, this would be KRDC. On Mac, you can do this [with Finder](https://www.reddit.com/r/MacOS/comments/16ht4tn/comment/k0fqeav/), though you'll enter `vnc://localhost:59000` for what to connect to.
 
 ### Starting X server at startup
 

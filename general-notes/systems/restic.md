@@ -196,6 +196,22 @@ If you have multiple hosts backing up to the same repo, you can filter by host:
 $ restic -r "$RESTIC_HD/Aero" restore latest --host DESKTOP-N5K32L1 --target ~/Downloads/restoration
 ```
 
+If you try to restore a single file, you get
+
+```bash
+$ restic restore latest:/Documents/restic/includes.txt --host Amoss-MacBook-Air.local --target ~/Documents/restic/includes.txt
+repository 26719cd1 opened (version 2, compression level auto)
+[0:01] 100.00%  11 / 11 index files loaded
+path Documents/restic/includes.txt: not a directory
+```
+
+As such, you may want to restore the entire directory to a different location and pick out the bits you want:
+
+```bash
+$ restic restore latest:/Documents/restic/ --host Amoss-MacBook-Air.local --target ~/Downloads/restic/
+$ cp ~/Downloads/restic/includes.txt ~/Documents/restic
+```
+
 ## Pruning backups
 
 To keep only some backups, run

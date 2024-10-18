@@ -3319,6 +3319,95 @@ called `Result::unwrap()` on an `Err` value: SendError { .. }
 
 A rerun failed to produce the same error again.
 
+However, sometimes we get
+
+```
+---- commands::terminal::models::tests::test_capture_interaction stdout ----
+thread 'commands::terminal::models::tests::test_capture_interaction' panicked at src/commands/terminal/models.rs:308:9:
+assertion `left == right` failed
+  left: 2
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+thread '<unnamed>' panicked at src/commands/terminal/models.rs:64:41:
+called `Result::unwrap()` on an `Err` value: SendError { .. }
+```
+
+on CI. This happens rarely, but still frequently enough in CI that we should address it because it may point to issues around concurrency. We try to edit `src-tauri/src/commands/terminal/models.rs` to introduce another mutex on the other field of `ActualTerminal`:
+
+```rs
+pub struct ActualTerminal {
+    session: Option<Arc<Mutex<PtySession>>>,
+    session_data: Arc<Mutex<AsciiCastData>>,
+}
+```
+
+Our first implementation:
+
+```rs
+#[async_trait]
+impl Terminal for ActualTerminal {
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        if self.session.is_some() {
+            return Err(anyhow!("Session already started").into());
+        }
+
+        let mut session_data = self.session_data.lock()?;
+        session_data.header.command = Some(command.to_string());
+
+        let starting_time = chrono::Utc::now();
+        session_data.header.timestamp = Some(starting_time);
+
+        let session = PtySession::new(command)?;
+        self.session = Some(Arc::new(Mutex::new(session)));
+
+        let result = self.read_updates()?;
+        Ok(result)
+    }
+
+    ...
+}
+```
+
+runs into the issue
+
+```
+error[E0502]: cannot borrow `*__self` as mutable because it is also borrowed as immutable
+   --> src/commands/terminal/models.rs:151:22
+    |
+135 | #[async_trait]
+    |              - immutable borrow might be used here, when `session_data` is dropped and runs the `Drop` code for type `std::sync::MutexGuard`
+...
+142 |         let mut session_data = self.session_data.lock()?;
+    |                                ----------------- immutable borrow occurs here
+...
+151 |         let result = self.read_updates()?;
+    |                      ^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+```
+
+It turns out we just need to wrap that section:
+
+
+```rs
+    async fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        ...
+
+        {
+            let mut session_data = self.session_data.lock()?;
+            session_data.header.command = Some(command.to_string());
+
+            let starting_time = chrono::Utc::now();
+            session_data.header.timestamp = Some(starting_time);
+        }
+
+        ...
+
+        let result = self.read_updates()?;
+        ...
+    }
+```
+
+so that the lock on `self.session_data` is dropped by the time it is needed again in `self.read_updates`. This now compiles, but it deadlocks on unit tests.
+
 #### Frontend
 
 We update the bindings again with `cargo run -- export-bindings`.
@@ -4344,4 +4433,490 @@ describe("Sidebar interactions", () => {
     ...
   });
 });
+```
+
+Finally, we notice that on the actual app, the title element does not update when we update the selected combo box value. We create `src-svelte/src/routes/database/DatabaseView.test.ts` to try to reproduce this error in a test environment:
+
+```ts
+import { expect, test, vi } from "vitest";
+import "@testing-library/jest-dom";
+import DatabaseView, { resetDataType } from "./DatabaseView.svelte";
+import { render, screen, waitFor } from "@testing-library/svelte";
+import userEvent from "@testing-library/user-event";
+
+describe("Database View", () => {
+  beforeEach(() => {
+    window.IntersectionObserver = vi.fn(() => {
+      return {
+        observe: vi.fn(),
+        unobserve: vi.fn(),
+        disconnect: vi.fn(),
+      };
+    }) as unknown as typeof IntersectionObserver;
+  });
+
+  afterEach(() => {
+    resetDataType();
+  });
+
+  test("renders LLM calls by default", async () => {
+    render(DatabaseView, {
+      dateTimeLocale: "en-GB",
+      timeZone: "Asia/Phnom_Penh",
+    });
+
+    const title = screen.getByRole("heading");
+    expect(title).toHaveTextContent("LLM API Calls");
+    userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Showing" }),
+      "Terminal Sessions",
+    );
+    await waitFor(() => {
+      expect(title).toHaveTextContent("Terminal Sessions");
+    });
+  });
+});
+```
+
+wherein we also edit `src-svelte/src/routes/database/DatabaseView.svelte` to make it amenable to testing, as well as fixing the label for the dropdown:
+
+```svelte
+<script lang="ts" context="module">
+  ...
+
+  export function resetDataType() {
+    dataType.set("llm-calls");
+  }
+</script>
+
+...
+    <Select name="data-type" ...>
+      ...
+      <option value="terminal">Terminal Sessions</option>
+    </Select>
+...
+```
+
+Unfortunately, it turns out this test does not fail. Upon further inspection, even in Storybook, the bug is not reproducible except in the "Full Page" view. The bug goes away if we get rid of the `in:revealTitle|global={timing.title}` transition effect for the `h2` element in `InfoBox`, but right now we don't care to create a minimally reproducible version of this bug.
+
+We refactor `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` to add an extra test, which does finally end up failing. In the process, we refactor out the `getFrame` part of `getScrollElement`, and makes the functions take in the actual Storybook URL:
+
+```ts
+describe("Database View", () => {
+  ...
+
+  const getFrame = async (url: string) => {
+    ...
+    return maybeFrame;
+  };
+
+  const getScrollElement = async (url: string) => {
+    const frame = await getFrame(url);
+    ...
+  };
+  
+  ...
+
+  test(
+    "loads more messages when scrolled to end",
+    async () => {
+      const { apiCallsScrollElement } = await getScrollElement(
+        `http://localhost:6006/?path=/story/screens-database-list--full`,
+      );
+      ...
+    },
+    ...
+  );
+
+  test(
+    "updates title when changing dropdown",
+    async () => {
+      const frame = await getFrame(
+        `http://localhost:6006/?path=/story/screens-database-list--full-page`,
+      );
+      await expect(frame.locator("h2")).toHaveText("LLM API Calls");
+
+      await frame.locator("select").selectOption("Terminal Sessions");
+      await expect(frame.locator("h2")).toHaveText("Terminal Sessions");
+    },
+    { retry: 2, timeout: PLAYWRIGHT_TEST_TIMEOUT },
+  );
+});
+```
+
+We edit `src-svelte/src/lib/InfoBox.svelte` to apply the actual fix:
+
+```ts
+  ...
+
+  function forceUpdateTitleText(newTitle: string) {
+    if (titleElement) {
+      titleElement.textContent = newTitle;
+    }
+  }
+
+  ...
+  $: forceUpdateTitleText(title);
+```
+
+##### End-to-end testing
+
+We edit `webdriver/test/specs/e2e.test.js` to add e2e screenshots of the new pages, as well as the API import page that wasn't tested before. This gives us confidence that everything still works as expected despite the major reshuffling of pages and paths.
+
+It turns out we need to add some extra functions to interact with the select and the input (the input text function we already documented before in the e2e test setup). We also change all the `await findAndClick('a[title="API Calls"]');` to `await findAndClick('a[title="Database"]');` to reflect the updated name of the database sidebar icon link. We also need to click twice on the database link to reset what the sidebar link points to from previous tests, and then still navigate away and back to the same page to reset the animation effects:
+
+```js
+async function findAndSelect(selector, index, timeout) {
+  const select = await $(selector);
+  await select.waitForClickable({
+    timeout: timeout ?? DEFAULT_TIMEOUT,
+  });
+  await browser.execute(`arguments[0].selectedIndex = ${index}`, select);
+  await browser.execute(
+    `arguments[0].dispatchEvent(new Event('change'))`,
+    select,
+  );
+}
+
+async function findAndInput(selector, value) {
+  const field = await $(selector);
+  await browser.execute(`arguments[0].value="${value}"`, field);
+  await browser.execute(
+    'arguments[0].dispatchEvent(new Event("input", { bubbles: true }))',
+    field,
+  );
+}
+
+describe("App", function () {
+  ...
+
+  it("should allow navigation to the API calls page", async function () {
+      this.retries(2);
+      await findAndClick('a[title="Database"]');
+      ...
+      await findAndClick('a[title="Database"]');
+      ...
+  }
+
+  ...
+
+  it("should allow navigation to the API call import page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndClick("a=from scratch");
+    await findAndClick("a=import one");
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Database"]');
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("import-api-call", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  it("should allow navigation to the terminal sessions page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndSelect('select[name="data-type"]', 1);
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("terminal-sessions", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  it("should allow navigation to the new terminal session page", async function () {
+    this.retries(2);
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndSelect('select[name="data-type"]', 1);
+    await findAndClick("a=start");
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Database"]');
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("new-terminal-session", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  it("should successfully interact with the terminal", async function () {
+    this.retries(2);
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndSelect('select[name="data-type"]', 1);
+    await findAndClick("a=start");
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Database"]');
+
+    await findAndInput('textarea[name="message"]', "/bin/bash");
+    await findAndClick('button[type="submit"]');
+    await findAndInput('textarea[name="message"]', "pwd");
+    await findAndClick('button[type="submit"]');
+
+    await browser.pause(2500); // for page to finish rendering
+    expect(
+      await browser.checkFullPageScreen("running-terminal-session", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+  });
+
+  it("should allow navigation to the settings page", async function () {
+    ...
+    // click twice to reset the saved navigation to the "New API Call" page
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Dashboard"]');
+    await findAndClick('a[title="Database"]');
+    ...
+  });
+
+  ...
+});
+```
+
+On CI, however, we find that the machine name always changes, so that the prompt looks more like this:
+
+```bash
+runner@fv-az700-454:~/work/zamm/zamm/webdriver$ pwd
+/home/runner/work/zamm/zamm/webdriver
+```
+
+and the `fv-az700-454` part always changes.
+
+So we try to follow [this answer](https://stackoverflow.com/a/8688138) and use a different bash prompt. We edit `webdriver/test/specs/e2e.test.js`, but find that we have to change the input function to escape quotes properly:
+
+```js
+async function findAndInput(selector, value) {
+  ...
+  const escapedValue = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  await browser.execute(`arguments[0].value="${escapedValue}"`, field);
+  ...
+}
+```
+
+Unfortunately it still fails because it cannot find the "file". Perhaps that command works only in a shell session, not when invoking a local program directly. As such, we have the test simply load a local rc file:
+
+```js
+  it("should successfully interact with the terminal", async function () {
+    ...
+    await findAndInput(
+      'textarea[name="message"]',
+      "bash --rcfile ./zamm.bashrc",
+    );
+    ...
+  });
+```
+
+where `webdriver/zamm.bashrc` looks like
+
+```bashrc
+export PS1="zamm-e2e-testing> "
+```
+
+Finally, one more failing test doesn't result in a screenshot at all:
+
+```
+[wry 0.24.7 linux #0-0] 1) App should be able to view single LLM call
+[wry 0.24.7 linux #0-0] element (".api-calls-page a:nth-child(2)") still not clickable after 5000ms
+[wry 0.24.7 linux #0-0] Error: element (".api-calls-page a:nth-child(2)") still not clickable after 5000ms
+[wry 0.24.7 linux #0-0]     at async findAndClick (e2e.test.js:12:3)
+[wry 0.24.7 linux #0-0]     at async Context.<anonymous> (e2e.test.js:201:5)
+```
+
+This is because we'll have navigated away from the database view page. We edit `webdriver/test/specs/e2e.test.js` again:
+
+```js
+  it("should be able to view single LLM call", async function () {
+    this.retries(2);
+    // make sure we're back on the LLM APIs database view
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Database"]');
+    await findAndSelect('select[name="data-type"]', 0);
+    ...
+  });
+```
+
+##### Spacing
+
+We do a little bit of final editing for the spacing. We edit `src-svelte/src/routes/database/DatabaseView.svelte` to add just a bit of spacing to the select element:
+
+```css
+  .container :global(.select-wrapper) {
+    ...
+    margin-bottom: 0.25rem;
+  }
+```
+
+We remove the bottom margin styling for `.message.header` in `src-svelte/src/routes/database/api-calls/ApiCallsTable.svelte` because there's already half a rem of spacing added by the flex gap for the table.
+
+##### Windows compatibility
+
+We realize that inputs to the `cmd` process on Windows are not being evaluated. We reproduce this in `src-tauri/src/test_helpers/terminal.rs`, and find out that `cmd` expects `\r\n` for inputs on Windows before they get evaluated:
+
+```rs
+    #[tokio::test]
+    async fn test_windows_interactivity() {
+        let mut terminal =
+            TestTerminal::new("api/sample-terminal-sessions/windows.cast");
+        terminal.run_command("cmd").await.unwrap();
+        terminal.send_input("dir\r\n").await.unwrap();
+        let output = terminal.send_input("echo %cd%\r\n").await.unwrap();
+        assert!(output.contains("src-tauri"));
+    }
+```
+
+The recording at `src-tauri/api/sample-terminal-sessions/windows.cast` shows us the correct output:
+
+```asciicast
+{"version":2,"width":80,"height":24,"timestamp":1729144933,"command":"cmd"}
+[0.208,"o","\u001b[?25l\u001b[2J\u001b[m\u001b[HMicrosoft Windows [Version 10.0.22631.4169]\r\n(c) Microsoft Corporation. All rights reserved.\u001b[4;1HC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007\u001b[?25h"]
+[0.208,"i","dir\r\n"]
+[0.41,"o","\u001b[?25ldir\r\n Volume in drive C is Windows\r\n Volume Serial Number is 30A7-E02E\u001b[8;1H Directory of C:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri\u001b[10;1H25/09/2024  05:54 pm    <DIR>          .\r\n20/09/2024  07:02 pm    <DIR>          ..\r\n14/02/2024  08:37 pm                73 .gitignore\r\n14/02/2024  08:37 pm                52 .rustfmt.toml\r\n17/10/2024  12:47 pm    <DIR>          api\r\n14/02/2024  08:37 pm    <DIR>          binaries\r\n14/02/2024  08:37 pm                90 build.rs\r\n25/09/2024  05:54 pm           142,536 Cargo.lock\r\n17/10/2024  12:58 pm             2,102 Cargo.toml\r\n20/09/2024  07:02 pm               830 clippy.py\r\n14/02/2024  08:37 pm               244 diesel.toml\r\n20/09/2024  07:02 pm    <DIR>          icons\r\n14/05/2024  03:37 pm               495 Makefile\r\n20/09/2024  07:02 pm    <DIR>          migrations\r\n14/02/2024  08:37 pm    <DIR>          sounds\r\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE - dir\u0007\u001b[?25h\n17/10/2024  12:47 pm    <DIR>          src\r\n25/06/2024  08:14 pm    <DIR>          target\r\n20/09/2024  07:02 pm             1,645 tauri.conf.json\r\n               9 File(s)        148,067 bytes\r\n               9 Dir(s)  190,782,652,416 bytes free\r\n\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007\nC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>"]
+[0.41,"i","echo %cd%\r\n"]
+[0.611,"o","echo %cd%\r\nC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri\r\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE - echo  C:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri\u0007\n\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007\nC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>"]
+```
+
+We keep seeing lines such as `\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007` because [`cmd` sets the title](https://stackoverflow.com/a/75400944) of the window to the command being executed, and that is apparently the escape code for setting pty window titles.
+
+We fix this by editing `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte`:
+
+```ts
+  ...
+  import { systemInfo } from "$lib/system-info";
+  ...
+
+  async function sendCommand(newInput: string) {
+    ...
+      else {
+        ...
+        const inputNewline = $systemInfo?.os === "Windows" ? "\r\n" : "\n";
+        let result = await sendCommandInput(sessionId, newInput + inputNewline);
+        ...
+      }
+    ...
+  }
+```
+
+##### Failing Svelte tests
+
+###### Svelte component exported function
+
+Apart from the usual necessary Storybook screenshot updates, we also get
+
+```
+⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+TypeError: scrollable.getDimensions is not a function
+ ❯ src/lib/Scrollable.svelte:32:48
+     30|       const newHeight = Math.floor(container.getBoundingClientRect().h…
+     31|       scrollableHeight = `${newHeight}px`;
+     32|       dispatchResizeEvent("resize", scrollable.getDimensions());
+       |                                                ^
+     33|     });
+     34|   }
+ ❯ invokeTheCallbackFunction ../node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26
+ ❯ runAnimationFrameCallbacks ../node_modules/jsdom/lib/jsdom/browser/Window.js:636:13
+ ❯ Timeout.<anonymous> ../node_modules/jsdom/lib/jsdom/browser/Window.js:614:11
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+
+This error originated in "src/routes/database/terminal-sessions/TerminalSession.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+```
+
+This appears to be the same problem as the `growable.scrollToBottom` problem in [API calls display](/zamm-notes/api-calls-display.md). There, we solved it by simply including a guard for it, because it only ever happens in CI. We do the same here by editing `src-svelte/src/lib/Scrollable.svelte`:
+
+```ts
+  export function resizeScrollable() {
+    ...
+
+    requestAnimationFrame(() => {
+      ...
+      if (scrollable?.getDimensions) {
+        // CI environment guard
+        dispatchResizeEvent("resize", scrollable.getDimensions());
+      } else {
+        console.warn("scrollable.getDimensions() is not a function");
+      }
+    });
+  }
+```
+
+###### Info box update
+
+There's also
+
+```
+ FAIL  src/routes/database/DatabaseView.playwright.test.ts > Database View > updates title when changing dropdown
+Error: Timed out 5000ms waiting for expect(locator).toHaveText(expected)
+
+Locator: locator('h2')
+Expected string: "LLM API Calls"
+Received string: "LLM API Cal"
+Call log:
+  - locator._expect with timeout 5000ms
+  - waiting for locator('h2')
+  -   locator resolved to <h2 id="infobox-205706" class="s-BIEZu5ODCI1i">LLM API Cal</h2>
+  -   unexpected value "LLM API Cal"
+```
+
+which surely arises from issues with the end animation not finishing yet. On our own Linux test box, we get instead
+
+```
+ FAIL  src/routes/database/DatabaseView.playwright.test.ts > Database View > updates title when changing dropdown
+Error: Timed out 5000ms waiting for expect(locator).toHaveText(expected)
+
+Locator: locator('h2')
+Expected string: "Terminal Sessions"
+Received string: "LLM API Calls"
+Call log:
+  - locator._expect with timeout 5000ms
+  - waiting for locator('h2')
+  -   locator resolved to <h2 id="infobox-728103" class="s-BIEZu5ODCI1i">LLM API Calls</h2>
+  -   unexpected value "LLM API Calls"
+  -   locator resolved to <h2 id="infobox-728103" class="s-BIEZu5ODCI1i">LLM API Calls</h2>
+```
+
+On the Mac, we can't reproduce this manually in Safari, but we can in Firefox. It turns out that this is because toggling the dropdown too quickly causes the `h2` element to update before the transition is complete. This doesn't exactly explain why the presence of the transition effect affects the lack of title update in regular circumstances when the transition has long finished, but since the infrastructure for that fix ties in neatly with this one, we edit it a bit further. We edit `src-svelte/src/lib/InfoBox.svelte`:
+
+```ts
+  class TypewriterEffect extends SubAnimation<void> {
+    constructor(...) {
+      const originalText = anim.node.textContent ?? "";
+      super({
+        ...,
+        tick: (tLocalFraction: number) => {
+          let currentText = anim.node.getAttribute("data-text") ?? originalText;
+          let length = currentText.length + 1;
+          const i = ...;
+          anim.node.textContent = i === 0 ? "" : currentText.slice(0, i - 1);
+        },
+      });
+    }
+  }
+
+  ...
+
+  function forceUpdateTitleText(newTitle: string) {
+    if (titleElement) {
+      titleElement.textContent = ...;
+      titleElement.setAttribute("data-text", newTitle);
+    }
+  }
+```
+
+The `LLM API CALL` failure on CI is likely because the timeout is too low. We edit `src-svelte/src/routes/database/DatabaseView.playwright.test.ts`:
+
+```ts
+  test(
+    "updates title when changing dropdown",
+    async () => {
+      ...
+      await expect(frame.locator("h2")).toHaveText("LLM API Calls", {
+        timeout: PLAYWRIGHT_TIMEOUT,
+      });
+      ...
+      await expect(frame.locator("h2")).toHaveText("Terminal Sessions", {
+        timeout: PLAYWRIGHT_TIMEOUT,
+      });
+    },
+    ...
+  );
 ```
