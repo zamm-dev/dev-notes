@@ -3406,7 +3406,288 @@ It turns out we just need to wrap that section:
     }
 ```
 
-so that the lock on `self.session_data` is dropped by the time it is needed again in `self.read_updates`. This now compiles, but it deadlocks on unit tests.
+so that the lock on `self.session_data` is dropped by the time it is needed again in `self.read_updates`. This now compiles, but it deadlocks on unit tests. We try putting everything in one single inner struct that we then lock, but then we run into the error
+
+```
+error: future cannot be sent between threads safely
+   --> src/commands/terminal/models.rs:228:71
+    |
+228 |       async fn send_input(&mut self, input: &str) -> ZammResult<String> {
+    |  _______________________________________________________________________^
+229 | |         let mut inner = self.inner.lock()?;
+230 | |         inner.send_input(input).await
+231 | |     }
+    | |_____^ future created by async block is not `Send`
+    |
+    = help: within `{async block@src/commands/terminal/models.rs:228:71: 231:6}`, the trait `std::marker::Send` is not implemented for `std::sync::MutexGuard<'_, ActualTerminalInner>`
+note: future is not `Send` as this value is used across an await
+   --> src/commands/terminal/models.rs:230:33
+    |
+229 |         let mut inner = self.inner.lock()?;
+    |             --------- has type `std::sync::MutexGuard<'_, ActualTerminalInner>` which is not `Send`
+230 |         inner.send_input(input).await
+    |                                 ^^^^^ await occurs here, with `mut inner` maybe used later
+    = note: required for the cast from `Pin<Box<{async block@src/commands/terminal/models.rs:228:71: 231:6}>>` to `Pin<Box<dyn futures::Future<Output = Result<std::string::String, errors::Error>> + std::marker::Send>>`
+```
+
+From [this thread](https://www.reddit.com/r/rust/comments/pnzple/comment/hct59dj/), it appears that we should try removing the async nature of the function. We realize that there's no longer any particular reason to keep these functions async, so we remove the async signatures altogether and remove the `await` from the test functions. We also make the result of the exit code function `ZammResult` because it also needs to acquire a lock. We edit every function in inner to remove the locking functionality, and we edit every function in outer to use locking. We edit `src-tauri/src/commands/terminal/models.rs`:
+
+```rs
+pub trait Terminal: Send + Sync {
+    fn run_command(&mut self, command: &str) -> ZammResult<String>;
+    fn read_updates(&mut self) -> ZammResult<String>;
+    fn send_input(&mut self, input: &str) -> ZammResult<String>;
+    fn get_cast(&self) -> ZammResult<AsciiCastData>;
+}
+
+...
+
+pub struct ActualTerminalInner {
+    session: Option<PtySession>,
+    session_data: AsciiCastData,
+}
+
+impl ActualTerminalInner {
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            session_data: AsciiCastData::new(),
+        }
+    }
+
+    fn start_time(&self) -> ZammResult<DateTime<chrono::Utc>> {
+        let result = self
+            .session_data
+            .header
+            .timestamp
+            .ok_or(anyhow!("No timestamp"))?;
+        Ok(result)
+    }
+
+    fn read_once(&mut self) -> ZammResult<String> {
+        match self.session.as_mut() {
+            None => Err(anyhow!("No session started").into()),
+            Some(session) => {
+                let mut partial_output = String::new();
+                while let Ok(c) = session.input_receiver.try_recv() {
+                    partial_output.push(c);
+                }
+                Ok(partial_output)
+            }
+        }
+    }
+
+    fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        if self.session.is_some() {
+            return Err(anyhow!("Session already started").into());
+        }
+
+        self.session_data.header.command = Some(command.to_string());
+        self.session_data.header.timestamp = Some(chrono::Utc::now());
+
+        let session = PtySession::new(command)?;
+        self.session = Some(session);
+
+        let result = self.read_updates()?;
+        Ok(result)
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            let mut partial_output = String::new();
+            loop {
+                sleep(Duration::from_millis(100));
+                let partial = self.read_once()?;
+                if partial.is_empty() {
+                    break;
+                }
+                partial_output.push_str(&partial);
+            }
+            partial_output
+        };
+
+        if !output.is_empty() {
+            let output_time = chrono::Utc::now();
+            let relative_time = output_time - self.start_time()?;
+            self.session_data.entries.push(asciicast::Entry {
+                time: relative_time.num_milliseconds() as f64 / 1000.0,
+                event_type: asciicast::EventType::Output,
+                event_data: output.clone(),
+            });
+        }
+        Ok(output)
+    }
+
+    fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        match self.session.as_mut() {
+            None => Err(anyhow!("No session started").into()),
+            Some(session) => {
+                session.writer.write_all(input.as_bytes())?;
+                session.writer.flush()?;
+
+                let relative_time = chrono::Utc::now() - self.start_time()?;
+                self.session_data.entries.push(asciicast::Entry {
+                    time: relative_time.num_milliseconds() as f64 / 1000.0,
+                    event_type: asciicast::EventType::Input,
+                    event_data: input.to_string(),
+                });
+
+                self.read_updates()
+            }
+        }
+    }
+
+    fn get_cast(&self) -> &AsciiCastData {
+        &self.session_data
+    }
+
+    fn exit_code(&mut self) -> Option<u32> {
+        match self.session.as_mut() {
+            None => None,
+            Some(session) => {
+                if let Some(code) = session.exit_code {
+                    Some(code)
+                } else {
+                    let status = session
+                        .child
+                        .try_wait()
+                        .unwrap_or(None)
+                        .map(|status| status.exit_code());
+                    if let Some(code) = status {
+                        session.exit_code = Some(code);
+                        // todo: record exit code and total runtime
+                    }
+                    status
+                }
+            }
+        }
+    }
+}
+
+pub struct ActualTerminal {
+    inner: Arc<Mutex<ActualTerminalInner>>,
+}
+
+impl ActualTerminal {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ActualTerminalInner::new())),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn exit_code(&self) -> ZammResult<Option<u32>> {
+        let mut inner = self.inner.lock()?;
+        Ok(inner.exit_code())
+    }
+}
+
+impl Terminal for ActualTerminal {
+    fn run_command(&mut self, command: &str) -> ZammResult<String> {
+        let mut inner = self.inner.lock()?;
+        inner.run_command(command)
+    }
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let mut inner = self.inner.lock()?;
+        inner.read_updates()
+    }
+
+    fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        let mut inner = self.inner.lock()?;
+        inner.send_input(input)
+    }
+
+    fn get_cast(&self) -> ZammResult<AsciiCastData> {
+        let inner = self.inner.lock()?;
+        Ok(inner.get_cast().clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[tokio::test]
+    async fn test_capture_command_output() {
+        ...
+        let output = terminal.run_command(command).unwrap();
+        ...
+        assert_eq!(terminal.exit_code().unwrap(), Some(0));
+    }
+
+    ...
+}
+```
+
+We take this change to also refactor the relative time calculations into a single function:
+
+```rs
+impl ActualTerminalInner {
+    ...
+
+    fn relative_time(&self) -> ZammResult<f64> {
+        let time_diff = chrono::Utc::now() - self.start_time()?;
+        Ok(time_diff.num_milliseconds() as f64 / 1000.0)
+    }
+
+    ...
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        ...
+
+        if !output.is_empty() {
+            self.session_data.entries.push(asciicast::Entry {
+                time: self.relative_time()?,
+                ...
+            });
+        }
+        ...
+    }
+
+    fn send_input(&mut self, input: &str) -> ZammResult<String> {
+        match self.session.as_mut() {
+            None => ...,
+            Some(session) => {
+                ...
+
+                self.session_data.entries.push(asciicast::Entry {
+                    time: self.relative_time()?,
+                    ...
+                });
+
+                ...
+            }
+        }
+    }
+
+    ...
+}
+```
+
+Unfortunately, while our code is cleaner now, it still doesn't fix the problem on CI. It is possible that the problem on CI is simply that the read times out before the process has a chance to respond. As such, we edit the file again:
+
+```rs
+#[cfg(test)]
+const TERMINAL_READ_TIMEOUT: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const TERMINAL_READ_TIMEOUT: Duration = Duration::from_millis(100);
+
+...
+
+    fn read_updates(&mut self) -> ZammResult<String> {
+        let output = {
+            ...
+            loop {
+                sleep(TERMINAL_READ_TIMEOUT);
+                ...
+            }
+            ...
+        };
+
+        ...
+    }
+```
 
 #### Frontend
 
@@ -4563,7 +4844,7 @@ We edit `src-svelte/src/lib/InfoBox.svelte` to apply the actual fix:
 
 We edit `webdriver/test/specs/e2e.test.js` to add e2e screenshots of the new pages, as well as the API import page that wasn't tested before. This gives us confidence that everything still works as expected despite the major reshuffling of pages and paths.
 
-It turns out we need to add some extra functions to interact with the select and the input (the input text function we already documented before in the e2e test setup). We also change all the `await findAndClick('a[title="API Calls"]');` to `await findAndClick('a[title="Database"]');` to reflect the updated name of the database sidebar icon link. We also need to click twice on the database link to reset what the sidebar link points to from previous tests, and then still navigate away and back to the same page to reset the animation effects:
+It turns out we need to add some extra functions to interact with the select and the input (the input text function we already documented before in the e2e test setup, and the select function also needs [the `change` event to fire](https://stackoverflow.com/a/28324400)). We also change all the `await findAndClick('a[title="API Calls"]');` to `await findAndClick('a[title="Database"]');` to reflect the updated name of the database sidebar icon link. We also need to click twice on the database link to reset what the sidebar link points to from previous tests, and then still navigate away and back to the same page to reset the animation effects:
 
 ```js
 async function findAndSelect(selector, index, timeout) {
