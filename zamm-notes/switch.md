@@ -1116,6 +1116,27 @@ import { soundOn } from "../preferences";
   });
 ```
 
+### Adding sound credits
+
+We eventually remember to add sound credits to the credits page:
+
+```svelte
+          <SubInfoBox subheading="Sounds">
+            <Grid>
+              <Creditor
+                name="Pixabay"
+                logo="pixabay.jpeg"
+                url="https://pixabay.com/users/pixabay-1/"
+              />
+              <Creditor
+                name="SoundReality"
+                logo="soundreality.png"
+                url="https://www.patreon.com/SoundReality"
+              />
+            </Grid>
+          </SubInfoBox>
+```
+
 ## Browser scrollbar
 
 If we place the switch next to the right edge of the viewport, we find that a scrollbar appears in the browser window because the toggle layer is not covered by the groove's `visibility: hidden;` and extends invisibly to the right. To fix this, we remove the very last `<div class="toggle-label"></div>` from the toggle layer, since it's just an invisible non-element anyways.

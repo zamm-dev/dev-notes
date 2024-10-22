@@ -8483,3 +8483,34 @@ export const EDIT_PROMPT: ChatPromptVariant = {
 ```
 
 Finally, we edit `src-svelte/src/routes/storybook.test.ts` as well to reflect the new screenshot variant of `unknown-provider-prompt` instead of `future-service-provider`.
+
+#### Updating the Dockerfile
+
+We check out and push the `zamm/v0.2.0` branch in the `ollama-rs` fork repo. We then edit `Dockerfile`:
+
+```Dockerfile
+RUN git clone --depth 1 --branch zamm/v0.0.0 https://github.com/amosjyng/async-openai.git ... && \
+  ...
+  git clone --depth 1 --branch zamm/v0.2.0 https://github.com/zamm-dev/ollama-rs.git /tmp/forks/ollama-rs && \
+  ...
+```
+
+We update `.github/workflows/tests.yaml` as well so that it's actually used in CI:
+
+```yaml
+jobs:
+  build:
+    name: Build entire program
+    runs-on: ubuntu-latest
+    container:
+      image: "ghcr.io/zamm-dev/zamm:v0.2.0-build"
+      ...
+  ...
+  svelte:
+    name: Run Svelte tests
+    runs-on: ubuntu-latest
+    container:
+      image: "ghcr.io/zamm-dev/zamm:v0.2.0-build"
+      ...
+  ...
+```
