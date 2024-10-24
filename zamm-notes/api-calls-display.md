@@ -7413,6 +7413,492 @@ We test this sample in `src-tauri/src/commands/llms/get_api_call.rs` just to mak
     );
 ```
 
+#### Importing conversations from other places
+
+We find that we want to be able to import conversations from other places. We create a new component `src-svelte/src/routes/api-calls/new/import/ApiCallImport.svelte`:
+
+```svelte
+<script lang="ts" context="module">
+  import type { ChatMessage } from "$lib/bindings";
+
+  function determineRole(role: string): "Human" | "System" | "AI" {
+    switch (role.toLowerCase()) {
+      case "human":
+      case "user":
+        return "Human";
+      case "system":
+        return "System";
+      case "ai":
+      case "assistant":
+        return "AI";
+      default:
+        throw new Error(`Invalid role: ${role}`);
+    }
+  }
+
+  function parseLmStudioExport(data: string): ChatMessage[] {
+    const parsedImport = JSON.parse(data);
+    if (!Array.isArray(parsedImport)) {
+      throw new Error("Root element must be an array");
+    }
+
+    return parsedImport.map((message) => {
+      if (typeof message !== "object") {
+        throw new Error("Array element must be an object");
+      }
+
+      const role = determineRole(message.role);
+      if (
+        typeof message.content !== "string" &&
+        typeof message.text !== "string"
+      ) {
+        throw new Error("No content found in message");
+      }
+
+      const parsedMessage: ChatMessage = {
+        role,
+        text: message.content ?? message.text,
+      };
+
+      return parsedMessage;
+    });
+  }
+
+  function parseOllamaCliOutput(data: string): ChatMessage[] {
+    const lines = data.trim().split("\n");
+    if (!lines[0].startsWith(">>> ")) {
+      throw new Error("First line must start with '>>> '");
+    }
+
+    let messages: ChatMessage[] = [];
+    let currentRole: "Human" | "AI" = "Human";
+    let currentMessage = "";
+    for (const line of lines) {
+      const nextRole =
+        line.startsWith(">>> ") || line.startsWith("... ") ? "Human" : "AI";
+      const nextMessage = nextRole === "Human" ? line.substring(4) : line;
+      if (nextRole !== currentRole) {
+        if (currentMessage) {
+          messages.push({
+            role: currentRole,
+            text: currentMessage.trim(),
+          });
+        }
+
+        currentRole = nextRole;
+        currentMessage = nextMessage;
+      } else {
+        if (nextMessage === "") {
+          currentMessage += "\n\n";
+        } else {
+          currentMessage += nextMessage;
+        }
+      }
+    }
+
+    if (currentMessage) {
+      messages.push({
+        role: currentRole,
+        text: currentMessage.trim(),
+      });
+    }
+    return messages;
+  }
+
+  export function parseImportData(data: string): ChatMessage[] {
+    try {
+      return parseOllamaCliOutput(data);
+    } catch (error) {
+      return parseLmStudioExport(data);
+    }
+  }
+</script>
+
+<script lang="ts">
+  import InfoBox from "$lib/InfoBox.svelte";
+  import Button from "$lib/controls/Button.svelte";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import { canonicalRef, prompt } from "../ApiCallEditor.svelte";
+  import { goto } from "$app/navigation";
+
+  let importData = "";
+
+  function importConversation() {
+    try {
+      const messages = parseImportData(importData);
+
+      canonicalRef.set(undefined);
+      prompt.set({
+        type: "Chat",
+        messages,
+      });
+      goto("/api-calls/new");
+    } catch (error) {
+      snackbarError(error as string | Error);
+    }
+  }
+</script>
+
+<InfoBox title="Import API Call" fullHeight>
+  <p>
+    Import an existing conversation from LM Studio's "Export" &gt; "Copy as
+    JSON" feature:
+  </p>
+
+  <textarea rows="10" bind:value={importData}></textarea>
+
+  <div class="action">
+    <Button on:click={importConversation}>Import</Button>
+  </div>
+</InfoBox>
+
+<style>
+  textarea {
+    box-sizing: border-box;
+    width: 100%;
+    margin-bottom: 1rem;
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    background-color: hsla(0, 0%, 95%, 1);
+    padding: 0.5rem;
+    border-radius: var(--corner-roundness);
+    resize: none;
+    flex: 1;
+  }
+
+  .action {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+
+  .action :global(button) {
+    width: 100%;
+    max-width: 25rem;
+  }
+</style>
+
+```
+
+We test it at `src-svelte/src/routes/api-calls/new/import/ApiCallImport.test.ts`:
+
+```ts
+import { expect, test } from "vitest";
+import "@testing-library/jest-dom";
+
+import { parseImportData } from "./ApiCallImport.svelte";
+
+/* eslint-disable max-len */
+
+const SAMPLE_LM_STUDIO_EXPORT = `[
+  {
+    "role": "system",
+    "content": "You are a helpful, smart, kind, and efficient AI assistant. You always fulfill the user's requests to the best of your ability."
+  },
+  {
+    "role": "user",
+    "content": "Hey there"
+  },
+  {
+    "role": "assistant",
+    "content": "Hello! It's great to chat with you. Is there something I can help you with or would you like to talk about something in particular? I'm all ears (or rather, all text)!"
+  },
+  {
+    "role": "user",
+    "content": "I'm just trying you out for the first time! I'm curious what your personality is like"
+  },
+  {
+    "role": "assistant",
+    "content": "Well, let me tell you a little bit about myself!\\n\\nI'm a helpful AI assistant, and my goal is to assist and provide information to users in a friendly and efficient manner. I'm designed to be kind, smart, and efficient.\\n\\nAs for my personality, I'd say I'm a bit of a chatty AI! I love to engage in conversations and answer questions to the best of my ability. I'm always happy to help with any topic or subject you're interested in learning more about.\\n\\nI'm also very patient and understanding. I know that sometimes users might have different levels of knowledge or experience, so I try to explain things in a way that's easy to understand.\\n\\nBut don't worry, I won't overwhelm you with too much information! I just want to be a helpful resource for you whenever you need it.\\n\\nSo, how do you like me so far?"
+  }
+]`;
+
+const SAMPLE_OLLAMA_EXPORT = `>>> Hey there
+Hi! It's nice to meet you. Is there something I can help you with or would 
+you like to chat?
+
+>>> Hi, I'm trying to see how I can save conversations from you in a different a
+... pp. I'm currently running you in a CLI called Ollama, and I need to copy and
+...  parse the terminal window content.
+I'm happy to help you with that.
+
+Since you're using Ollama, which is a command-line interface, we can work 
+together to figure out how to save our conversation. To get started, could 
+you tell me what format or app you'd like to export our conversation to 
+(e.g., text file, JSON, Markdown, etc.)? Additionally, are there any 
+specific requirements or constraints I should keep in mind while 
+formatting the output?
+
+Also, just to confirm: you want to copy and parse the terminal window 
+content, which means you'll need to capture the entire conversation 
+including my responses. Is that correct?
+
+`;
+
+describe("API call import", () => {
+  test("parses LM Studio exported conversation successfully", async () => {
+    expect(parseImportData(SAMPLE_LM_STUDIO_EXPORT)).toEqual([
+      {
+        role: "System",
+        text: "You are a helpful, smart, kind, and efficient AI assistant. You always fulfill the user's requests to the best of your ability.",
+      },
+      {
+        role: "Human",
+        text: "Hey there",
+      },
+      {
+        role: "AI",
+        text: "Hello! It's great to chat with you. Is there something I can help you with or would you like to talk about something in particular? I'm all ears (or rather, all text)!",
+      },
+      {
+        role: "Human",
+        text: "I'm just trying you out for the first time! I'm curious what your personality is like",
+      },
+      {
+        role: "AI",
+        text: "Well, let me tell you a little bit about myself!\n\nI'm a helpful AI assistant, and my goal is to assist and provide information to users in a friendly and efficient manner. I'm designed to be kind, smart, and efficient.\n\nAs for my personality, I'd say I'm a bit of a chatty AI! I love to engage in conversations and answer questions to the best of my ability. I'm always happy to help with any topic or subject you're interested in learning more about.\n\nI'm also very patient and understanding. I know that sometimes users might have different levels of knowledge or experience, so I try to explain things in a way that's easy to understand.\n\nBut don't worry, I won't overwhelm you with too much information! I just want to be a helpful resource for you whenever you need it.\n\nSo, how do you like me so far?",
+      },
+    ]);
+  });
+
+  test("parses Ollama copy-pasted conversation successfully", async () => {
+    expect(parseImportData(SAMPLE_OLLAMA_EXPORT)).toEqual([
+      {
+        role: "Human",
+        text: "Hey there",
+      },
+      {
+        role: "AI",
+        text: "Hi! It's nice to meet you. Is there something I can help you with or would you like to chat?",
+      },
+      {
+        role: "Human",
+        text: "Hi, I'm trying to see how I can save conversations from you in a different app. I'm currently running you in a CLI called Ollama, and I need to copy and parse the terminal window content.",
+      },
+      {
+        role: "AI",
+        text: "I'm happy to help you with that.\n\nSince you're using Ollama, which is a command-line interface, we can work together to figure out how to save our conversation. To get started, could you tell me what format or app you'd like to export our conversation to (e.g., text file, JSON, Markdown, etc.)? Additionally, are there any specific requirements or constraints I should keep in mind while formatting the output?\n\nAlso, just to confirm: you want to copy and parse the terminal window content, which means you'll need to capture the entire conversation including my responses. Is that correct?",
+      },
+    ]);
+  });
+});
+
+```
+
+Finally, we create the actual page `src-svelte/src/routes/api-calls/new/import/+page.svelte` like so:
+
+```svelte
+<script lang="ts">
+  import ApiCallImport from "./ApiCallImport.svelte";
+</script>
+
+<ApiCallImport />
+```
+
+We link to this from `src-svelte/src/routes/api-calls/new/ApiCallEditor.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+  import EmptyPlaceholder from "$lib/EmptyPlaceholder.svelte";
+  ...
+</script>
+
+<InfoBox title="New API Call">
+  <EmptyPlaceholder>
+    Manually build an API call below, or <a href="/api-calls/new/import/"
+      >import one</a
+    > from another source.
+  </EmptyPlaceholder>
+  ...
+</InfoBox>
+```
+
+We edit
+
+```svelte
+<InfoBox title="Import API Call" ...>
+  <p>Import an existing conversation by:</p>
+  <ul>
+    <li>Copy-pasting Ollama terminal output, starting with "<pre>&gt;&gt;&gt; </pre>"</li>
+    <li>Clicking LM Studio's "Export" button &gt; "Copy as JSON"</li>
+  </ul>
+
+  <textarea ... placeholder="Paste your conversation here..."></textarea>
+
+  ...
+</InfoBox>
+
+<style>
+  p {
+    margin: 0;
+  }
+
+  ul {
+    margin: 0 0 0.5rem 0;
+  }
+
+  p, ul {
+    text-align: left;
+  }
+
+  pre {
+    display: inline;
+    font-family: var(--font-mono);
+  }
+
+  ...
+</style>
+```
+
+We create stories at `src-svelte\src\routes\api-calls\new\import\ApiCallImport.stories.ts`:
+
+```ts
+import ApiCallImport from "./ApiCallImport.svelte";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+import MockFullPageLayout from "$lib/__mocks__/MockFullPageLayout.svelte";
+import MockTransitions from "$lib/__mocks__/MockTransitions.svelte";
+
+export default {
+  component: ApiCallImport,
+  title: "Screens/LLM Call/Import",
+  argTypes: {},
+  decorators: [
+    (story: StoryFn) => {
+      return {
+        Component: MockFullPageLayout,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: ApiCallImport,
+  props: args,
+});
+
+export const Static: StoryObj = Template.bind({}) as any;
+Static.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+
+export const MountTransition: StoryObj = Template.bind({}) as any;
+MountTransition.parameters = {
+  viewport: {
+    defaultViewport: "smallTablet",
+  },
+};
+MountTransition.decorators = [
+  (story: StoryFn) => {
+    return {
+      Component: MockTransitions,
+      slot: story,
+    };
+  },
+];
+
+```
+
+From the transitions, we realize that we need to update `src-svelte/src/routes/api-calls/new/import/ApiCallImport.svelte`. In particular the first `li` element has other HTML tags in it, so it should be explicitly noted as an atomic reveal element. The same is true for the actions bar:
+
+```svelte
+<InfoBox title="Import API Call" ...>
+  ...
+  <ul>
+    <li class="atomic-reveal">
+      ...
+    </li>
+    ...
+  </ul>
+
+  ...
+
+  <div class="action atomic-reveal">
+    ...
+  </div>
+</InfoBox>
+```
+
+We add this to `src-svelte\src\routes\storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "llm-call", "import"],
+    variants: ["static"],
+    screenshotEntireBody: true,
+  },
+  ...
+];
+```
+
+We run into the error on Windows
+
+```
+ FAIL  src-svelte/src/routes/storybook.test.ts [ src-svelte/src/routes/storybook.test.ts ]
+Error: Failed to load url $lib/test-helpers (resolved id: $lib/test-helpers) in C:/Users/Amos Ng/Documents/projects/zamm-dev/zamm/src-svelte/src/routes/storybook.test.ts. Does the file exist?
+ ❯ loadAndTransform ../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/node_modules/vite/dist/node/chunks/dep-stQc5rCc.js:53572:21
+```
+
+Other tests are failing as well, such as:
+
+```
+ FAIL  src-svelte/src/routes/components/api-keys/Display.test.ts [ src-svelte/src/routes/components/api-keys/Display.test.ts ]        
+ReferenceError: expect is not defined
+ ❯ ../../../../../Amos%20Ng/Documents/projects/zamm-dev/zamm/node_modules/@testing-library/jest-dom/dist/index.mjs:12:1
+ ❯ src-svelte/src/routes/components/api-keys/Display.test.ts:2:31
+      1| import { expect, test, vi, type Mock } from "vitest";     
+      2| import "@testing-library/jest-dom";
+       |                               ^
+      3|
+      4| import { render, screen } from "@testing-library/svelte"; 
+```
+
+This persists even after removing `node_modules` and reinstalling.
+
+It's unclear why this is failing all of a sudden now. We fix the issue in `src-svelte\src\lib\animation-timing.test.ts` by doing a few imports:
+
+```ts
+import { describe, expect, it } from "vitest";
+```
+
+However, other files prove mroe stubborn. We finally realize that we've been running `yarn vitest` in the root directory instead of `src-svelte` after a VS Code restart. Once we re-enter `src-svelte`, we encounter a new error
+
+```
+yarn run v1.22.21
+$ "C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\.bin\vitest" --pool=forks --exclude src/routes/storybook.test.ts    
+
+ DEV  v1.2.2 C:/Users/Amos Ng/Documents/projects/zamm-dev/zamm/src-svelte
+
+node:events:492
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: spawn yarn ENOENT
+    at ChildProcess._handle.onexit (node:internal/child_process:286:19)
+    at onErrorNT (node:internal/child_process:484:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+Emitted 'error' event on ChildProcess instance at:
+    at ChildProcess._handle.onexit (node:internal/child_process:292:12)
+    at onErrorNT (node:internal/child_process:484:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'spawn yarn',
+  path: 'yarn',
+  spawnargs: [ 'storybook', '--ci' ]
+}
+
+Node.js v20.5.1
+error Command failed with exit code 1.
+```
+
+We see from the answers to [this question](https://stackoverflow.com/q/50782463) that restarting node and killing `node_modules` may help. It doesn't. It turns out *this* is because Storybook is not running. However, restarting and resetting `node_modules` does fix the issue with the tests.
+
 #### Adding forwards compatibility
 
 ##### For unknown service providers

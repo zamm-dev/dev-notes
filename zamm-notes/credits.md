@@ -1339,3 +1339,7 @@ Upon looking at this further, we realize that we do want more spacing between th
     margin-bottom: 0.75rem;
   }
 ```
+
+## Settings page displays instead of credit page
+
+Somehow, when running `yarn tauri dev` on Windows, sometimes SvelteKit routes us to the settings screen despite the URL being `/credits`. This happens after going through each of the sidebar links in order. This persists even after cleaning the `.svelte-kit` and `node_module` directories. It finally resets when we first navigate to the credits page, and then to the settings page. After that, the original phenomenon no longer occurs even on a restart of the app.

@@ -49,6 +49,14 @@ Reshimming asdf nodejs...
 
 Go [here](https://nodejs.org/en/download) and download the installer. During installation, check the box that also installs Chocolatey for an easy install.
 
+If you get the error
+
+```
+error Error: ENOENT: no such file or directory, copyfile 'C:\Users\Amos Ng\AppData\Local\Yarn\Cache\v6\npm-@tsconfig-node10-1.0.9-df4907fc07a886922637b15e02d4cebc4c0021b2-integrity\node_modules\@tsconfig\node10\package.json' -> 'C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\node_modules\@tsconfig\node10\package.json'
+```
+
+while doing `yarn install`, try deleting `C:\Users\Amos Ng\AppData\Local\Yarn\Cache`. We see from [this answer](https://github.com/yarnpkg/yarn/issues/5275#issuecomment-377153206) that we can also just run `yarn cache clean`.
+
 ## Setting up NodeJS on Mac for ZAMM
 
 ### Version 20.5.1
