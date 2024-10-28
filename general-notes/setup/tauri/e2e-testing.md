@@ -983,3 +983,7 @@ const DRIVER_BINARY: &str = "msedgedriver.exe";
 There is no definition for the Mac.
 
 The lack of Mac OS support is a [known issue](https://github.com/tauri-apps/tauri/issues/7068).
+
+### All screenshots suddenly change
+
+Sometimes this happens all of a sudden for no discernable reason whatsoever (for example, with commits `90bace7` and then again with commit `12d7908`, and arguably even during commit `2bcc98f`). This persists even after clearing all of the caches. The last CI run on `main` just a day ago succeeded. Perhaps this is due to the CI server running on a newer version of some font-rendering library. In any case, all the baseline images can be updated after manual verification that the changes are not substantial.

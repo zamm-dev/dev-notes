@@ -5201,3 +5201,427 @@ The `LLM API CALL` failure on CI is likely because the timeout is too low. We ed
     ...
   );
 ```
+
+### Stripping out ANSI escape codes
+
+We want to try stripping out the ANSI escape codes from the Windows terminal output. We find out that there's a crate that is specifically designed for this, so we do `cargo add` to get the latest version and automatically update `src-tauri/Cargo.toml`:
+
+```toml
+strip-ansi-escapes = "0.2.0"
+```
+
+We create `src-tauri/api/sample-calls/run_command-cmd.yaml`:
+
+```yaml
+request:
+  - run_command
+  - >
+    {
+      "command": "cmd"
+    }
+response:
+  message: >
+    {
+      "id": "319cc7fd-58cc-4320-ab46-2f0ba11c5402",
+      "timestamp": "2024-10-17T06:02:13",
+      "output": "Microsoft Windows [Version 10.0.22631.4169]\n(c) Microsoft Corporation. All rights reserved.C:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>"
+    }
+sideEffects:
+  database:
+    endStateDump: command-run-cmd
+  terminal:
+    recordingFile: windows.cast
+
+```
+
+We edit `src-tauri/src/commands/terminal/run.rs` to actuall run a test with this file, and to get the test to pass on other machines (but we limit it to Windows anyways in anticipation of escape codes possibly being different across different platforms):
+
+```rs
+...
+
+fn clean_output(output: &str) -> String {
+    strip_ansi_escapes::strip_str(output)
+}
+
+...
+
+async fn run_command_helper(
+  ...
+) -> ZammResult<RunCommandResponse> {
+  ...
+
+  let raw_output = terminal.run_command(command)?;
+  ...
+
+  let output = clean_output(&raw_output);
+
+  ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+  ...
+
+  impl SampleCallTestCase<RunCommandRequest, ZammResult<RunCommandResponse>>
+        for RunCommandTestCase
+  {
+      ...
+
+      fn output_replacements(
+            ...
+        ) -> HashMap<String, String> {
+          ...
+          let asciicast_filename = &sample
+                .side_effects
+                .as_ref()
+                .unwrap()
+                .terminal
+                .as_ref()
+                .unwrap()
+                .recording_file;
+            let expected_os = if asciicast_filename.ends_with("bash.cast") {
+                "Mac"
+            } else if asciicast_filename.ends_with("windows.cast") {
+                "Windows"
+            } else {
+                "Linux"
+            };
+            ...
+        }
+    }
+
+    ...
+
+    #[cfg(target_os = "windows")]
+    check_sample!(
+        RunCommandTestCase,
+        test_start_cmd,
+        "./api/sample-calls/run_command-cmd.yaml"
+    );
+}
+```
+
+After we run the test, the `src-tauri/api/sample-database-writes/command-run-cmd/dump.yaml` (and the corresponding dumped SQL) looks like:
+
+```yaml
+terminal_sessions:
+- id: 319cc7fd-58cc-4320-ab46-2f0ba11c5402
+  timestamp: 2024-10-17T06:02:13
+  command: cmd
+  os: Windows
+  cast:
+    header:
+      version: 2
+      width: 80
+      height: 24
+      timestamp: 1729144933
+      command: cmd
+    entries:
+    - - 0.208
+      - 'o'
+      - "\e[?25l\e[2J\e[m\e[HMicrosoft Windows [Version 10.0.22631.4169]\r\n(c) Microsoft Corporation. All rights reserved.\e[4;1HC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>\e]0;C:\\WINDOWS\\system32\\cmd.EXE\a\e[?25h"
+
+```
+
+Note that the dump correctly marks the original running OS as Windows, even if the tests will ignore that fact.
+
+Unfortunately, when we go to actually test this, we find that there's no newlines between the copyright notification and the text. We see
+
+```
+Microsoft Windows [Version 10.0.22631.4169]
+(c) Microsoft Corporation. All rights reserved.C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-tauri>
+```
+
+instead of what we actually see when we open up a new prompt:
+
+```
+Microsoft Windows [Version 10.0.22631.4169]
+(c) Microsoft Corporation. All rights reserved.
+
+C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-tauri>
+```
+
+We add a story to `src-svelte/src/routes/database/terminal-sessions/TerminalSession.stories.ts` that makes it easy to replicate this problem:
+
+```ts
+export const NewOnWindows: StoryObj = Template.bind({}) as any;
+NewOnWindows.parameters = {
+  sampleCallFiles: ["/api/sample-calls/run_command-cmd.yaml"],
+};
+
+```
+
+Also, our other Rust tests now fail as well because the `strip_ansi_escapes::strip_str` function also strips out `\r`'s. This is probably desired behavior, however, so we also modify the tests. We update the terminal state in `src-svelte/src/routes/database/terminal-sessions/TerminalSession.stories.ts` to match, and remove the Windows-only test guard for now.
+
+While testing things in Storybook, we realize that we can now enter *any* command and the Svelte terminal component in Storybook will still play it. After some debugging, we realize that the problem is in our `stringify` function, because the array is being detected as an "object" by Javascript, but then our stringified dictionary has no keys because the array has no keys. we come across [this answer](https://stackoverflow.com/a/51285298). We edit `src-svelte/src/lib/sample-call-testing.ts` to fix this, and to also make stringification less redundant by only stringifying once:
+
+```ts
+...
+import { ..., isArray } from "lodash";
+
+...
+
+function stringify(obj: any): string {
+  if (isArray(obj)) {
+    const items = obj.map((item) => stringify(item));
+    return `[${items.join(",")}]`;
+  }
+  if (obj.constructor === Object) {
+    ...
+  }
+  ...
+}
+
+export class TauriInvokePlayback {
+  ...
+
+  mockCall(
+    ...
+  ): Promise<Record<string, string>> {
+    ...
+    const stringifiedUnmatchedCalls = this.unmatchedCalls.map((call) =>
+      stringify(call.request),
+    );
+    const matchingCallIndex = stringifiedUnmatchedCalls.findIndex(
+      (call) => call === jsonArgs,
+    );
+    if (matchingCallIndex === -1) {
+      const candidates = stringifiedUnmatchedCalls.join("\n");
+      ...
+    }
+    ...
+  }
+}
+```
+
+It appears that our test code has gotten complicated enough to warrant testing of their own, because if we can't be sure that our tests are testing what we think they are, then the whole chain of confidence is broken. We create `src-svelte/src/lib/sample-call-testing.test.ts`, noting that we [have to wrap](https://stackoverflow.com/a/76720638) the failing function call inside a function in order for Vitest to correctly catch the expected error:
+
+```ts
+import { TauriInvokePlayback } from "./sample-call-testing";
+
+describe("TauriInvokePlayback", () => {
+  it("should mock matched calls", async () => {
+    const playback = new TauriInvokePlayback();
+    playback.addCalls({
+      request: ["command", { inputArg: "input" }],
+      response: { outputKey: "output" },
+      succeeded: true,
+    });
+    const result = await playback.mockCall("command", { inputArg: "input" });
+    expect(result).toEqual({ outputKey: "output" });
+  });
+
+  it("should throw an error for unmatched calls", async () => {
+    const playback = new TauriInvokePlayback();
+    playback.addCalls({
+      request: ["command", { inputArg: "input" }],
+      response: { outputKey: "output" },
+      succeeded: true,
+    });
+    expect(() => playback.mockCall("command", { inputArg: "wrong" })).toThrow(
+      'No matching call found for ["command",{"inputArg":"wrong"}].\n' +
+        'Candidates are ["command",{"inputArg":"input"}]',
+    );
+  });
+});
+```
+
+Next, we decide to move the bulk of the I/O logic to the backend, leaving the frontend only concerned with handling user input and displaying completely cleaned output. We edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to stop trimming the start of output strings:
+
+```ts
+  async function sendCommand(newInput: string) {
+    try {
+      ...
+      if (sessionId === undefined) {
+        ...
+        output += result.output;
+      } ...
+    }
+    ...
+  }
+```
+
+add that functionality to `src-tauri/src/commands/terminal/run.rs`:
+
+```rs
+fn clean_output(output: &str) -> String {
+    strip_ansi_escapes::strip_str(output)
+        .trim_start()
+        .to_string()
+}
+```
+
+and update `src-tauri/api/sample-calls/run_command-bash.yaml` to remove the leading newline in the expected output.
+
+Next, we do the same for handling trailing newlines on command input. We edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to remove that OS-specific logic and directly send the user's own input:
+
+```ts
+  async function sendCommand(newInput: string) {
+    try {
+      ...
+      if (sessionId === undefined) {
+        ...
+      } else {
+        let result = await sendCommandInput(sessionId, newInput);
+        ...
+      }
+      ...
+    }
+    ...
+  }
+```
+
+We edit `src-tauri/src/commands/terminal/send_input.rs` instead to handle the trailing newline, and to mark the bash text as a non-Windows test because otherwise, on Windows the terminal input sent will be different than what is recorded on the asciicast:
+
+```rs
+async fn send_command_input_helper(
+    ...
+) -> ZammResult<String> {
+    ...
+    #[cfg(target_os = "windows")]
+    let input_with_newline = format!("{}\r\n", input);
+    #[cfg(not(target_os = "windows"))]
+    let input_with_newline = format!("{}\n", input);
+    let result = terminal.send_input(&input_with_newline)?;
+    ...
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[cfg(not(target_os = "windows"))]
+    check_sample!(
+        SendInputTestCase,
+        test_bash_interleaved,
+        "./api/sample-calls/send_command_input-bash-interleaved.yaml"
+    );
+}
+```
+
+We update `src-tauri/api/sample-calls/send_command_input-bash-interleaved.yaml` to remove the trailing newline from the expected input.
+
+We go to [v0.0.5 of ZAMM](https://github.com/zamm-dev/zamm/blob/v0.0.5/zamm/utils.py#L62-L122) (commit `e7e589f`) to find out how we've done this before. We revisit the link to [this resource](https://www.lihaoyi.com/post/BuildyourownCommandLinewithANSIescapecodes.html) to see that
+
+> Set Position: `\u001b[{n};{m}H` moves cursor to row `n` column `m`
+
+Hence, the sequence `\u001b[4;1H` in our Windows terminal output means "move cursor to row 4, column 1" (where these rows and columns are indexed starting at 1). Because there's only been two rows so far, moving to row 4 is equivalent to outputting `\n\n`.
+
+As such, we remove the `strip-ansi-escapes` package from `src-tauri/Cargo.toml` and edit `src-tauri/src/commands/terminal/run.rs` to define state-machine-like logic:
+
+```rs
+...
+
+#[derive(PartialEq)]
+enum EscapeSequence {
+    None,
+    Start,
+    InEscape,
+    InOperatingSystemEscape,
+    LineStart,
+}
+
+static ESCAPE_COMMANDS: &[char] = &['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'b', 'm'];
+
+...
+
+fn clean_output(output: &str) -> String {
+    let mut cleaned_lines = Vec::<String>::new();
+    output.split('\n').for_each(|line| {
+        let mut escape: EscapeSequence = EscapeSequence::None;
+        let mut cleaned_line = String::new();
+        let mut current_escape_arg = String::new();
+        let mut escape_args = Vec::<String>::new();
+        let mut escape_command = ' ';
+        line.chars().for_each(|c| {
+            if c == '\u{001B}' {
+                escape = EscapeSequence::Start;
+            } else if escape == EscapeSequence::Start {
+                if c == '[' || c == '(' {
+                    escape = EscapeSequence::InEscape;
+                } else if c == ']' {
+                    escape = EscapeSequence::InOperatingSystemEscape;
+                } else {
+                    escape = EscapeSequence::None;
+                    cleaned_line.push(c);
+                }
+            } else if escape == EscapeSequence::InEscape
+                || escape == EscapeSequence::InOperatingSystemEscape
+            {
+                if c == '?' {
+                    // it's just a private sequence marker, do nothing
+                } else if escape == EscapeSequence::InEscape
+                    && ESCAPE_COMMANDS.contains(&c)
+                {
+                    escape_command = c;
+                    escape_args.push(current_escape_arg.clone());
+                    current_escape_arg.clear();
+                    escape = EscapeSequence::None;
+                } else if c == ';' {
+                    escape_args.push(current_escape_arg.clone());
+                    current_escape_arg.clear();
+                } else if c == '\u{0007}' {
+                    if let Some(last_char) = current_escape_arg.pop() {
+                        escape_command = last_char;
+                    }
+                    escape_args.push(current_escape_arg.clone());
+                    current_escape_arg.clear();
+                    escape = EscapeSequence::None;
+                } else {
+                    current_escape_arg.push(c);
+                }
+
+                if escape == EscapeSequence::None {
+                    escape_args.push(current_escape_arg.clone());
+                    current_escape_arg.clear();
+
+                    // now we actually handle the escape sequence
+                    if escape_command == 'H' {
+                        if let Some(first_arg) = escape_args.first() {
+                            if let Ok(row) = first_arg.parse::<usize>() {
+                                if row > cleaned_lines.len() {
+                                    cleaned_lines.push(cleaned_line.clone());
+                                    cleaned_line.clear();
+                                    // -1 because the new cleaned_line will be added at
+                                    // the end as the next line
+                                    cleaned_lines.resize(row - 1, "".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if c == '\r' {
+                escape = EscapeSequence::LineStart;
+            } else if escape == EscapeSequence::LineStart {
+                escape = EscapeSequence::None;
+                cleaned_line.clear();
+                cleaned_line.push(c);
+            } else {
+                cleaned_line.push(c);
+            }
+        });
+        cleaned_lines.push(cleaned_line);
+    });
+    cleaned_lines.join("\n").trim_start().to_string()
+}
+
+...
+```
+
+And now, `src-tauri/api/sample-calls/run_command-cmd.yaml` can like this:
+
+```yaml
+...
+response:
+  message: >
+    {
+      ...
+      "output": "Microsoft Windows [Version 10.0.22631.4169]\n(c) Microsoft Corporation. All rights reserved.\n\nC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>"
+    }
+```
+
+and we verify in Storybook that the terminal session now finally correctly displays the output.
