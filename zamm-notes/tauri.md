@@ -4002,3 +4002,2281 @@ env:
 
 ...
 ```
+
+## Upgrading to Tauri v2.0
+
+We follow the guide [here](https://v2.tauri.app/start/migrate/from-tauri-1/). Since we're not concerned with a mobile app just yet, we ignore the first part. Instead, we run
+
+```bash
+$ yarn upgrade @tauri-apps/cli@latest
+...
+warning Workspaces can only be enabled in private projects.
+warning Workspaces can only be enabled in private projects.
+[4/4] 🔨  Rebuilding all packages...
+success Saved lockfile.
+warning Workspaces can only be enabled in private projects.
+warning Workspaces can only be enabled in private projects.
+success Saved 2 new dependencies.
+info Direct dependencies
+└─ @tauri-apps/cli@2.0.4
+info All dependencies
+├─ @tauri-apps/cli-darwin-arm64@2.0.4
+└─ @tauri-apps/cli@2.0.4
+✨  Done in 28.17s.
+```
+
+Next, we do
+
+```bash
+$ yarn tauri migrate
+yarn run v1.22.22
+$ tauri migrate
+    Info Installing NPM dependency "@tauri-apps/api@^2.0.0"...
+failed to migrate from v1: Error installing new npm packages: Failed to install NPM dependency
+    Error failed to migrate from v1: Error installing new npm packages: Failed to install NPM dependency
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+We see that even though the command failed, it has already done a lot:
+
+```bash
+$  git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        modified:   package.json
+        modified:   src-svelte/src/routes/settings/Database.svelte
+        modified:   src-tauri/Cargo.toml
+        modified:   src-tauri/tauri.conf.json
+        modified:   yarn.lock
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        src-tauri/capabilities/
+```
+
+We try seeing if our backend tests succeed. They don't compile:
+
+```bash
+$ make test
+cargo test -- --include-ignored --test-threads=1
+    Updating crates.io index
+error: failed to select a version for `windows-targets`.
+    ... required by package `windows v0.58.0`
+    ... which satisfies dependency `windows = "^0.58"` of package `tauri v2.0.0`
+    ... which satisfies dependency `tauri = "^2"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+versions that meet the requirements `^0.52.6` are: 0.52.6
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `windows-targets v0.52.0`
+    ... which satisfies dependency `windows-targets = "^0.52"` of package `chrono v0.4.38`
+    ... which satisfies dependency `chrono = "^0.4.31"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+
+failed to select a version for `windows-targets` which could resolve this conflict
+make: *** [tests] Error 101
+```
+
+Even trying to upgrade `chrono` doesn't work:
+
+```bash
+$ cargo update chrono
+    Updating crates.io index
+error: failed to select a version for `windows-targets`.
+    ... required by package `windows v0.58.0`
+    ... which satisfies dependency `windows = "^0.58"` of package `tauri v2.0.0`
+    ... which satisfies dependency `tauri = "^2"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+versions that meet the requirements `^0.52.6` are: 0.52.6
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `windows-targets v0.52.5`
+    ... which satisfies dependency `windows-targets = "^0.52"` of package `chrono v0.4.38`
+    ... which satisfies dependency `chrono = "^0.4.31"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+
+failed to select a version for `windows-targets` which could resolve this conflict
+```
+
+Trying to simply regenerate the entire lock file gives us:
+
+```bash
+$ cargo generate-lockfile
+    Updating crates.io index
+error: failed to select a version for `webkit2gtk-sys`.
+    ... required by package `webkit2gtk v0.18.2`
+    ... which satisfies dependency `webkit2gtk = "^0.18.2"` of package `tauri v1.2.4`
+    ... which satisfies dependency `tauri = "^1.2.4"` of package `tauri-specta v1.0.2`
+    ... which satisfies dependency `tauri-specta = "^1.0.2"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+versions that meet the requirements `^0.18` are: 0.18.0
+
+the package `webkit2gtk-sys` links to the native library `web_kit2`, but it conflicts with a previous package which links to `web_kit2` as well:
+package `webkit2gtk-sys v2.0.1`
+    ... which satisfies dependency `ffi = "^2.0.1"` of package `webkit2gtk v2.0.1`
+    ... which satisfies dependency `webkit2gtk = "=2.0.1"` of package `tauri v2.0.0`
+    ... which satisfies dependency `tauri = "^2"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+Only one package in the dependency graph may specify the same links value. This helps ensure that only one copy of a native library is linked in the final binary. Try to adjust your dependencies so that only one package uses the `links = "web_kit2"` value. For more information, see https://doc.rust-lang.org/cargo/reference/resolver.html#links.
+
+failed to select a version for `webkit2gtk-sys` which could resolve this conflict
+```
+
+We also can't update tauri-specta automatically:
+
+```bash
+$ cargo update tauri-specta
+    Updating crates.io index
+error: failed to select a version for `windows-targets`.
+    ... required by package `windows v0.58.0`
+    ... which satisfies dependency `windows = "^0.58"` of package `tauri v2.0.0`
+    ... which satisfies dependency `tauri = "^2"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+versions that meet the requirements `^0.52.6` are: 0.52.6
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `windows-targets v0.52.0`
+    ... which satisfies dependency `windows-targets = "^0.52"` of package `chrono v0.4.38`
+    ... which satisfies dependency `chrono = "^0.4.31"` of package `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+
+failed to select a version for `windows-targets` which could resolve this conflict
+```
+
+We check `tauri-specta` versions on [crates.io](https://crates.io/crates/tauri-specta/versions) and find that as of now, there still isn't a stable release of `tauri-specta` for Tauri v2.0. However, when we edit `src-tauri/Cargo.toml` to manually set the version to `"2.0.0-rc.20"`, the lock file finally gets successfully updated:
+
+```bash
+$ cargo generate-lockfile
+    Blocking waiting for file lock on package cache
+    Updating crates.io index
+```
+
+Our code still doesn't compile:
+
+```bash
+$ make test
+cargo test -- --include-ignored --test-threads=1
+error: package `migrations_macros v2.2.0` cannot be built because it requires rustc 1.78.0 or newer, while the currently active rustc version is 1.76.0
+Either upgrade to rustc 1.78.0 or newer, or use
+cargo update migrations_macros@2.2.0 --precise ver
+where `ver` is the latest version of `migrations_macros` supporting rustc 1.76.0
+make: *** [tests] Error 101
+```
+
+We update our local version of Rust:
+
+```bash
+$ asdf install rust latest
+...
+  1.82.0-aarch64-apple-darwin installed - rustc 1.82.0 (f6e511eec 2024-10-15)
+
+
+Rust is installed now. Great!
+
+To get started you need Cargo's bin directory
+(/Users/amos/.asdf/installs/rust/1.82.0/bin) in your PATH
+environment variable. This has not been done automatically.
+
+To configure your current shell, you need to source
+the corresponding env file under /Users/amos/.asdf/installs/rust/1.82.0.
+
+This is usually done by running one of the following (note the leading DOT):
+. "/Users/amos/.asdf/installs/rust/1.82.0/env"            # For
+sh/bash/zsh/ash/dash/pdksh
+source "/Users/amos/.asdf/installs/rust/1.82.0/env.fish"  # For fish
+asdf: Warn: You have configured asdf to preserve downloaded files (with always_keep_download=yes or --keep-download). But
+asdf: Warn: the current plugin (rust) does not support that. Downloaded files will not be preserved.
+$ asdf global rust 1.82.0
+```
+
+It appears we don't actually need to update the PATH just yet.
+
+We try running the tests again:
+
+```bash
+$ make test
+...
+
+error: failed to run custom build command for `zamm v0.2.1 (/Users/amos/Documents/zamm/src-tauri)`
+
+Caused by:
+  process didn't exit successfully: `/Users/amos/Documents/zamm/src-tauri/target/debug/build/zamm-f65a22ab67d6b652/build-script-build` (exit status: 1)
+  --- stdout
+  cargo:rerun-if-changed=migrations
+  cargo:rerun-if-env-changed=TAURI_CONFIG
+  cargo:rerun-if-changed=tauri.conf.json
+  cargo:rustc-check-cfg=cfg(desktop)
+  cargo:rustc-cfg=desktop
+  cargo:rustc-check-cfg=cfg(mobile)
+  cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_APP_NAME=zamm
+  cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_PREFIX=dev
+  cargo:rustc-check-cfg=cfg(dev)
+  cargo:rustc-cfg=dev
+  cargo:PERMISSION_FILES_PATH=/Users/amos/Documents/zamm/src-tauri/target/debug/build/zamm-51dedfeec1552a1b/out/app-manifest/__app__-permission-files
+  cargo:rerun-if-changed=capabilities
+  Permission shell:allow-open not found, expected one of core:default, core:app:default, core:app:allow-app-hide,...
+warning: build failed, waiting for other jobs to finish...
+...
+```
+
+We notice that during the migration script, the file `src-tauri/capabilities/migrated.json` was created:
+
+```json
+{
+  "identifier": "migrated",
+  "description": "permissions that were migrated from v1",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}
+```
+
+There's also a few JSON schema files generated under `src-tauri/gen/schemas`.
+
+If we remove `shell:allow-open` from this file, we still get
+
+```
+  Permission dialog:allow-open not found, expected one of core:default, core:app:default, core:app:allow-app-hide, core:app:allow-app-show, core:app:allow-default-window-icon, core:app:allow-name, core:app:allow-set-app-theme, core:app:allow-tauri-version, core:app:allow-version, core:app:deny-app-hide, core:app:deny-app-show, core:app:deny-default-window-icon, core:app:deny-name, core:app:deny-set-app-theme, core:app:deny-tauri-version, core:app:deny-version, core:event:default, core:event:allow-emit, core:event:allow-emit-to, core:event:allow-listen, core:event:allow-unlisten, core:event:deny-emit, core:event:deny-emit-to, core:event:deny-listen, core:event:deny-unlisten, core:image:default, core:image:allow-from-bytes, core:image:allow-from-path, core:image:allow-new, core:image:allow-rgba, core:image:allow-size, core:image:deny-from-bytes, core:image:deny-from-path, core:image:deny-new, core:image:deny-rgba, core:image:deny-size, core:menu:default, core:menu:allow-append, core:menu:allow-create-default, core:menu:allow-get, core:menu:allow-insert, core:menu:allow-is-checked, core:menu:allow-is-enabled, core:menu:allow-items, core:menu:allow-new, core:menu:allow-popup, core:menu:allow-prepend, core:menu:allow-remove, core:menu:allow-remove-at, core:menu:allow-set-accelerator, core:menu:allow-set-as-app-menu, core:menu:allow-set-as-help-menu-for-nsapp, core:menu:allow-set-as-window-menu, core:menu:allow-set-as-windows-menu-for-nsapp, core:menu:allow-set-checked, core:menu:allow-set-enabled, core:menu:allow-set-icon, core:menu:allow-set-text, core:menu:allow-text, core:menu:deny-append, core:menu:deny-create-default, core:menu:deny-get, core:menu:deny-insert, core:menu:deny-is-checked, core:menu:deny-is-enabled, core:menu:deny-items, core:menu:deny-new, core:menu:deny-popup, core:menu:deny-prepend, core:menu:deny-remove, core:menu:deny-remove-at, core:menu:deny-set-accelerator, core:menu:deny-set-as-app-menu, core:menu:deny-set-as-help-menu-for-nsapp, core:menu:deny-set-as-window-menu, core:menu:deny-set-as-windows-menu-for-nsapp, core:menu:deny-set-checked, core:menu:deny-set-enabled, core:menu:deny-set-icon, core:menu:deny-set-text, core:menu:deny-text, core:path:default, core:path:allow-basename, core:path:allow-dirname, core:path:allow-extname, core:path:allow-is-absolute, core:path:allow-join, core:path:allow-normalize, core:path:allow-resolve, core:path:allow-resolve-directory, core:path:deny-basename, core:path:deny-dirname, core:path:deny-extname, core:path:deny-is-absolute, core:path:deny-join, core:path:deny-normalize, core:path:deny-resolve, core:path:deny-resolve-directory, core:resources:default, core:resources:allow-close, core:resources:deny-close, core:tray:default, core:tray:allow-get-by-id, core:tray:allow-new, core:tray:allow-remove-by-id, core:tray:allow-set-icon, core:tray:allow-set-icon-as-template, core:tray:allow-set-menu, core:tray:allow-set-show-menu-on-left-click, core:tray:allow-set-temp-dir-path, core:tray:allow-set-title, core:tray:allow-set-tooltip, core:tray:allow-set-visible, core:tray:deny-get-by-id, core:tray:deny-new, core:tray:deny-remove-by-id, core:tray:deny-set-icon, core:tray:deny-set-icon-as-template, core:tray:deny-set-menu, core:tray:deny-set-show-menu-on-left-click, core:tray:deny-set-temp-dir-path, core:tray:deny-set-title, core:tray:deny-set-tooltip, core:tray:deny-set-visible, core:webview:default, core:webview:allow-clear-all-browsing-data, core:webview:allow-create-webview, core:webview:allow-create-webview-window, core:webview:allow-get-all-webviews, core:webview:allow-internal-toggle-devtools, core:webview:allow-print, core:webview:allow-reparent, core:webview:allow-set-webview-focus, core:webview:allow-set-webview-position, core:webview:allow-set-webview-size, core:webview:allow-set-webview-zoom, core:webview:allow-webview-close, core:webview:allow-webview-hide, core:webview:allow-webview-position, core:webview:allow-webview-show, core:webview:allow-webview-size, core:webview:deny-clear-all-browsing-data, core:webview:deny-create-webview, core:webview:deny-create-webview-window, core:webview:deny-get-all-webviews, core:webview:deny-internal-toggle-devtools, core:webview:deny-print, core:webview:deny-reparent, core:webview:deny-set-webview-focus, core:webview:deny-set-webview-position, core:webview:deny-set-webview-size, core:webview:deny-set-webview-zoom, core:webview:deny-webview-close, core:webview:deny-webview-hide, core:webview:deny-webview-position, core:webview:deny-webview-show, core:webview:deny-webview-size, core:window:default, core:window:allow-available-monitors, core:window:allow-center, core:window:allow-close, core:window:allow-create, core:window:allow-current-monitor, core:window:allow-cursor-position, core:window:allow-destroy, core:window:allow-get-all-windows, core:window:allow-hide, core:window:allow-inner-position, core:window:allow-inner-size, core:window:allow-internal-toggle-maximize, core:window:allow-is-closable, core:window:allow-is-decorated, core:window:allow-is-enabled, core:window:allow-is-focused, core:window:allow-is-fullscreen, core:window:allow-is-maximizable, core:window:allow-is-maximized, core:window:allow-is-minimizable, core:window:allow-is-minimized, core:window:allow-is-resizable, core:window:allow-is-visible, core:window:allow-maximize, core:window:allow-minimize, core:window:allow-monitor-from-point, core:window:allow-outer-position, core:window:allow-outer-size, core:window:allow-primary-monitor, core:window:allow-request-user-attention, core:window:allow-scale-factor, core:window:allow-set-always-on-bottom, core:window:allow-set-always-on-top, core:window:allow-set-closable, core:window:allow-set-content-protected, core:window:allow-set-cursor-grab, core:window:allow-set-cursor-icon, core:window:allow-set-cursor-position, core:window:allow-set-cursor-visible, core:window:allow-set-decorations, core:window:allow-set-effects, core:window:allow-set-enabled, core:window:allow-set-focus, core:window:allow-set-fullscreen, core:window:allow-set-icon, core:window:allow-set-ignore-cursor-events, core:window:allow-set-max-size, core:window:allow-set-maximizable, core:window:allow-set-min-size, core:window:allow-set-minimizable, core:window:allow-set-position, core:window:allow-set-progress-bar, core:window:allow-set-resizable, core:window:allow-set-shadow, core:window:allow-set-size, core:window:allow-set-size-constraints, core:window:allow-set-skip-taskbar, core:window:allow-set-theme, core:window:allow-set-title, core:window:allow-set-title-bar-style, core:window:allow-set-visible-on-all-workspaces, core:window:allow-show, core:window:allow-start-dragging, core:window:allow-start-resize-dragging, core:window:allow-theme, core:window:allow-title, core:window:allow-toggle-maximize, core:window:allow-unmaximize, core:window:allow-unminimize, core:window:deny-available-monitors, core:window:deny-center, core:window:deny-close, core:window:deny-create, core:window:deny-current-monitor, core:window:deny-cursor-position, core:window:deny-destroy, core:window:deny-get-all-windows, core:window:deny-hide, core:window:deny-inner-position, core:window:deny-inner-size, core:window:deny-internal-toggle-maximize, core:window:deny-is-closable, core:window:deny-is-decorated, core:window:deny-is-enabled, core:window:deny-is-focused, core:window:deny-is-fullscreen, core:window:deny-is-maximizable, core:window:deny-is-maximized, core:window:deny-is-minimizable, core:window:deny-is-minimized, core:window:deny-is-resizable, core:window:deny-is-visible, core:window:deny-maximize, core:window:deny-minimize, core:window:deny-monitor-from-point, core:window:deny-outer-position, core:window:deny-outer-size, core:window:deny-primary-monitor, core:window:deny-request-user-attention, core:window:deny-scale-factor, core:window:deny-set-always-on-bottom, core:window:deny-set-always-on-top, core:window:deny-set-closable, core:window:deny-set-content-protected, core:window:deny-set-cursor-grab, core:window:deny-set-cursor-icon, core:window:deny-set-cursor-position, core:window:deny-set-cursor-visible, core:window:deny-set-decorations, core:window:deny-set-effects, core:window:deny-set-enabled, core:window:deny-set-focus, core:window:deny-set-fullscreen, core:window:deny-set-icon, core:window:deny-set-ignore-cursor-events, core:window:deny-set-max-size, core:window:deny-set-maximizable, core:window:deny-set-min-size, core:window:deny-set-minimizable, core:window:deny-set-position, core:window:deny-set-progress-bar, core:window:deny-set-resizable, core:window:deny-set-shadow, core:window:deny-set-size, core:window:deny-set-size-constraints, core:window:deny-set-skip-taskbar, core:window:deny-set-theme, core:window:deny-set-title, core:window:deny-set-title-bar-style, core:window:deny-set-visible-on-all-workspaces, core:window:deny-show, core:window:deny-start-dragging, core:window:deny-start-resize-dragging, core:window:deny-theme, core:window:deny-title, core:window:deny-toggle-maximize, core:window:deny-unmaximize, core:window:deny-unminimize
+make: *** [tests] Error 101
+```
+
+We see that perhaps we need to add the [dialog plugin](https://v2.tauri.app/plugin/dialog/). If we try to do so:
+
+```bash
+$ yarn run tauri add dialog
+yarn run v1.22.22
+$ tauri add dialog
+    Info Installing Cargo dependency "tauri-plugin-dialog"...
+    Info Installing NPM dependency "@tauri-apps/plugin-dialog@~2"...
+Failed to install NPM dependency
+    Error Failed to install NPM dependency
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+It seems it's trying to install the dependency with NPM despite the command being run with `yarn` as recommended in the docs. We try this:
+
+```bash
+$ yarn add @tauri-apps/plugin-dialog@~2
+success Saved lockfile.
+warning Workspaces can only be enabled in private projects.
+success Saved 1 new dependency.
+info Direct dependencies
+info All dependencies
+└─ @tauri-apps/plugin-dialog@2.0.1
+✨  Done in 6.79s.
+```
+
+Now we see that the dialog options do appear at the end of the list of possible options:
+
+```
+ dialog:default, dialog:allow-ask, dialog:allow-confirm, dialog:allow-message, dialog:allow-open, dialog:allow-save, dialog:deny-ask, dialog:deny-confirm, dialog:deny-message, dialog:deny-open, dialog:deny-save
+```
+
+We try to now do the same for the shell plugin. Interestingly, we get
+
+```bash
+$ yarn run tauri add shell
+yarn run v1.22.22
+$ tauri add shell
+error: unrecognized subcommand 'add'
+
+Usage: yarn run tauri [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+error Command failed with exit code 2.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+Even our previous command now fails with a different message:
+
+```bash
+$ yarn run tauri add dialog
+yarn run v1.22.22
+$ tauri add dialog
+error: unrecognized subcommand 'add'
+
+Usage: yarn run tauri [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+error Command failed with exit code 2.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+We take this chance to edit `src-svelte/package.json` to upgrade `"@tauri-apps/api"` to v2:
+
+```json
+{
+  ...,
+  "dependencies": {
+    ...,
+    "@tauri-apps/api": "~2",
+    "@tauri-apps/plugin-dialog": "~2",
+    ...
+  }
+}
+```
+
+Now it works again, to the extent that the original error message is recovered:
+
+```bash
+$ yarn run tauri add shell
+yarn run v1.22.22
+$ tauri add shell
+    Info Installing Cargo dependency "tauri-plugin-shell"...
+    Info Installing NPM dependency "@tauri-apps/plugin-shell@~2"...
+Failed to install NPM dependency
+    Error Failed to install NPM dependency
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+We don't have to install the frontend plugin for the compilation to get to the next stage. Now, we have a host of new errors. We look at the very last one:
+
+```
+error[E0433]: failed to resolve: could not find `api` in `tauri`
+  --> src/commands/errors.rs:94:29
+   |
+94 |         tauri_error: tauri::api::Error,
+   |                             ^^^ could not find `api` in `tauri`
+```
+
+From [the documentation](https://docs.rs/tauri/2.0.6/tauri/enum.Error.html), it appears that the latest path for the Error enum is `tauri::Error`.
+
+Next, we have
+
+```
+error[E0432]: unresolved import `tauri_specta::ts`
+  --> src/main.rs:28:5
+   |
+28 | use tauri_specta::ts;
+   |     ^^^^^^^^^^^^^^^^ no `ts` in the root
+   |
+help: consider importing this module instead
+   |
+28 | use specta::ts;
+   |     ~~~~~~~~~~
+```
+
+We see from the [`tauri_specta` docs](https://docs.rs/tauri-specta/2.0.0-rc.20/tauri_specta/index.html) that we should actually edit `src-tauri/Cargo.toml` to add in equal sign to the version, so that it is `"=2.0.0-rc.20"`. We set `specta` to the same version as well so that they're in sync. We initially set the features to `["derive", "typescript"]`, instead of `["javascript", "typescript"]` per the examples, before realizing that the `"derive"` feature "is only required if your using events." We end up with
+
+```toml
+specta = { version = "=2.0.0-rc.20", features = ["uuid", "chrono"] }
+tauri-specta = { version = "=2.0.0-rc.20", features = ["derive", "typescript"] }
+...
+specta-typescript = "0.0.7"
+```
+
+In `src-tauri/src/main.rs`, we edit it to:
+
+```rs
+...
+#[cfg(debug_assertions)]
+use tauri_specta::{collect_commands, Builder};
+...
+#[cfg(debug_assertions)]
+use specta_typescript::Typescript;
+...
+
+fn main() {
+    ...
+
+    match &cli.command {
+        #[cfg(debug_assertions)]
+        Some(Commands::ExportBindings {}) => {
+            let mut builder = Builder::<tauri::Wry>::new()
+                .commands(collect_commands![
+                    get_api_keys,
+                    ...
+                ]
+            );
+            builder
+                .export(Typescript::default(), "../src-svelte/src/lib/bindings.ts")
+                .expect("Failed to export Specta bindings");
+            println!("Specta bindings should be exported to ../src-svelte/src/lib/bindings.ts");
+        }
+        ...
+    }
+}
+```
+
+Now we get a new error
+
+```
+error[E0277]: the trait bound `impl futures::Future<Output = std::result::Result<std::string::String, errors::Error>>: FunctionResult<_>` is not satisfied
+   --> src/commands/terminal/send_input.rs:46:1
+    |
+46  |   #[specta]
+    |   ^^^^^^^^^ the trait `FunctionResult<_>` is not implemented for `impl Future<Output = Result<..., ...>>`, which is required by `fn(_, _, _, _) -> _: function::specta_fn::SpectaFn<_>`
+    |
+   ::: src/main.rs:51:27
+    |
+51  |                   .commands(collect_commands![
+    |  ___________________________-
+52  | |                     get_api_keys,
+53  | |                     set_api_key,
+54  | |                     play_sound,
+...   |
+64  | |                     send_command_input,
+65  | |                 ]
+    | |_________________- in this macro invocation
+    |
+    = help: the trait `FunctionResult<FunctionResultMarker>` is implemented for `std::result::Result<T, E>`
+    = note: required for `fn(State<'_, ...>, ..., ..., ...) -> ...` to implement `function::specta_fn::SpectaFn<_>`
+note: required by a bound in `get_fn_datatype`
+   --> /Users/amos/.asdf/installs/rust/1.82.0/registry/src/index.crates.io-6f17d22bba15001f/specta-2.0.0-rc.20/src/internal.rs:232:40
+    |
+232 | ...<TMarker, T: SpectaFn<TMarker>>(
+    |                 ^^^^^^^^^^^^^^^^^ required by this bound in `get_fn_datatype`
+    = note: the full name for the type has been written to '/Users/amos/Documents/zamm/src-tauri/target/debug/deps/zamm-19febcef5806b302.long-type-1904689048097984832.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+    = note: this error originates in the macro `__specta__fn__send_command_input` which comes from the expansion of the macro `collect_commands` (in Nightly builds, run with -Z macro-backtrace for more info)
+```
+
+This might have something to do with the errors that we previously saw, that no longer appear:
+
+```
+error[E0432]: unresolved import `specta::specta`
+   --> src/commands/terminal/send_input.rs:9:5
+    |
+9   | use specta::specta;
+    |     ^^^^^^^^^^^^^^ no `specta` in the root
+    |
+note: found an item that was configured out
+   --> /Users/amos/.asdf/installs/rust/1.82.0/registry/src/index.crates.io-6f17d22bba15001f/specta-1.0.5/src/lib.rs:190:24
+    |
+190 | pub use specta_macros::specta;
+    |                        ^^^^^^
+note: the item is gated behind the `functions` feature
+   --> /Users/amos/.asdf/installs/rust/1.82.0/registry/src/index.crates.io-6f17d22bba15001f/specta-1.0.5/src/lib.rs:188:7
+    |
+188 | #[cfg(feature = "functions")]
+    |       ^^^^^^^^^^^^^^^^^^^^^
+```
+
+However, it appears that this error no longer reproduces simply because we have already solved the problem and the symbol can be found now.
+
+We see that `FunctionResult` is indeed a trait defined in [`specta`](https://github.com/specta-rs/specta/blob/8509af0162b26bb2c08e84a41cdfc4eaf67a6ab3/specta/src/function/result.rs#L7). There is also [this issue](https://github.com/specta-rs/tauri-specta/issues/99).
+
+Since we have this in `src-tauri/src/commands/errors.rs`:
+
+```rs
+pub type ZammResult<T> = std::result::Result<T, Error>;
+```
+
+we try to derive
+
+```rs
+#[derive(thiserror::Error, Debug, specta::Type)]
+pub enum Error {
+    ...,
+    #[error(transparent)]
+    Uuid {
+        #[from]
+        source: uuid::Error,
+    },
+    #[error(transparent)]
+    Diesel {
+        #[from]
+        source: diesel::result::Error,
+    },
+    #[error(transparent)]
+    Reqwest {
+        #[from]
+        source: reqwest::Error,
+    },
+    ...
+}
+```
+
+but are of course met with the error
+
+```
+error[E0277]: the trait bound `reqwest::Error: specta::Type` is not satisfied
+   --> src/commands/errors.rs:144:17
+    |
+144 |         source: reqwest::Error,
+    |                 ^^^^^^^^^^^^^^ the trait `specta::Type` is not implemented for `reqwest::Error`
+    |
+    = help: the following other types implement trait `specta::Type`:
+              &'a T
+              &'a [T]
+              &'a str
+              ()
+              (T10, T11, T12, T13)
+              (T11, T12, T13)
+              (T12, T13)
+              (T13,)
+            and 127 others
+```
+
+We now see that this is this [other issue](https://github.com/specta-rs/tauri-specta/issues/90) where the recommended workaround is explained. We remove the sidecar logic from the error file because it is no longer needed. We end up refactoring the errors module into a proper folder, such that `src-tauri/src/commands/errors/mod.rs` looks like this:
+
+```rs
+pub mod rodio;
+pub mod serde;
+pub mod error;
+pub mod import;
+
+pub use error::{Error, ZammResult};
+pub use import::ImportError;
+
+```
+
+The file `src-tauri/src/commands/errors/rodio.rs` looks like this as we do the recommended workaround:
+
+```rs
+#[derive(thiserror::Error, Debug, specta::Type)]
+pub enum RodioError {
+    #[error("Stream error: {0}")]
+    Stream(String),
+    #[error("Decoder error: {0}")]
+    Decode(String),
+    #[error("Play error: {0}")]
+    Play(String),
+}
+
+impl From<rodio::StreamError> for RodioError {
+    fn from(err: rodio::StreamError) -> Self {
+        Self::Stream(err.to_string())
+    }
+}
+
+impl From<rodio::decoder::DecoderError> for RodioError {
+    fn from(err: rodio::decoder::DecoderError) -> Self {
+        Self::Decode(err.to_string())
+    }
+}
+
+impl From<rodio::PlayError> for RodioError {
+    fn from(err: rodio::PlayError) -> Self {
+        Self::Play(err.to_string())
+    }
+}
+
+```
+
+And `src-tauri/src/commands/errors/serde.rs` looks like this, where we finally take this chance to consolidate the `Toml` enum into one in order to fit the structure of the others:
+
+```rs
+#[derive(thiserror::Error, Debug, specta::Type)]
+pub enum SerdeError {
+    #[error("JSON error: {0}")]
+    Json(String),
+    #[error("YAML error: {0}")]
+    Yaml(String),
+    #[error("TOML error: {0}")]
+    Toml(String),
+}
+
+impl From<serde_json::Error> for SerdeError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Json(err.to_string())
+    }
+}
+
+impl From<serde_yaml::Error> for SerdeError {
+    fn from(err: serde_yaml::Error) -> Self {
+        Self::Yaml(err.to_string())
+    }
+}
+
+impl From<toml::de::Error> for SerdeError {
+    fn from(err: toml::de::Error) -> Self {
+        Self::Toml(err.to_string())
+    }
+}
+
+impl From<toml::ser::Error> for SerdeError {
+    fn from(err: toml::ser::Error) -> Self {
+        Self::Toml(err.to_string())
+    }
+}
+
+```
+
+We create `src-tauri/src/commands/errors/import.rs`:
+
+```rs
+#[derive(thiserror::Error, Debug, specta::Type)]
+pub enum ImportError {
+    #[error("Data contains unknown prompt types.")]
+    UnknownPromptType {},
+}
+
+```
+
+Now `src-tauri/src/commands/errors/error.rs` can be purely about the app-level Error:
+
+```rs
+use crate::setup::api_keys::Service;
+use crate::commands::errors::serde::SerdeError;
+use crate::commands::errors::rodio::RodioError;
+use crate::commands::errors::import::ImportError;
+use std::sync::PoisonError;
+
+#[derive(thiserror::Error, Debug, specta::Type)]
+pub enum Error {
+    #[error("Unexpected JSON: {reason}")]
+    UnexpectedOpenAiResponse { reason: String },
+    #[error("Missing API key for {service}")]
+    MissingApiKey { service: Service },
+    #[error("Cannot import from ZAMM version {version}. {import_error}")]
+    FutureZammImport {
+        version: String,
+        import_error: ImportError,
+    },
+    #[error(transparent)]
+    GenericImport {
+        #[from]
+        source: ImportError,
+    },
+    #[error("Lock poisoned")]
+    Poison {},
+    #[error(transparent)]
+    Serde {
+        #[from]
+        source: SerdeError,
+    },
+    #[error(transparent)]
+    Rodio {
+        #[from]
+        source: RodioError,
+    },
+    #[error("UUID error: {0}")]
+    Uuid(String),
+    #[error("Diesel error: {0}")]
+    Diesel(String),
+    #[error("Reqwest error: {0}")]
+    Reqwest(String),
+    #[error("OpenAI error: {0}")]
+    OpenAI(String),
+    #[error("Ollama error: {0}")]
+    Ollama(String),
+    #[error("Tauri error: {0}")]
+    Tauri(String),
+    #[error("IO error: {0}")]
+    Io(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl<T> From<PoisonError<T>> for Error {
+    ...
+}
+
+impl From<rodio::StreamError> for Error {
+    ...
+}
+
+impl From<rodio::decoder::DecoderError> for Error {
+    ...
+}
+
+impl From<rodio::PlayError> for Error {
+    ...
+}
+
+impl From<serde_json::Error> for Error {
+    ...
+}
+
+impl From<serde_yaml::Error> for Error {
+    ...
+}
+
+impl From<toml::de::Error> for Error {
+    ...
+}
+
+impl From<toml::ser::Error> for Error {
+    ...
+}
+
+impl From<uuid::Error> for Error {
+    fn from(err: uuid::Error) -> Self {
+        Self::Uuid(err.to_string())
+    }
+}
+
+impl From<diesel::result::Error> for Error {
+    fn from(err: diesel::result::Error) -> Self {
+        Self::Diesel(err.to_string())
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Reqwest(err.to_string())
+    }
+}
+
+impl From<async_openai::error::OpenAIError> for Error {
+    fn from(err: async_openai::error::OpenAIError) -> Self {
+        Self::OpenAI(err.to_string())
+    }
+}
+
+impl From<ollama_rs::error::OllamaError> for Error {
+    fn from(err: ollama_rs::error::OllamaError) -> Self {
+        Self::Ollama(err.to_string())
+    }
+}
+
+impl From<tauri::Error> for Error {
+    fn from(err: tauri::Error) -> Self {
+        Self::Tauri(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
+}
+
+impl From<anyhow::Error> for Error {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Other(err.to_string())
+    }
+}
+
+impl serde::Serialize for Error {
+    ...
+}
+
+pub type ZammResult<T> = std::result::Result<T, Error>;
+
+```
+
+Next, we tackle
+
+```
+error[E0599]: no method named `get_window` found for mutable reference `&mut tauri::App` in the current scope
+   --> src/main.rs:104:29
+    |
+104 |                         app.get_window("main")
+    |                             ^^^^^^^^^^
+    |
+help: there is a method `get_webview_window` with a similar name
+    |
+104 |                         app.get_webview_window("main")
+    |                             ~~~~~~~~~~~~~~~~~~
+```
+
+We use the suggestion and use `get_webview_window` instead.
+
+Next, we tackle
+
+```
+error[E0599]: no method named `path_resolver` found for reference `&AppHandle` in the current scope
+  --> src/main.rs:79:51
+   |
+79 | ...().path_resolver().app_config_dir();
+   |       ^^^^^^^^^^^^^ method not found in `&AppHandle`
+```
+
+We find [a comment](https://github.com/tauri-apps/tauri/discussions/6583#discussioncomment-7345433) with all the relevant Tauri app directories, but this appears to be for v1. We eventually find [this example](https://docs.rs/tauri/2.0.6/tauri/path/struct.PathResolver.html#examples), and do
+
+```rs
+let config_dir = app.path().app_config_dir().ok();
+```
+
+We try to edit `src-tauri/src/commands/preferences/read.rs` the same way as well, by changing from a `tauri::AppHandle` to a `tauri::App`:
+
+```rs
+...
+use tauri::Manager;
+
+...
+
+#[tauri::command(async)]
+#[specta]
+pub fn get_preferences(app: tauri::App) -> Preferences {
+    let app_dir = app.path().app_config_dir();
+    ...
+}
+```
+
+Unfortunately, this gives us a whole bunch of errors such as
+
+```
+error[E0277]: the trait bound `tauri::App: CommandArg<'_, tauri_runtime_wry::Wry<EventLoopMessage>>` is not satisfied
+   --> src/commands/preferences/read.rs:51:1
+    |
+51  |   #[tauri::command(async)]
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `sample_call::_::_serde::Deserialize<'_>` is not implemented for `tauri::App`, which is required by `tauri::App: CommandArg<'_, tauri_runtime_wry::Wry<EventLoopMessage>>`
+    |
+   ::: src/main.rs:117:33
+    |
+117 |   ...   .invoke_handler(tauri::generate_handler![
+    |  _______________________-
+118 | | ...       get_api_keys,
+119 | | ...       set_api_key,
+120 | | ...       play_sound,
+...   |
+130 | | ...       send_command_input,
+131 | | ...   ])
+    | |_______- in this macro invocation
+    |
+    = help: the following other types implement trait `sample_call::_::_serde::Deserialize<'de>`:
+```
+
+It turns out that we can just replace `path_resolver` with `path` instead, and add an `.ok()` so that the Result gets turned into an Option, so that we end up with
+
+```rs
+#[tauri::command(async)]
+#[specta]
+pub fn get_preferences(app_handle: tauri::AppHandle) -> Preferences {
+    let app_dir = app_handle.path().app_config_dir().ok();
+    ...
+}
+```
+
+It finally compiles, and only one test fails:
+
+```
+---- commands::keys::set::tests::test_invalid_filename stdout ----
+Test will use temp directory at /var/folders/3n/23b4t33d07s0c_5thq3gqt4h0000gn/T/zamm/tests/set_api_key/test_invalid_filename
+Replacements:
+  The system cannot find the path specified. (os error 3) -> Is a directory (os error 21)
+thread 'commands::keys::set::tests::test_invalid_filename' panicked at src/test_helpers/api_testing.rs:525:9:
+assertion `left == right` failed
+  left: "\"IO error: Is a directory (os error 21)\""
+ right: "\"Is a directory (os error 21)\""
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+We edit `src-tauri/api/sample-calls/set_api_key-invalid-filename.yaml` correspondingly:
+
+```yaml
+...
+response:
+  ...
+  message: >
+    "IO error: Is a directory (os error 21)"
+...
+```
+
+When we try to commit, we get the warnings
+
+```
+warning: method `read_updates` is never used
+  --> src/commands/terminal/models.rs:22:8
+   |
+20 | pub trait Terminal: Send + Sync {
+   |           -------- method in this trait
+21 |     fn run_command(&mut self, command: &str) -> ZammResult<String>;
+22 |     fn read_updates(&mut self) -> ZammResult<String>;
+   |        ^^^^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(dead_code)]`
+
+warning: `zamm` (bin "zamm") generated 1 warning
+warning: fields `sample`, `args`, and `result` are never read
+   --> src/test_helpers/api_testing.rs:227:9
+    |
+222 | pub struct SampleCallResult<T, U>
+    |            ---------------- fields in this struct
+...
+227 |     pub sample: SampleCall,
+    |         ^^^^^^
+228 |     pub args: T,
+    |         ^^^^
+229 |     pub result: U,
+    |         ^^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(dead_code)]`
+
+warning: `zamm` (bin "zamm" test) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.87s
+```
+
+It appears the struct `SampleCallResult` is never even used, so we remove it and edit `check_sample_call` to return nothing instead. As for `Terminal`, we mark `read_updates` with `#[allow(dead_code)]`.
+
+Next, the pre-commit fails because `gen/schema` files keep getting regenerated by Cargo. It turns out these [should not be committed](https://github.com/tauri-apps/tauri/discussions/9051#discussioncomment-8646015). As such, we edit `src-tauri/.gitignore` to ignore the generated folder:
+
+```
+...
+/gen/
+```
+
+### Frontend
+
+Next, we take a look at getting frontend tests to pass. Only one `quick-test` test file is failing, and that is the `src/routes/settings/Database.test.ts` file.
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'invoke')
+ ❯ invoke ../node_modules/@tauri-apps/plugin-dialog/node_modules/@tauri-apps/api/core.js:134:39
+ ❯ Module.open ../node_modules/@tauri-apps/plugin-dialog/dist-js/index.js:62:18
+ ❯ Button.importData src/routes/settings/Database.svelte:41:14
+     39|     const filePath =
+     40|       window.WEBDRIVER_FILE_PATH ??
+     41|       (await open({
+       |              ^
+     42|         title: "Import ZAMM data",
+     43|         directory: false,
+ ❯ ../node_modules/svelte/src/runtime/internal/lifecycle.js:105:8
+ ❯ ../node_modules/svelte/src/runtime/internal/lifecycle.js:104:22
+ ❯ HTMLButtonElement.handleClick src/lib/controls/Button.svelte:12:5
+ ❯ HTMLButtonElement.callTheUserObjectsOperation ../node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30
+ ❯ innerInvokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:350:25
+ ❯ invokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:286:3
+
+This error originated in "src/routes/settings/Database.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "can import API keys". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+The relevant function when we dig into the plugin dialog is
+
+```js
+async function open(options = {}) {
+    if (typeof options === 'object') {
+        Object.freeze(options);
+    }
+    return await invoke('plugin:dialog|open', { options });
+}
+```
+
+In fact, we get the same error in the regular app on startup, due to us making that call from `src-svelte/src/routes/AppLayout.svelte`:
+
+```
+Unhandled Promise Rejection: TypeError: invoke() is not a function. (In 'invoke()("get_preferences")', 'invoke()' is undefined)
+```
+
+We try a 
+
+```bash
+$ cargo run -- export-bindings
+```
+
+It turns out from the [example app](https://github.com/specta-rs/tauri-specta/blob/2de2b0ffced6aa80b1dc08cdcb8b361953237181/examples/app/src/main.ts) on the Tauri Specta repo that we now have to import `commands` instead. For example, `src-svelte/src/routes/AppLayout.svelte` now looks like:
+
+```ts
+  import { commands } from "$lib/bindings";
+  ...
+
+  onMount(() => {
+    ...
+
+    const updatePrefs = async () => {
+      const prefs = await commands.getPreferences();
+      ...
+    };
+    ...
+  );
+```
+
+We see that `src-svelte/src/lib/bindings.ts` now has Result functions defined as
+
+```ts
+async importDb(path: string) : Promise<Result<DatabaseImportCounts, Error>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_db", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+```
+
+It appears this [is intentional](https://github.com/specta-rs/tauri-specta/issues/18#issuecomment-2119609415). As such, we will have to edit `src-svelte/src/routes/settings/Database.svelte` to look like:
+
+```ts
+      const importCountsResult = await commands.importDb(filePath);
+      if (importCountsResult.status === "error") {
+        throw importCountsResult.error;
+      }
+      const importCounts = importCountsResult.data;
+```
+
+Instead, we repurpose `src-svelte/src/lib/tauri.ts` (which used to be the sidecar file) to be
+
+```ts
+import { type Result } from "./bindings"
+
+export async function invoke<T, U>(promise: Promise<Result<T, U>>) {
+  const result = await promise
+  if (result.status === "ok") {
+    return result.data
+  } else {
+    throw result.error
+  }
+}
+
+```
+
+and now `Database.svelte` can have
+
+```ts
+  async function importData() {
+    ...
+      const importCounts = await invoke(commands.importDb(filePath));
+    ...
+  }
+
+  async function exportData() {
+    ...
+      const exportCounts = await invoke(commands.exportDb(filePath));
+    ...
+  }
+```
+
+We rename the `invoke` function to `unwrap` so as to avoid confusing it with Tauri's own `invoke`. We now apply the same operation to:
+
+- `src-svelte/src/lib/sound.ts` (although that one doesn't need an `await`)
+- `src-svelte/src/routes/settings/Settings.svelte` (no await needed either)
+- `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte`
+- `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.svelte`
+- `src-svelte/src/routes/database/api-calls/ApiCallsTable.svelte`
+- `src-svelte/src/routes/components/Metadata.svelte` (no `unwrap` needed here)
+- `src-svelte/src/routes/components/api-keys/Display.svelte`
+- `src-svelte/src/routes/components/api-keys/Form.svelte`
+- `src-svelte/src/routes/database/api-calls/new/ApiCallEditor.svelte`
+- `src-svelte/src/routes/chat/Chat.svelte`
+
+Meanwhile, `eslint` complains that:
+
+```
+/Users/amos/Documents/zamm/src-svelte/src/lib/bindings.ts
+    1:1   error  This line has a length of 125. Maximum allowed is 88                             max-len
+  235:14  error  'TAURI_CHANNEL' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  269:33  error  Unexpected empty arrow function                                                  @typescript-eslint/no-empty-function
+```
+
+We edit `.pre-commit-config.yaml` to exclude `eslint` from being run on this file as well:
+
+```yaml
+      - id: eslint
+        ...
+        exclude: ^(src-svelte/src/lib/sample-call.ts|src-svelte/src/lib/bindings.ts)$
+
+```
+
+Now we notice when using the app that in `Database.svelte`, we get the error
+
+```
+Unhandled Promise Rejection: plugin dialog not found
+```
+
+It turns out from the [documentation](https://v2.tauri.app/plugin/dialog/) that we need to edit `src-tauri/src/main.rs` to initialize the app with the plugin enabled:
+
+```rs
+tauri::Builder::default()
+    ...
+    .plugin(tauri_plugin_dialog::init())
+    ...;
+```
+
+Now manual testing on the frontend appears to work fine. However, automated testing is completely failing with errors such as
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'invoke')
+ ❯ Module.invoke node_modules/@tauri-apps/api/core.js:134:39
+ ❯ Object.getPreferences src/lib/bindings.ts:33:18
+
+ ❯ updatePrefs src/routes/AppLayout.svelte:30:36
+ ❯ src/routes/AppLayout.svelte:65:5
+ ❯ run ../node_modules/svelte/src/runtime/internal/utils.js:41:9
+ ❯ ../node_modules/svelte/src/runtime/internal/Component.js:47:48
+ ❯ flush ../node_modules/svelte/src/runtime/internal/scheduler.js:99:5
+ ❯ Module.init ../node_modules/svelte/src/runtime/internal/Component.js:164:3
+ ❯ new AppLayout src/routes/AppLayout.svelte:446:25
+
+This error originated in "src/routes/AppLayout.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "will set high DPI adjust if preference overridden". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  12 failed | 15 passed (27)
+      Tests  42 failed | 77 passed (119)
+     Errors  28 errors
+   Start at  17:04:09
+   Duration  40.48s (transform 3.03s, setup 2ms, collect 15.02s, tests 61.52s, environment 8.45s, prepare 1.65s)
+```
+
+Since `src-svelte/src/lib/bindings.ts` does `await TAURI_INVOKE`, we try to see if perhaps replacing `__TAURI_INVOKE__` with `TAURI_INVOKE` across the project's test files would make a difference. Sadly, it does not.
+
+Manual testing on Storybook reveals the error
+
+```
+undefined is not an object (evaluating 'window.__TAURI_INTERNALS__.invoke')
+```
+
+We edit `src-svelte/src/lib/__mocks__/invoke.ts`:
+
+```ts
+window.__TAURI_INTERNALS__ = {
+  invoke: mockInvokeFn,
+};
+```
+
+Now the mock calls on Storybook work. We edit `src-svelte/src/lib/sample-call-testing.ts` next to add this function:
+
+```ts
+export function stubGlobalInvoke(mock: any) {
+  window.__TAURI_INTERNALS__ = {
+    invoke: mock,
+  };
+}
+```
+
+We refactor `src-svelte/src/lib/__mocks__/invoke.ts` to use this, and edit `src-svelte/src/routes/settings/SettingsSwitch.test.ts` to use this as well:
+
+```ts
+import { stubGlobalInvoke } from "$lib/sample-call-testing";
+
+const tauriInvokeMock = vi.fn();
+stubGlobalInvoke(tauriInvokeMock);
+```
+
+Now that settings switch test passes. We also edit
+
+- `src-svelte/src/lib/Switch.test.ts`
+
+This file then gives us the failed test
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/Switch.test.ts > Switch > plays clicking sound during toggle
+AssertionError: expected "spy" to be successfully called 1 times
+ ❯ src/lib/Switch.test.ts:90:29
+     88|     const onOffSwitch = screen.getByRole("switch");
+     89|     await act(() => userEvent.click(onOffSwitch));
+     90|     expect(tauriInvokeMock).toHaveReturnedTimes(1);
+       |                             ^
+     91|   });
+     92|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+```
+
+We change the test into a `waitFor`:
+
+```ts
+  test("plays clicking sound during toggle", async () => {
+    ...
+    waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+  });
+```
+
+and now it passes.
+
+- `src-svelte/src/routes/AppLayout.test.ts`
+
+In this file, every test gives the error
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'sound_on')
+ ❯ updatePrefs src/routes/AppLayout.svelte:32:17
+     30|       const prefs = await commands.getPreferences();
+     31|
+     32|       if (prefs.sound_on != null) {
+       |                 ^
+     33|         soundOn.set(prefs.sound_on);
+     34|       }
+
+This error originated in "src/routes/AppLayout.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "will set high DPI adjust if preference overridden". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+It turns out that this is because there's a `beforeEach` function in that file that sets the actual mock; the global mock before that is not actually used. We fix this, and then we get
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'constructor')
+ ❯ stringify src/lib/sample-call-testing.ts:64:11
+     62|     return `[${items.join(",")}]`;
+     63|   }
+     64|   if (obj.constructor === Object) {
+       |           ^
+     65|     return JSON.stringify(obj, Object.keys(obj).sort());
+     66|   }
+ ❯ src/lib/sample-call-testing.ts:61:37
+ ❯ stringify src/lib/sample-call-testing.ts:61:23
+ ❯ TauriInvokePlayback.mockCall src/lib/sample-call-testing.ts:82:22
+ ❯ Object.<anonymous> src/routes/AppLayout.test.ts:41:18
+ ❯ Object.mockCall ../node_modules/@vitest/spy/dist/index.js:50:17
+ ❯ Object.spy [as invoke] ../node_modules/tinyspy/dist/index.js:42:80
+ ❯ Module.invoke node_modules/@tauri-apps/api/core.js:134:39
+ ❯ Object.getPreferences src/lib/bindings.ts:33:18
+
+This error originated in "src/routes/AppLayout.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "will set high DPI adjust if preference overridden". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+This is because the `get_preferences` call has no arguments. A `console.log` reveals that the `args` passed in are:
+
+```
+[ 'get_preferences', {}, undefined ]
+```
+
+It turns out the signature of the invoke function in `src-svelte/node_modules/@tauri-apps/api/core.d.ts` is
+
+```ts
+declare function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T>;
+```
+
+As such, we edit `src-svelte/src/lib/sample-call-testing.ts`:
+
+```ts
+  mockCall(
+    ...args: (string | Record<string, string> | undefined)[]
+  ): Promise<Record<string, string>> {
+    const nonNullArgs = args.filter((arg) => arg !== undefined && (typeof arg === "string" || Object.keys(arg).length > 0)) as (string | Record<string, string>)[];
+    const jsonArgs = stringify(nonNullArgs);
+    ...
+  }
+```
+
+- `src-svelte/src/routes/settings/Database.test.ts`
+
+In this file, tests are failing with
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: No matching call found for ["plugin:dialog|open",{"options":{}}].
+Candidates are ["import_db",{"path":"different.zamm.yaml"}]
+ ❯ TauriInvokePlayback.mockCall src/lib/sample-call-testing.ts:96:15
+     94|       if (typeof process === "object") {
+     95|         console.error(errorMessage);
+     96|         throw new Error(errorMessage);
+       |               ^
+     97|       } else {
+     98|         return Promise.reject(errorMessage);
+ ❯ Object.<anonymous> src/routes/settings/Database.test.ts:24:18
+ ❯ Object.mockCall ../node_modules/@vitest/spy/dist/index.js:50:17
+ ❯ Object.spy [as invoke] ../node_modules/tinyspy/dist/index.js:42:80
+ ❯ invoke ../node_modules/@tauri-apps/plugin-dialog/node_modules/@tauri-apps/api/core.js:134:39
+ ❯ Module.open ../node_modules/@tauri-apps/plugin-dialog/dist-js/index.js:62:18
+ ❯ Button.importData src/routes/settings/Database.svelte:42:14
+ ❯ ../node_modules/svelte/src/runtime/internal/lifecycle.js:105:8
+ ❯ ../node_modules/svelte/src/runtime/internal/lifecycle.js:104:22
+
+This error originated in "src/routes/settings/Database.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "can import API keys". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+It appears that everything goes through "invoke" now. We edit the file to mock the file dialog calls:
+
+```ts
+  function mockFilePicker(action: string, path: string) {
+    playback.addCalls({
+      request: [`plugin:dialog|${action}`, {"options":{}}],
+      response: path,
+      succeeded: true,
+    });
+  }
+
+  test("can export LLM calls", async () => {
+    mockFilePicker("save", "test-folder/exported-db.yaml");
+    ...
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(2));
+
+    ...
+  });
+
+  ...
+
+  test("can import LLM calls", async () => {
+    mockFilePicker("open", "conflicting-db.yaml");
+    ...
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(2));
+
+    ...
+  });
+
+  ...
+```
+
+Note that we have to specify `"open"` or `"save"` for the file dialog action now.
+
+We also have to change the waitFor lines to
+
+```ts
+await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(2));
+```
+
+because the `invoke` function is called twice now -- once for the `open` and once for the `import_db`.
+
+We edit `src-svelte/src/lib/sample-call-testing.ts` again, this time to avoid type errors:
+
+```ts
+export interface ParsedCall {
+  request: (string | Record<string, any>)[];
+  response: any;
+  ...
+}
+
+...
+
+  mockCall(
+    ...args: (string | Record<string, any> | undefined)[]
+  ): Promise<Record<string, string>> {
+    const nonNullArgs = args.filter(...) as (string | Record<string, any>)[];
+    const jsonArgs = stringify(nonNullArgs);
+    ...
+  }
+```
+
+- `src-svelte/src/routes/SidebarUI.test.ts`
+
+In this file, we get errors like
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: No matching call found for ["play_sound",{"sound":"Whoosh","speed":1,"volume":1}].
+Candidates are ["play_sound",{"sound":"Whoosh","speed":0.25,"volume":0.5}]
+ ❯ TauriInvokePlayback.mockCall src/lib/sample-call-testing.ts:96:15
+     94|       if (typeof process === "object") {
+     95|         console.error(errorMessage);
+     96|         throw new Error(errorMessage);
+       |               ^
+     97|       } else {
+     98|         return Promise.reject(errorMessage);
+ ❯ Object.<anonymous> src/routes/SidebarUI.test.ts:78:18
+ ❯ Object.mockCall ../node_modules/@vitest/spy/dist/index.js:50:17
+ ❯ Object.spy [as invoke] ../node_modules/tinyspy/dist/index.js:42:80
+ ❯ Module.invoke node_modules/@tauri-apps/api/core.js:134:39
+ ❯ Object.playSound src/lib/bindings.ts:30:11
+ ❯ Module.playSoundEffect src/lib/sound.ts:11:16
+ ❯ playWhooshSound src/routes/SidebarUI.svelte:91:5
+ ❯ HTMLAnchorElement.<anonymous> src/routes/SidebarUI.svelte:97:9
+ ❯ HTMLAnchorElement.callTheUserObjectsOperation ../node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30
+
+This error originated in "src/routes/SidebarUI.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "can change page path". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+This is because of all the tests here that have unhandled sound API call rejections. We edit the file so that sound is not unnecessarily played:
+
+```ts
+describe("Sidebar", () => {
+  beforeEach(() => {
+    soundOn.update(() => false);
+  });
+
+  ...
+});
+
+describe("Sidebar interactions", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    stubGlobalInvoke(tauriInvokeMock);
+    ...
+  });
+
+  test("can change page path", async () => {
+    soundOn.update(() => false); // just to avoid failed Tauri invocations
+    ...
+  });
+
+  test("plays whoosh sound with right speed and volume", async () => {
+    ...
+
+    // volume is at 0.125 so that when it's boosted 4x to compensate for the 4x
+    // reduction in playback speed, the net volume will be at 0.5 as specified in the
+    // sample file
+    soundOn.update(() => true);
+    ...
+  });
+
+  ...
+
+  test("does not play whoosh sound when path unchanged", async () => {
+    soundOn.update(() => true); // shouldn't play despite sound being on
+    ...
+  });
+});
+```
+
+- `src-svelte/src/routes/settings/Settings.test.ts` (this one only needs the addition of `stubGlobalInvoke`)
+- `src-svelte/src/routes/database/api-calls/new/ApiCallEditor.test.ts` (ditto)
+- `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.test.ts` (ditto)
+- `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` (ditto)
+- `src-svelte/src/routes/components/api-keys/Display.test.ts`
+
+This one gives us the error
+
+```
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > API key error
+Error: __TAURI_INVOKE__ does not exist
+ ❯ src/routes/components/api-keys/Display.test.ts:100:20
+     98|   test("API key error", async () => {
+     99|     const errorMessage = "Testing error message";
+    100|     const spy = vi.spyOn(window, "__TAURI_INVOKE__");
+       |                    ^
+    101|     expect(spy).not.toHaveBeenCalled();
+    102|     tauriInvokeMock.mockRejectedValueOnce(errorMessage);
+```
+
+We edit the test to mock the return value another way, as well as to add the extra arguments to the `toHaveBeenLastCalledWith` expect:
+
+```ts
+  test("API key error", async () => {
+    ...
+    playback.addCalls({
+      request: ["get_api_keys"],
+      response: errorMessage,
+      succeeded: false,
+    })
+
+    ...
+    expect(tauriInvokeMock).toHaveBeenLastCalledWith("get_api_keys", {}, undefined);
+
+    ...
+  });
+```
+
+Now we have a second failure:
+
+```
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > can submit with invalid file
+AssertionError: expected 'Inactive' to be 'Active' // Object.is equality
+
+- Expected
++ Received
+
+- Active
++ Inactive
+
+ ❯ src/routes/components/api-keys/Display.test.ts:311:31
+    309|     await userEvent.click(screen.getByRole("button", { name: "S…
+    310|     await waitFor(() => expect(tauriInvokeMock).toHaveBeenCalle…
+    311|     expect(getOpenAiStatus()).toBe("Active");
+       |                               ^
+    312|     expect(tauriInvokeMock).toHaveReturnedTimes(1);
+    313|
+```
+
+For this one, we just need to add a `waitFor`:
+
+```ts
+test("can submit with invalid file", async () => {
+  ...
+  await waitFor(() => expect(getOpenAiStatus()).toBe("Active"));
+  ...
+});
+```
+
+Now we have
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > can submit with invalid file
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/routes/components/api-keys/Display.test.ts:316:20
+    314|     render(Snackbar, {});
+    315|     const alerts = screen.queryAllByRole("alertdialog");
+    316|     expect(alerts).toHaveLength(1);
+       |                    ^
+    317|     expect(alerts[0]).toHaveTextContent("Is a directory (os err…
+    318|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+```
+
+It turns out that this is because we didn't unwrap the result in `src-svelte/src/routes/components/api-keys/Form.svelte`. We fix it now:
+
+```ts
+  function submitApiKey() {
+    unwrap(commands.setApiKey(
+        ...
+      ))
+      ...;
+  }
+```
+
+- `src-svelte/src/routes/components/Metadata.test.ts`, where we do the same thing around getting rid of the `spy`, and also define a `tauriInvokeMock = vi.fn();` in the test setup (how was this ever working before?)
+- `src-svelte/src/routes/chat/Chat.test.ts` (only needs the `waitFor`)
+
+### Build
+
+We edit `Makefile` to update
+
+```Makefile
+BUILD_IMAGE = ghcr.io/zamm-dev/zamm:v0.2.1-build
+```
+
+We update `.github/workflows/tests.yaml` to use this tag.
+
+Our new Docker image build fails with
+
+```
+1.883 E: You don't have enough free space in /var/cache/apt/archives/.
+1.883 0 upgraded, 5 newly installed, 0 to remove and 0 not upgraded.
+1.883 Need to get 493 kB of archives.
+1.883 After this operation, 2557 kB of additional disk space will be used.
+------
+Dockerfile:37
+--------------------
+  35 |       yarn
+  36 |     
+  37 | >>> RUN apt install -y libasound2-dev
+  38 |     
+  39 |     COPY src-tauri/Cargo.toml Cargo.toml
+--------------------
+ERROR: failed to solve: process "/bin/sh -c apt install -y libasound2-dev" did not complete successfully: exit code: 100
+make: *** [Makefile:27: docker] Error 1
+```
+
+We use `ncdu` on the root directory to look at what's using up most of our space. It turns out Docker is the culprit. We nuke all our Docker containers and try building again. We find that we have to edit `Dockerfile` to upgrade its Rust version:
+
+```Dockerfile
+ARG RUST_VERSION=1.82.0
+```
+
+We find the other places where we still have the old version specified, and we edit them as well in `.github/workflows/publish.yaml` and `.github/workflows/tests.yaml`. Now we get
+
+```
+37.60    Compiling hyper v0.14.27
+37.97 error[E0282]: type annotations needed for `Box<_>`
+37.97   --> /root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/time-0.3.30/src/format_description/parse/mod.rs:83:9
+37.97    |
+37.97 83 |     let items = format_items
+37.97    |         ^^^^^
+37.97 ...
+37.97 86 |     Ok(items.into())
+37.97    |              ---- type must be known at this point
+37.98    |
+37.98    = note: this is an inference error on crate `time` caused by an API change in Rust 1.80.0; update `time` to version `>=0.3.35` by calling `cargo update`
+37.98 
+38.35    Compiling schemars_derive v0.8.16
+38.46 For more information about this error, try `rustc --explain E0282`.
+38.47 error: could not compile `time` (lib) due to 1 previous error
+38.47 warning: build failed, waiting for other jobs to finish...
+53.54 error: failed to compile `tauri-cli v1.5.9`, intermediate artifacts can be found at `/tmp/cargo-installG0YFU4`.
+53.54 To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+------
+Dockerfile:15
+--------------------
+  13 |     RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
+  14 |     ENV PATH="/root/.cargo/bin:${PATH}"
+  15 | >>> RUN cargo install --locked tauri-cli@${TAURI_CLI_VERSION}
+  16 |     
+  17 |     ARG NODEJS_VERSION=20.5.1
+--------------------
+ERROR: failed to solve: process "/bin/sh -c cargo install --locked tauri-cli@${TAURI_CLI_VERSION}" did not complete successfully: exit code: 101
+make: *** [Makefile:27: docker] Error 1
+```
+
+We upgrade that one as well
+
+```Dockerfile
+ARG TAURI_CLI_VERSION=2.0.4
+```
+
+Next, we get
+
+```
+19.97   > PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags gobject-2.0 gobject-2.0 >= 2.70
+19.97 
+19.97   The system library `gobject-2.0` required by crate `gobject-sys` was not found.
+19.97   The file `gobject-2.0.pc` needs to be installed and the PKG_CONFIG_PATH environment variable must contain its parent directory.
+19.97   The PKG_CONFIG_PATH environment variable is not set.
+19.97 
+19.97   HINT: if you have installed the library, try setting PKG_CONFIG_PATH to the directory containing `gobject-2.0.pc`.
+19.97 
+------
+Dockerfile:41
+--------------------
+  40 |     COPY src-tauri/Cargo.lock Cargo.lock
+  41 | >>> RUN git clone --depth 1 --branch zamm/v0.0.0 https://github.com/amosjyng/async-openai.git /tmp/forks/async-openai && \
+  42 | >>>   git clone --depth 1 --branch zamm/v0.0.0 https://github.com/amosjyng/rvcr.git /tmp/forks/rvcr && \
+  43 | >>>   git clone --depth 1 --branch zamm/v0.2.0 https://github.com/zamm-dev/ollama-rs.git /tmp/forks/ollama-rs && \
+  44 | >>>   mkdir src && \
+  45 | >>>   echo "// dummy file" > src/lib.rs && \
+  46 | >>>   echo "pub use tauri_build; fn main () {}" > build.rs && \
+  47 | >>>   cargo build --release --features custom-protocol
+  48 |     
+--------------------
+ERROR: failed to solve: process "/bin/sh -c git clone --depth 1 --branch zamm/v0.0.0 https://github.com/amosjyng/async-openai.git /tmp/forks/async-openai &&   git clone --depth 1 --branch zamm/v0.0.0 https://github.com/amosjyng/rvcr.git /tmp/forks/rvcr &&   git clone --depth 1 --branch zamm/v0.2.0 https://github.com/zamm-dev/ollama-rs.git /tmp/forks/ollama-rs &&   mkdir src &&   echo \"// dummy file\" > src/lib.rs &&   echo \"pub use tauri_build; fn main () {}\" > build.rs &&   cargo build --release --features custom-protocol" did not complete successfully: exit code: 101
+make: *** [Makefile:27: docker] Error 1
+```
+
+We see from [here](https://www.linuxquestions.org/questions/linux-general-1/glib-2-0-and-gobject-2-0-packages-not-found-726605/) that we should install `libglib2.0-dev` and `libgtk2.0-dev`, so
+
+```
+# project dependencies
+...
+
+RUN apt install -y ... libglib2.0-dev libgtk2.0-dev
+```
+
+We now get this problem too for `gio-2.0` (which [should be](https://askubuntu.com/a/281987) a part of `libglib2.0-dev` already) and even `glib-2.0.pc`. We see from [here](https://github.com/gi-rust/glib-sys/issues/5) that perhaps we should be installing `libgtk-3-dev` instead. [This other answer](https://stackoverflow.com/a/72594284) suggests `rust-gtk-sys-devel`, but that package is not found:
+
+```
+5.017 Reading state information...
+5.042 E: Unable to locate package rust-gtk-sys-devel
+```
+
+It seems that for Ubuntu, the package is instead `librust-gtk-sys-dev`. Installing this does not appear to help.
+
+Setting `PKG_CONFIG_PATH=/usr/local/lib` as recommended [here](https://www.reddit.com/r/GTK/comments/1egpj6x/comment/lfugws5/) does not appear to help. We see from [this search](https://packages.ubuntu.com/search?searchon=contents&keywords=gobject-2.0.pc&mode=exactfilename&suite=noble&arch=any) that it should contain the file at `/usr/lib/x86_64-linux-gnu/pkgconfig/gobject-2.0.pc`, but setting `PKG_CONFIG_PATH` to the parent directory doesn't appear to work either. What is aggravating is that all these missing files are clearly present in the Docker image:
+
+```
+root@a4fff956b331:/tmp/dependencies# ls /usr/lib/x86_64-linux-gnu/pkgconfig/gio-2.0.pc 
+/usr/lib/x86_64-linux-gnu/pkgconfig/gio-2.0.pc
+root@a4fff956b331:/tmp/dependencies# ls /usr/lib/x86_64-linux-gnu/pkgconfig/gobject-2.0.pc
+/usr/lib/x86_64-linux-gnu/pkgconfig/gobject-2.0.pc
+root@a4fff956b331:/tmp/dependencies# ls /usr/lib/x86_64-linux-gnu/pkgconfig/glib-2.0.pc
+/usr/lib/x86_64-linux-gnu/pkgconfig/glib-2.0.pc
+```
+
+In fact, even `pkg-config` can see these files:
+
+```
+root@a4fff956b331:/tmp/dependencies# pkg-config --list-all | grep gobject-2.0
+gobject-2.0                  GObject - GLib Type, Object, Parameter and Signal Library
+```
+
+We sometimes instead get the error for `gdk-3.0.pc`, even though that is installed as part of `libgtk-3-dev`. It is also present:
+
+```bash
+$ ls /usr/lib/x86_64-linux-gnu/pkgconfig/gdk-3.0.pc
+/usr/lib/x86_64-linux-gnu/pkgconfig/gdk-3.0.pc
+```
+
+On the host Linux OS, outside of the Docker container, our attempt to build instead fails with a requirement for `libsoup-3.0`. This appears to be provided by `libsoup-3.0-dev`. In addition:
+
+- `javascriptcoregtk-4.1.pc` provided by `libjavascriptcoregtk-4.1-dev`
+- `webkit2gtk-4.1.pc` provided by `libwebkit2gtk-4.1-dev`
+
+The same packages cannot be installed on the Docker container:
+
+```
+E: Unable to locate package libsoup-3.0-dev
+E: Couldn't find any package by glob 'libsoup-3.0-dev'
+E: Unable to locate package libjavascriptcoregtk-4.1-dev
+E: Couldn't find any package by glob 'libjavascriptcoregtk-4.1-dev'
+E: Unable to locate package libwebkit2gtk-4.1-dev
+E: Couldn't find any package by glob 'libwebkit2gtk-4.1-dev'
+```
+
+Trying to do this on `22.04` instead gives the error
+
+```
+58.66 Processing triggers for dbus (1.12.20-2ubuntu4.1) ...
+61.89 gpg: error running '/usr/bin/gpg-agent': probably not installed
+61.89 gpg: failed to start agent '/usr/bin/gpg-agent': Configuration error
+61.89 gpg: can't connect to the agent: Configuration error
+61.90 Traceback (most recent call last):
+61.90   File "/usr/lib/python3/dist-packages/softwareproperties/shortcuthandler.py", line 423, in add_key
+61.90 PPA publishes dbgsym, you may need to include 'main/debug' component
+61.90 Repository: 'deb https://ppa.launchpadcontent.net/git-core/ppa/ubuntu/ jammy main'
+61.90 Description:
+61.90 The most current stable version of Git for Ubuntu.
+```
+
+So, we add a `gnupg-agent` to the first `apt install` in the `Dockerfile`. Now it finally builds.
+
+### Shell permissions
+
+As it turns out, we don't even need `tauri-plugin-shell` in `Cargo.toml` because we're doing all the shell handling ourselves. As such, we also remove `"shell:allow-open"` from `src-tauri/capabilities/migrated.json`.
+
+### E2E tests
+
+We remove this from the root `package.json`:
+
+```json
+  "dependencies": {
+    "@tauri-apps/api": "^1.4.0"
+  },
+```
+
+We update that for the subproject `webdriver/package.json`:
+
+```json
+  "devDependencies": {
+    "@tauri-apps/api": "~2",
+    "@tauri-apps/cli": "~2",
+    ... 
+  }
+```
+
+We update our local tauri-cli:
+
+```bash
+$ cargo install tauri-cli@2.0.4
+```
+
+Our initial run fails:
+
+```bash
+$ yarn test
+...
+[0-0] 2024-11-01T05:27:37.822Z INFO @wdio/local-runner: Run worker command: run
+[0-0] No preset version installed for command tauri-driver
+[0-0] Please install a version by running one of the following:
+[0-0] 
+[0-0] asdf install rust 1.82.0
+[0-0] 
+[0-0] or add one of the following versions in your config file at /root/.tool-versions
+[0-0] rust 1.71.1
+[0-0] rust 1.76.0
+[0-0] RUNNING in wry - file:///test/specs/e2e.test.js
+[0-0] 2024-11-01T05:27:39.340Z INFO webdriver: Initiate new session using the WebDriver protocol
+[0-0] 2024-11-01T05:27:39.340Z INFO @wdio/utils: Connecting to existing driver at http://localhost:4444/
+[0-0] 2024-11-01T05:27:39.462Z INFO webdriver: [POST] http://localhost:4444/session
+[0-0] 2024-11-01T05:27:39.462Z INFO webdriver: DATA {
+[0-0]   capabilities: {
+[0-0]     alwaysMatch: { browserName: 'wry', 'tauri:options': [Object] },
+[0-0]     firstMatch: [ {} ]
+[0-0]   },
+[0-0]   desiredCapabilities: {
+[0-0]     browserName: 'wry',
+[0-0]     'tauri:options': { application: '../src-tauri/target/release/zamm' }
+[0-0]   }
+[0-0] }
+[0-0] 2024-11-01T05:27:39.784Z ERROR webdriver: RequestError
+[0-0]     at ClientRequest.<anonymous> (file:///root/zamm/node_modules/got/dist/source/core/index.js:790:107)
+[0-0]     at Object.onceWrapper (node:events:629:26)
+[0-0]     at ClientRequest.emit (node:events:526:35)
+[0-0]     at ClientRequest.emit (node:domain:489:12)
+[0-0]     at Socket.socketErrorListener (node:_http_client:495:9)
+[0-0]     at Socket.emit (node:events:514:28)
+[0-0]     at Socket.emit (node:domain:489:12)
+[0-0]     at emitErrorNT (node:internal/streams/destroy:151:8)
+[0-0]     at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:82:21)AggregateError
+[0-0]     at internalConnectMultiple (node:net:1114:18)
+[0-0]     at afterConnectMultiple (node:net:1667:5)
+[0-0] 2024-11-01T05:27:39.784Z ERROR @wdio/runner: Error: Failed to create session.
+[0-0] Unable to connect to "http://localhost:4444/", make sure browser driver is running on that address.
+[0-0] It seems like the service failed to start or is rejecting any connections.
+[0-0]     at startWebDriverSession (file:///root/zamm/node_modules/webdriverio/node_modules/webdriver/build/utils.js:69:15)
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:95:5)
+[0-0]     at async Function.newSession (file:///root/zamm/node_modules/webdriverio/node_modules/webdriver/build/index.js:19:45)
+[0-0]     at async remote (file:///root/zamm/node_modules/webdriverio/build/index.js:45:22)
+[0-0]     at async Runner._startSession (file:///root/zamm/node_modules/@wdio/runner/build/index.js:238:29)
+[0-0]     at async Runner._initSession (file:///root/zamm/node_modules/@wdio/runner/build/index.js:204:25)
+[0-0]     at async Runner.run (file:///root/zamm/node_modules/@wdio/runner/build/index.js:85:19)
+[0-0] FAILED in wry - file:///test/specs/e2e.test.js
+2024-11-01T05:27:39.924Z INFO @wdio/cli:launcher: Run onWorkerEnd hook
+2024-11-01T05:27:39.925Z INFO @wdio/cli:launcher: Run onComplete hook
+...
+```
+
+We try running it ourselves:
+
+```bash
+$ tauri-driver                                                             
+No preset version installed for command tauri-driver
+Please install a version by running one of the following:
+
+asdf install rust 1.82.0
+
+or add one of the following versions in your config file at /root/.tool-versions
+rust 1.71.1
+rust 1.76.0
+```
+
+Reshimming doesn't help:
+
+```bash
+$ asdf reshim rust
+```
+
+Perhaps that was installed using an older version of Rust:
+
+```bash
+$ cargo uninstall tauri-driver
+error: package ID specification `tauri-driver` did not match any packages
+$ asdf local rust 1.76.0             
+$ cargo uninstall tauri-driver
+    Removing /root/.asdf/installs/rust/1.76.0/bin/tauri-driver
+$ asdf local rust 1.71.1
+$ cargo uninstall tauri-driver
+    Removing /root/.asdf/installs/rust/1.71.1/bin/tauri-driver
+```
+
+We install it again. It turns out our previous commands from key-up terminal history were installing `tauri-cli` instead, and we didn't notice the difference:
+
+```bash
+$ cargo install tauri-driver@2.0.1
+...
+  Installing /root/.asdf/installs/rust/1.82.0/bin/tauri-driver
+   Installed package `tauri-driver v2.0.1` (executable `tauri-driver`)
+```
+
+We still have to reshim before running it:
+
+```bash
+$ tauri-driver
+No preset version installed for command tauri-driver
+Please install a version by running one of the following:
+
+asdf install rust 1.82.0
+
+or add one of the following versions in your config file at /root/zamm/webdriver/.tool-versions
+rust 1.71.1
+rust 1.76.0
+$ asdf reshim rust      
+$ tauri-driver
+```
+
+Now all our tests pass except for the data import one:
+
+```
+[wry 0.46.3 linux #0-0] 11 passing (1m 28.3s)
+[wry 0.46.3 linux #0-0] 1 failing
+[wry 0.46.3 linux #0-0]
+[wry 0.46.3 linux #0-0] 1) App should be able to import data
+[wry 0.46.3 linux #0-0] Timeout
+[wry 0.46.3 linux #0-0] Error: Timeout
+[wry 0.46.3 linux #0-0]     at listOnTimeout (node:internal/timers:573:17)
+[wry 0.46.3 linux #0-0]     at processTimers (node:internal/timers:514:7)
+```
+
+It does not appear that we can run [a single WDIO test](https://github.com/webdriverio/webdriverio/issues/864) at a time, so instead we comment out all other tests. We reproduce the timeout, but it's unclear which step is causing it. As such, we comment out half of the last instructions, except for the one to take a screenshot so that we can still see what's going on. We see that the timeout doesn't happen and the import succeeds. We also realize at this point that the populated API page screenshot is wrong -- the test is still taking a screenshot of the terminal page, and we didn't realize it when we committed this gold sample to the repo. We add a
+
+```js
+await findAndSelect('select[name="data-type"]', 0);
+```
+
+after the second navigation back to the database page, and uncomment those two navigation. Everything still succeeds. It appears that the trouble may be the `DEFAULT_TIMEOUT` being too short at only 5 seconds. We double it to 10 seconds. Oddly enough, it still fails at the final switch from the dashboard page back to the database page. We try taking advantage of the original settings navigation to mark the Database page as visited:
+
+```js
+    await findAndClick('a[title="Settings"]');
+    await findAndClick('a[title="Database"]');
+    await findAndClick('a[title="Settings"]');
+```
+
+Now it works even when we restore the default timeout back to the original 5 seconds. Unfortunately, the commit is a bit unclean because the `prettier` version has changed. We re-commit with `--no-verify`, and then run all pre-commit hooks on all files.
+
+Unfortunately this removes all trailing commas, even though according to [the documentation](https://prettier.io/docs/en/options.html#trailing-commas) the default should be `all`. We edit `src-svelte/.prettierrc` to explicitly set this preference:
+
+```
+{
+  "trailingComma": "all",
+  "plugins": ["prettier-plugin-svelte"]
+}
+```
+
+and we create `webdriver/.prettierrc` to set this value without the plugin:
+
+```
+{
+  "trailingComma": "all"
+}
+```
+
+Meanwhile, we get this error, presumably from `prettier` because it is the thing right before `eslint`:
+
+```
+src-svelte/src/routes/components/api-keys/Display.svelte{
+    "type": "Script",
+    "start": 0,
+    "end": 1007,
+    "context": "default",
+    "content": {
+        "type": "Program",
+        "start": 996,
+        "end": 998,
+        "loc": {
+            "start": {
+                "line": 1,
+                "column": 0
+            },
+            "end": {
+                "line": 1,
+                "column": 998
+            }
+        },
+        "body": [
+            {
+                "type": "BlockStatement",
+                "start": 996,
+                "end": 998,
+                "loc": {
+                    "start": {
+                        "line": 1,
+                        "column": 996
+                    },
+                    "end": {
+                        "line": 1,
+                        "column": 998
+                    }
+                },
+                "body": []
+            }
+        ],
+        "sourceType": "module"
+    }
+}
+
+[error] src-svelte/src/routes/components/api-keys/Display.svelte: Error: unknown node type: Script
+[error]     at Object.print (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:1452:11)
+[error]     at callPluginPrintFunction (/root/zamm/node_modules/prettier/index.js:8601:26)
+[error]     at mainPrintInternal (/root/zamm/node_modules/prettier/index.js:8550:22)
+[error]     at mainPrint (/root/zamm/node_modules/prettier/index.js:8537:18)
+[error]     at AstPath.call (/root/zamm/node_modules/prettier/index.js:8359:24)
+[error]     at printTopLevelParts (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:1493:33)
+[error]     at Object.print (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:903:16)
+[error]     at callPluginPrintFunction (/root/zamm/node_modules/prettier/index.js:8601:26)
+[error]     at mainPrintInternal (/root/zamm/node_modules/prettier/index.js:8550:22)
+[error]     at mainPrint (/root/zamm/node_modules/prettier/index.js:8537:18)
+src-tauri/api/sample-calls/set_preferences-transparency-off.yam
+src-tauri/api/sample-calls/set_preferences-transparency-off.yaml 5ms
+src-svelte/src/routes/settings/Settings.stories.ts 10ms
+src-svelte/src/routes/database/api-calls/new/test.data.ts 15ms
+src-svelte/src/routes/chat/Chat.svelte{
+    "type": "Script",
+    "start": 0,
+    "end": 884,
+    "context": "module",
+    "content": {
+        "type": "Program",
+        "start": 873,
+        "end": 875,
+        "loc": {
+            "start": {
+                "line": 1,
+                "column": 0
+            },
+            "end": {
+                "line": 1,
+                "column": 875
+            }
+        },
+        "body": [
+            {
+                "type": "BlockStatement",
+                "start": 873,
+                "end": 875,
+                "loc": {
+                    "start": {
+                        "line": 1,
+                        "column": 873
+                    },
+                    "end": {
+                        "line": 1,
+                        "column": 875
+                    }
+                },
+                "body": []
+            }
+        ],
+        "sourceType": "module"
+    }
+}
+
+[error] src-svelte/src/routes/chat/Chat.svelte: Error: unknown node type: Script
+[error]     at Object.print (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:1452:11)
+[error]     at callPluginPrintFunction (/root/zamm/node_modules/prettier/index.js:8601:26)
+[error]     at mainPrintInternal (/root/zamm/node_modules/prettier/index.js:8550:22)
+[error]     at mainPrint (/root/zamm/node_modules/prettier/index.js:8537:18)
+[error]     at AstPath.call (/root/zamm/node_modules/prettier/index.js:8359:24)
+[error]     at printTopLevelParts (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:1490:33)
+[error]     at Object.print (/root/zamm/node_modules/prettier-plugin-svelte/plugin.js:903:16)
+[error]     at callPluginPrintFunction (/root/zamm/node_modules/prettier/index.js:8601:26)
+[error]     at mainPrintInternal (/root/zamm/node_modules/prettier/index.js:8550:22)
+[error]     at mainPrint (/root/zamm/node_modules/prettier/index.js:8537:18)
+src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-on.y
+src-tauri/api/sample-calls/set_preferences-high-dpi-adjust-on.yaml 2ms
+error Command failed with exit code 2.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+```
+
+It appears others may have encountered [the same error](https://github.com/sveltejs/prettier-plugin-svelte/issues/456) before. After we do a `yarn install --frozen-lockfile`, the only files that still remain changed are `src-svelte/src/lib/sample-call.ts` and `webdriver/test/specs/e2e.test.js`.
+
+### Bundling
+
+It appears that we also have to rename our `TAURI_PRIVATE_KEY` environment variable to `TAURI_SIGNING_PRIVATE_KEY`:
+
+```
+    Error A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment variable.
+```
+
+From [the documentation](https://v2.tauri.app/plugin/updater/), it appears that `TAURI_KEY_PASSWORD` needs to be changed to `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as well. We edit `.github/workflows/publish.yaml` so that we don't have to update our GitHub secrets, only the script:
+
+```yaml
+env:
+  ...
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+  ...
+```
+
+It appears that we may also need to enable the updater. We try to run the automatic `yarn` command, which fails but updates our `src-tauri/Cargo.toml` to look like:
+
+```toml
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+```
+
+Then, we edit `src-tauri/src/main.rs` to add the plugin:
+
+```rs
+tauri::Builder::default()
+    ...
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    ...;
+```
+
+We set `src-tauri/tauri.conf.json` to
+
+```json
+{
+  ...
+  "plugins": {
+    "updater": {
+      ...
+      "endpoints": [
+        "http://localhost:4321/asdf.json"
+      ]
+    }
+  },
+  ...
+}
+```
+
+Unfortunately, the app fails to start at all. Running it manually on the commandline reveals this error:
+
+```
+$ ./zamm
+Connected to DB at /Users/amos/Library/Application Support/dev.zamm.ZAMM/zamm.sqlite3
+thread 'main' panicked at src/main.rs:133:18:
+error while running tauri application: PluginInitialization("updater", "Error deserializing 'plugins.updater' within your Tauri configuration: The configured updater endpoint must use a secure protocol like `https`.")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+Taking inspiration from [this answer](https://stackoverflow.com/a/46554860), we set up HTTPS for our local website by [using ngrok](/general-notes/ngrok.md). Now it runs, but no automatic updates are detected. Adding the permission in `src-tauri/capabilities/migrated.json`:
+
+```json
+{
+  ...,
+  "permissions": [
+    ...
+    "updater:default",
+    ...
+  ]
+}
+```
+
+doesn't appear to make a difference. In fact, looking at our `ngrok` logs, no requests are made to that endpoint at all. Upon further research, [it appears](https://thatgurjot.com/til/tauri-auto-updater/) that in Tauri v2, we truly do have to do this manually ourselves.
+
+First, we add
+
+```bash
+$ cargo add tauri-plugin-process
+```
+
+Afterwards, we actually add this to the same section of `Cargo.toml` because it is only used for the update process. Then, we edit `src-tauri/src/main.rs` again:
+
+```rs
+tauri::Builder::default()
+    ...
+    .plugin(tauri_plugin_process::init())
+    ...;
+```
+
+In `src-svelte/`, we do
+
+```bash
+$ yarn add @tauri-apps/plugin-process
+$ yarn add @tauri-apps/plugin-updater
+```
+
+We create `src-svelte/src/lib/autoupdate.ts` as such:
+
+```ts
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { ask } from "@tauri-apps/plugin-dialog";
+
+export async function checkForUpdates() {
+  const update = await check();
+  if (update?.available) {
+    const yes = await ask(
+      `ZAMM v${update.version} is available!\n\nRelease notes: ${update.body}`,
+      {
+        title: "Update Available",
+        kind: "info",
+        okLabel: "Update",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (yes) {
+      await update.downloadAndInstall();
+      await relaunch();
+    }
+  }
+}
+
+```
+
+This means that we need to add another permission in `src-tauri/capabilities/migrated.json` if we don't want errors on the frontend:
+
+```json
+{
+  ...,
+  "permissions": [
+    ...
+    "dialog:allow-ask",
+    ...
+  ]
+}
+```
+
+We'll trigger this check in `src-svelte/src/routes/AppLayout.svelte` after `updatePrefs`:
+
+```ts
+  ...
+  import { checkForUpdates } from "$lib/autoupdate";
+  ...
+
+  onMount(() => {
+    ...
+    updatePrefs();
+    checkForUpdates();
+    ...
+  });
+```
+
+We find that our regular CI builds fail:
+
+```
+    Error A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment variable.
+```
+
+because we also need to do the same edits in `.github/workflows/tests.yaml`.
+
+### CI
+
+#### Build
+
+The CI run fails immediately with
+
+```
+error: failed to run custom build command for `zamm v0.2.1 (/__w/zamm/zamm/src-tauri)`
+
+Caused by:
+  process didn't exit successfully: `/__w/zamm/zamm/src-tauri/target/release/build/zamm-26dd605f694d19dd/build-script-build` (exit status: 1)
+  --- stdout
+  cargo:rerun-if-changed=migrations
+  cargo:rerun-if-env-changed=TAURI_CONFIG
+  cargo:rerun-if-changed=tauri.conf.json
+  cargo:rustc-check-cfg=cfg(desktop)
+  cargo:rustc-cfg=desktop
+  cargo:rustc-check-cfg=cfg(mobile)
+  cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_APP_NAME=zamm
+  cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_PREFIX=dev
+  cargo:rustc-check-cfg=cfg(dev)
+  failed to read plugin permissions: failed to read file: No such file or directory (os error 2)
+warning: build failed, waiting for other jobs to finish...
+```
+
+It appears [one solution](https://github.com/tauri-apps/tauri/issues/10484#issuecomment-2420538671) may be to clear the CI cache on GitHub. These are located [here](https://github.com/zamm-dev/zamm/actions/caches). Unfortunately, this still fails.
+
+There seems to be only [one reference](https://github.com/mediar-ai/screenpipe/issues/382#issuecomment-2383273703) to that error on the internet, and there are no followup comments that address that issue specifically. Given that there are [a lot](https://github.com/tauri-apps/tauri/issues/9045#issuecomment-2032763362) of people solving the issue after clearing their `target/` folder, we edit `Makefile` to remove this line:
+
+```Makefile
+copy-docker-deps:
+	...
+	mv -n /tmp/dependencies/target ./src-tauri/
+```
+
+This does finally work. It is unclear why the copied dependencies fail on CI but work fine on the local Docker image with the same tag.
+
+#### Pre-commit and Rust checks
+
+These ones fail because the right system libraries can't be found. We edit `.github/workflows/tests.yaml` to add them to the `apt install`:
+
+```yaml
+  ...
+  pre-commit:
+    ...
+    steps:
+      ...
+      - name: Install Tauri dependencies
+        run: |
+          ...
+          sudo apt-get install -y ... libglib2.0-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev
+      ...
+  ...
+  rust:
+    ...
+    steps:
+      ...
+      - name: Install Tauri dependencies
+        run: |
+          ...
+          sudo apt-get install -y ... libglib2.0-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev
+      ...
+```
+
+#### E2E tests
+
+The e2e tests on CI also fail immediately with
+
+```
+[0-0] 2024-11-01T15:42:17.686Z ERROR webdriver: Request failed with status 500 due to session not created: Failed to match capabilities
+[0-0] 2024-11-01T15:42:17.686Z ERROR webdriver: session not created: Failed to match capabilities
+[0-0]     at getErrorFromResponseBody (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/utils.js:195:12)
+[0-0]     at NodeJSRequest._request (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/request/index.js:193:23)
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:95:5)
+[0-0]     at async startWebDriverSession (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/utils.js:64:20)
+[0-0]     at async Function.newSession (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/index.js:19:45)
+[0-0]     at async remote (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/build/index.js:45:22)
+[0-0]     at async Runner._startSession (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:238:29)
+[0-0]     at async Runner._initSession (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:204:25)
+[0-0]     at async Runner.run (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:85:19)
+[0-0] 2024-11-01T15:42:17.689Z ERROR @wdio/runner: Error: Failed to create session.
+[0-0] Failed to match capabilities
+[0-0]     at startWebDriverSession (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/utils.js:69:15)
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:95:5)
+[0-0]     at async Function.newSession (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/node_modules/webdriver/build/index.js:19:45)
+[0-0]     at async remote (file:///home/runner/work/zamm/zamm/node_modules/webdriverio/build/index.js:45:22)
+[0-0]     at async Runner._startSession (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:238:29)
+[0-0]     at async Runner._initSession (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:204:25)
+[0-0]     at async Runner.run (file:///home/runner/work/zamm/zamm/node_modules/@wdio/runner/build/index.js:85:19)
+[0-0] FAILED in wry - file:///test/specs/e2e.test.js
+2024-11-01T15:42:17.820Z INFO @wdio/cli:launcher: Run onWorkerEnd hook
+2024-11-01T15:42:17.821Z INFO @wdio/cli:launcher: Run onComplete hook
+```
+
+This appears to be the same problem previously documented in the "Webdriver error" section [here](/zamm-notes/chat.md).

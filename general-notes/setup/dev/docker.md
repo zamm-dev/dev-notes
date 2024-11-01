@@ -40,7 +40,7 @@ To generate this message, Docker took the following steps:
 If you want to open a shell to explore a Docker image, do
 
 ```bash
-$ docker run -d --name throwaway tauri-build tail -f /dev/null
+$ docker run -d --name throwaway <IMAGE_NAME> tail -f /dev/null
 $ docker exec -it throwaway /bin/bash
 ```
 
@@ -77,6 +77,8 @@ To completely nuke all existing Docker images, containers, and volumes, do
 
 ```bash
 $ docker system prune -a
+...
+Total reclaimed space: 68.99GB
 ```
 
 ### Python installation

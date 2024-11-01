@@ -5511,7 +5511,7 @@ We go to [v0.0.5 of ZAMM](https://github.com/zamm-dev/zamm/blob/v0.0.5/zamm/util
 
 Hence, the sequence `\u001b[4;1H` in our Windows terminal output means "move cursor to row 4, column 1" (where these rows and columns are indexed starting at 1). Because there's only been two rows so far, moving to row 4 is equivalent to outputting `\n\n`.
 
-As such, we remove the `strip-ansi-escapes` package from `src-tauri/Cargo.toml` and edit `src-tauri/src/commands/terminal/run.rs` to define state-machine-like logic:
+As such, we remove the `strip-ansi-escapes` package from `src-tauri/Cargo.toml` and edit `src-tauri/src/commands/terminal/run.rs` to define state-machine-like logic. We use [this answer](https://stackoverflow.com/a/23810557) to define the constants, and [this](https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797)​ and [this resource](https://notes.burke.libbey.me/ansi-escape-codes/) on ANSI escape codes:
 
 ```rs
 ...
@@ -5625,3 +5625,472 @@ response:
 ```
 
 and we verify in Storybook that the terminal session now finally correctly displays the output.
+
+#### Refactoring
+
+We do a little bit of refactoring, and move the parsing code to `src-tauri/src/commands/terminal/parse.rs`:
+
+```rs
+#[derive(PartialEq)]
+enum EscapeSequence {
+    ...
+}
+
+static ESCAPE_COMMANDS: &[char] = &[...];
+
+pub fn clean_output(output: &str) -> String {
+    ...
+}
+```
+
+We then edit `src-tauri/src/commands/terminal/mod.rs`:
+
+```rs
+mod parse;
+```
+
+and import it in `src-tauri/src/commands/terminal/run.rs`:
+
+```rs
+use crate::commands::terminal::parse::clean_output;
+```
+
+We realize that it's rather unnecessary to split the strings up by newline as a completely different operation from the regular flow, so we edit `src-tauri/src/commands/terminal/parse.rs`:
+
+```rs
+pub fn clean_output(output: &str) -> String {
+    let mut cleaned_lines = Vec::<String>::new();
+    let mut escape: EscapeSequence = EscapeSequence::None;
+    let mut cleaned_line = String::new();
+    let mut current_escape_arg = String::new();
+    let mut escape_args = Vec::<String>::new();
+    let mut escape_command = ' ';
+
+    output.chars().for_each(|c| {
+        if c == '\u{001B}' {
+            ...
+        } else if escape == EscapeSequence::Start {
+            ...
+        } else if escape == EscapeSequence::InEscape
+            || escape == EscapeSequence::InOperatingSystemEscape
+        {
+            ...
+
+            if escape == EscapeSequence::None {
+                escape_args.push(current_escape_arg.clone());
+                current_escape_arg.clear();
+
+                // now we actually handle the escape sequence
+                if escape_command == 'H' {
+                    ...
+                }
+
+                escape_args.clear();
+                escape_command = ' ';
+            }
+        } else if c == '\r' {
+            ...
+        } else if escape == EscapeSequence::LineStart {
+            if c == '\n' {
+                escape = EscapeSequence::None;
+                cleaned_lines.push(cleaned_line.clone());
+                cleaned_line.clear();
+            } else {
+                escape = EscapeSequence::None;
+                cleaned_line.clear();
+                cleaned_line.push(c);
+            }
+        } else if c == '\n' {
+            escape = EscapeSequence::None;
+            cleaned_lines.push(cleaned_line.clone());
+            cleaned_line.clear();
+        } else {
+            cleaned_line.push(c);
+        }
+    });
+    cleaned_lines.push(cleaned_line);
+
+    cleaned_lines.join("\n").trim_start().to_string()
+}
+
+```
+
+We edit `src-tauri/src/commands/terminal/parse.rs` to further refactor the variables into their own struct, and to make the `EscapeSequence` public so that it's congruent with the struct fields being public (although we could make it package private instead), and then prepend `parser.` in front of every local variable:
+
+```rs
+pub enum EscapeSequence {
+    ...
+}
+
+...
+
+pub struct OutputParser {
+    pub cleaned_lines: Vec<String>,
+    pub cleaned_line: String,
+    pub escape: EscapeSequence,
+    pub current_escape_arg: String,
+    pub escape_args: Vec<String>,
+    pub escape_command: char,
+}
+
+impl Default for OutputParser {
+    fn default() -> Self {
+        OutputParser {
+            cleaned_lines: Vec::<String>::new(),
+            cleaned_line: String::new(),
+            escape: EscapeSequence::None,
+            current_escape_arg: String::new(),
+            escape_args: Vec::<String>::new(),
+            escape_command: ' ',
+        }
+    }
+}
+
+pub fn clean_output(output: &str) -> String {
+    let mut parser = OutputParser::default();
+
+    output.chars().for_each(|c| {
+        if c == '\u{001B}' {
+            parser.escape = EscapeSequence::Start;
+        }
+        ...
+    });
+    ...
+}
+```
+
+Next, we continue our refactor by defining a function to handle commands, and remove the `escape_command` variable because it's only ever needed right before invoking that function:
+
+```rs
+impl OutputParser {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn handle_escape_command(&mut self, escape_command: char) {
+        if escape_command == 'H' {
+            if let Some(first_arg) = self.escape_args.first() {
+                if let Ok(row) = first_arg.parse::<usize>() {
+                    if row > self.cleaned_lines.len() {
+                        self.cleaned_lines.push(self.cleaned_line.clone());
+                        self.cleaned_line.clear();
+                        // -1 because the new cleaned_line will be added at
+                        // the end as the next line
+                        self.cleaned_lines.resize(row - 1, "".to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn clean_output(output: &str) -> String {
+    let mut parser = OutputParser::new();
+
+    output.chars().for_each(|c| {
+        ...
+        else if parser.escape == EscapeSequence::InEscape
+            || parser.escape == EscapeSequence::InOperatingSystemEscape
+        {
+            let mut escape_command: Option<char> = None;
+            ...
+            else if parser.escape == EscapeSequence::InEscape
+                && ESCAPE_COMMANDS.contains(&c)
+            {
+                escape_command = Some(c);
+                parser.escape = EscapeSequence::None;
+            }
+            ...
+            else if c == '\u{0007}' {
+                escape_command = parser.current_escape_arg.pop();
+                parser.escape_args.push(parser.current_escape_arg.clone());
+                parser.escape = EscapeSequence::None;
+            }
+            ...
+
+            if parser.escape == EscapeSequence::None {
+                parser.escape_args.push(parser.current_escape_arg.clone());
+                parser.current_escape_arg.clear();
+
+                if let Some(escape_command) = escape_command {
+                    parser.handle_escape_command(escape_command);
+                }
+
+                parser.escape_args.clear();
+            }
+        }
+        ...
+    });
+    ...
+}
+```
+
+We decide that we want to do a little more refactoring by renaming variables:
+
+```rs
+pub struct OutputParser {
+    pub state: EscapeSequence,
+    pub cleaned_lines: Vec<String>,
+    pub current_line: String,
+    pub escape_args: Vec<String>,
+    pub current_arg: String,
+}
+```
+
+Next, we remove the `ESCAPE_COMMANDS` array and simply do a check for
+
+```rs
+              else if parser.state == EscapeSequence::InEscape
+                && c.is_ascii_alphabetic()
+```
+
+Finally, we do a good bit more chunking:
+
+```rs
+impl OutputParser {
+    ...
+
+    pub fn handle_escape_sequence_start(&mut self, c: char) {
+        if c == '[' || c == '(' {
+            self.state = EscapeSequence::InEscape;
+        } else if c == ']' {
+            self.state = EscapeSequence::InOperatingSystemEscape;
+        } else {
+            self.state = EscapeSequence::None;
+            self.current_line.push(c);
+        }
+    }
+
+    pub fn handle_escape_sequence_input(&mut self, c: char) {
+        let mut escape_command: Option<char> = None;
+        if c == '?' {
+            // it's just a private sequence marker, do nothing
+        } else if self.state == EscapeSequence::InEscape && c.is_ascii_alphabetic() {
+            escape_command = Some(c);
+            self.state = EscapeSequence::None;
+        } else if c == ';' {
+            self.escape_args.push(self.current_arg.clone());
+            self.current_arg.clear();
+        } else if c == '\u{0007}' {
+            escape_command = self.current_arg.pop();
+            self.escape_args.push(self.current_arg.clone());
+            self.state = EscapeSequence::None;
+        } else {
+            self.current_arg.push(c);
+        }
+
+        // if we changed the state here
+        if self.state == EscapeSequence::None {
+            self.escape_args.push(self.current_arg.clone());
+            self.current_arg.clear();
+
+            if let Some(escape_command) = escape_command {
+                self.handle_escape_command(escape_command);
+            }
+
+            self.escape_args.clear();
+        }
+    }
+
+    ...
+
+    pub fn handle_newline(&mut self) {
+        self.state = EscapeSequence::None;
+        self.cleaned_lines.push(self.current_line.clone());
+        self.current_line.clear();
+    }
+}
+
+...
+
+pub fn clean_output(output: &str) -> String {
+    let mut parser = OutputParser::new();
+
+    output.chars().for_each(|c| {
+        if c == '\u{001B}' {
+            ...
+        } else if parser.state == EscapeSequence::Start {
+            parser.handle_escape_sequence_start(c);
+        } else if parser.state == EscapeSequence::InEscape
+            || parser.state == EscapeSequence::InOperatingSystemEscape
+        {
+            parser.handle_escape_sequence_input(c);
+        } else if c == '\r' {
+            ...
+        } else if parser.state == EscapeSequence::LineStart {
+            if c == '\n' {
+                parser.handle_newline();
+            } else {
+                ...
+            }
+        } else if c == '\n' {
+            parser.handle_newline();
+        } else {
+            ...
+        }
+    });
+
+    ...
+}
+```
+
+#### Keeping track of total output lines
+
+We create `src-tauri/api/sample-calls/send_command_input-cmd-dir.yaml` as such:
+
+```yaml
+request:
+  - send_command_input
+  - >
+    {
+      "session_id": "319cc7fd-58cc-4320-ab46-2f0ba11c5402",
+      "input": "dir"
+    }
+response:
+  message: >
+    "dir\n Volume in drive C is Windows\n Volume Serial Number is ..."
+sideEffects:
+  database:
+    startStateDump: command-run-cmd
+    endStateDump: command-run-cmd-dir
+  terminal:
+    recordingFile: windows.cast
+    startingIndex: 1
+
+```
+
+and edit `src-tauri/src/commands/terminal/send_input.rs` to test this:
+
+```rs
+...
+use crate::commands::terminal::parse::clean_output;
+...
+
+async fn send_command_input_helper(
+    ...
+) -> ZammResult<String> {
+    ...
+    let raw_output = terminal.send_input(&input_with_newline)?;
+    let output = clean_output(&raw_output);
+    
+    ...
+
+    Ok(output)
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    #[cfg(target_os = "windows")]
+    check_sample!(
+        SendInputTestCase,
+        test_cmd_dir,
+        "./api/sample-calls/send_command_input-cmd-dir.yaml"
+    );
+}
+```
+
+Once the test passes, the `src-tauri/api/sample-database-writes/command-run-cmd-dir/dump.yaml` file looks like this:
+
+```yaml
+terminal_sessions:
+- id: 319cc7fd-58cc-4320-ab46-2f0ba11c5402
+  timestamp: 2024-10-17T06:02:13
+  command: cmd
+  os: Windows
+  cast:
+    header:
+      version: 2
+      width: 80
+      height: 24
+      timestamp: 1729144933
+      command: cmd
+    entries:
+    - - 0.208
+      - 'o'
+      - "\e[?25l\e[2J\e[m\e[HMicrosoft Windows [Version 10.0.22631.4169]\r\n(c) Microsoft Corporation. All rights reserved.\e[4;1HC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>\e]0;C:\\WINDOWS\\system32\\cmd.EXE\a\e[?25h"
+    - - 0.208
+      - 'i'
+      - "dir\r\n"
+    - - 0.41
+      - 'o'
+      - "\e[?25ldir\r\n Volume in drive C is Windows\r\n Volume Serial Number is 30A7-E02E\e[8;1H Directory of ..."
+```
+
+We edit the story as well at `src-svelte/src/routes/database/terminal-sessions/TerminalSession.stories.ts`:
+
+```ts
+NewOnWindows.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/run_command-cmd.yaml",
+    "/api/sample-calls/send_command_input-cmd-dir.yaml",
+  ],
+};
+```
+
+We see that the output looks like this:
+
+```
+Microsoft Windows [Version 10.0.22631.4169]
+(c) Microsoft Corporation. All rights reserved.
+
+C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-tauri>dir
+ Volume in drive C is Windows
+ Volume Serial Number is 30A7-E02E
+
+
+
+
+ Directory of C:\Users\Amos Ng\Documents\projects\zamm-dev\zamm\src-tauri
+
+25/09/2024  05:54 pm    <DIR>          .
+20/09/2024  07:02 pm    <DIR>          ..
+...
+```
+
+It turns out this is because the `dir` command outputs an `H` terminal escape code that moves the cursor to the 8th row, but because the parser doesn't realize that there's already been 4 rows of output, it adds way more newlines than expected.
+
+Due to us running the output through the parser cleaner, we have to also update `src-tauri/api/sample-calls/send_command_input-bash-interleaved.yaml` for tests on Unix-like systems:
+
+```yaml
+...
+response:
+  message: >
+    "python api/sample-terminal-sessions/interleaved.py\nstdout\nstderr\nstdout\nbash-3.2$ "
+...
+```
+
+We initially try to add a field to `EscapeSequence` to specify the initial number of rows, and have its `new` function take that in as an argument (ditto for the `clean_output` function), but we realize that we have no way of getting this information to the parser unless we store it somewhere in whichever structs implement `Terminal`. We'd have to add new interface functions to set and retrieve this value, and implement this for both implementors of `Terminal`. We decide to go with a simpler solution for now: replace all 3+ consecutive newlines with just 2 newlines.
+
+We add `regex` and `lazy_static` packages to `src-tauri/Cargo.toml`, the first one to enable regex functionality and the second one so that we can initialize our regex just once at startup time:
+
+```toml
+regex = "1.11.1"
+lazy_static = "1.5.0"
+```
+
+We edit `src-tauri/src/commands/terminal/parse.rs`:
+
+```rs
+use lazy_static::lazy_static;
+use regex::Regex;
+
+lazy_static! {
+    static ref THREE_OR_MORE_NEWLINES: Regex = Regex::new(r"\n{3,}").unwrap();
+}
+
+...
+
+pub fn clean_output(output: &str) -> String {
+    ...
+    THREE_OR_MORE_NEWLINES
+        .replace_all(&parser.cleaned_lines.join("\n"), "\n\n")
+        .trim_start()
+        .to_string()
+}
+```
+
+Now we can finally update `src-tauri/api/sample-calls/send_command_input-cmd-dir.yaml` to have `Volume Serial Number is 30A7-E02E\n\n Directory` instead of `Volume Serial Number is 30A7-E02E\n\n\n\n\n Directory`. Even though this is a hack, this is still conducive to LLM output because we wouldn't want to be sending too many newlines to the LLM anyways.
