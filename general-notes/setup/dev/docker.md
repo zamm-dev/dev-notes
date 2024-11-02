@@ -44,7 +44,11 @@ $ docker run -d --name throwaway <IMAGE_NAME> tail -f /dev/null
 $ docker exec -it throwaway /bin/bash
 ```
 
-You can skip the first step if you already have the container built.
+You can skip the first step if you already have the container built. Or, if you want to run it on the current directory, you can add `-v $(pwd):/zamm -w /zamm` like so:
+
+```bash
+$ docker run -d --name throwaway -v $(pwd):/zamm -w /zamm <IMAGE_NAME> tail -f /dev/null
+```
 
 If you changed your Dockerfile and want to destroy and recreate a container based on the newer image, you can do
 

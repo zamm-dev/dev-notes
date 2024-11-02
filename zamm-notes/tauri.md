@@ -6185,6 +6185,46 @@ We find that our regular CI builds fail:
 
 because we also need to do the same edits in `.github/workflows/tests.yaml`.
 
+We then find that our Svelte tests have errors like
+
+```
+Error: No matching call found for ["plugin:updater|check"].
+Candidates are 
+ ❯ TauriInvokePlayback.mockCall src/lib/sample-call-testing.ts:100:15
+     98|       if (typeof process === "object") {
+     99|         console.error(errorMessage);
+    100|         throw new Error(errorMessage);
+       |               ^
+    101|       } else {
+    102|         return Promise.reject(errorMessage);
+```
+
+As such, we fix `src-svelte/src/routes/AppLayout.test.ts` to add that as an expected call, and to expect `invoke` calls to be made twice:
+
+```ts
+describe("AppLayout", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+
+    playback.addCalls({
+      request: ["plugin:updater|check"],
+      response: {},
+      succeeded: true,
+    });
+  });
+
+  test("will do nothing if no custom settings exist", async () => {
+    ...
+    // twice -- once for the updater, once for the preferences
+    expect(tauriInvokeMock).toHaveReturnedTimes(2);
+  });
+  
+  ...
+});
+```
+
 ### CI
 
 #### Build
@@ -6220,7 +6260,7 @@ copy-docker-deps:
 	mv -n /tmp/dependencies/target ./src-tauri/
 ```
 
-This does finally work. It is unclear why the copied dependencies fail on CI but work fine on the local Docker image with the same tag.
+This does finally work. It is unclear why the copied dependencies fail on CI but work fine on the local Docker image with the same tag. We realize eventually that we need to rebuild the Docker image again because the dependencies have changed over the course of developing this PR.
 
 #### Pre-commit and Rust checks
 
@@ -6279,4 +6319,13 @@ The e2e tests on CI also fail immediately with
 2024-11-01T15:42:17.821Z INFO @wdio/cli:launcher: Run onComplete hook
 ```
 
-This appears to be the same problem previously documented in the "Webdriver error" section [here](/zamm-notes/chat.md).
+This appears to be the same problem previously documented in the "Webdriver error" section [here](/zamm-notes/chat.md). However, in the course of debugging this, we find out that we forgot to update `TAURI_DRIVER_VERSION` in `.github/workflows/tests.yaml`. We do so now:
+
+```yaml
+env:
+  ...
+  TAURI_DRIVER_VERSION: 2.0.1
+  ...
+```
+
+and all of a sudden the e2e tests finally pass.
