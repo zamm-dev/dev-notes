@@ -6094,3 +6094,745 @@ pub fn clean_output(output: &str) -> String {
 ```
 
 Now we can finally update `src-tauri/api/sample-calls/send_command_input-cmd-dir.yaml` to have `Volume Serial Number is 30A7-E02E\n\n Directory` instead of `Volume Serial Number is 30A7-E02E\n\n\n\n\n Directory`. Even though this is a hack, this is still conducive to LLM output because we wouldn't want to be sending too many newlines to the LLM anyways.
+
+## Listing terminal sessions
+
+We realize that we need to reuse the page size variable, so we refactor it out of `src-tauri/src/commands/llms/get_api_calls.rs`:
+
+```rs
+use crate::commands::PAGE_SIZE;
+```
+
+into `src-tauri/src/commands/mod.rs` instead:
+
+```rs
+// size of one page of results in database list view
+const PAGE_SIZE: i64 = 50;
+```
+
+We also need to export `EntityId` from the database models module in `src-tauri/src/models/mod.rs` to make it usable for our new command:
+
+```rs
+pub use llm_calls::EntityId;
+```
+
+Then we create `src-tauri/src/commands/terminal/get_sessions.rs` as such:
+
+```rs
+use crate::commands::errors::ZammResult;
+use crate::commands::PAGE_SIZE;
+use crate::models::asciicasts::AsciiCast;
+use crate::models::EntityId;
+use crate::schema::asciicasts;
+use crate::ZammDatabase;
+use anyhow::anyhow;
+use asciicast::EventType;
+use chrono::naive::NaiveDateTime;
+use diesel::prelude::*;
+use diesel::RunQueryDsl;
+use serde::{Deserialize, Serialize};
+use specta::specta;
+use tauri::State;
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct TerminalSessionReference {
+    pub id: EntityId,
+    pub timestamp: NaiveDateTime,
+    pub command: String,
+    pub last_io: Option<String>,
+}
+
+impl From<AsciiCast> for TerminalSessionReference {
+    fn from(value: AsciiCast) -> Self {
+        let mut last_io = value
+            .cast
+            .entries
+            .iter()
+            .filter(|e| e.event_type == EventType::Input)
+            .last()
+            .map(|e| e.event_data.clone());
+        if last_io.is_none() {
+            last_io = value
+                .cast
+                .entries
+                .iter()
+                .filter(|e| e.event_type == EventType::Output)
+                .last()
+                .map(|e| e.event_data.clone());
+        }
+        TerminalSessionReference {
+            id: value.id,
+            timestamp: value.timestamp,
+            command: value.command,
+            last_io,
+        }
+    }
+}
+
+async fn get_terminal_sessions_helper(
+    zamm_db: &ZammDatabase,
+    offset: i32,
+) -> ZammResult<Vec<TerminalSessionReference>> {
+    let mut db = zamm_db.0.lock().await;
+    let conn = db.as_mut().ok_or(anyhow!("Failed to lock database"))?;
+    let result: Vec<AsciiCast> = asciicasts::table
+        .order(asciicasts::timestamp.desc())
+        .offset(offset as i64)
+        .limit(PAGE_SIZE)
+        .load::<AsciiCast>(conn)?;
+    let calls: Vec<TerminalSessionReference> =
+        result.into_iter().map(|row| row.into()).collect();
+    Ok(calls)
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn get_terminal_sessions(
+    database: State<'_, ZammDatabase>,
+    offset: i32,
+) -> ZammResult<Vec<TerminalSessionReference>> {
+    get_terminal_sessions_helper(&database, offset).await
+}
+
+```
+
+We edit `src-tauri/src/commands/terminal/mod.rs` to export the command:
+
+```rs
+...
+mod get_sessions;
+...
+
+pub use get_sessions::get_terminal_sessions;
+
+```
+
+We edit `src-tauri/src/commands/mod.rs` again to re-export this new function:
+
+```rs
+pub use terminal::{get_terminal_sessions, ...};
+```
+
+And finally we register this command in `src-tauri/src/main.rs`:
+
+```rs
+...
+use commands::{
+    ..., get_terminal_sessions, ...
+};
+...
+
+fn main() {
+    ...
+
+    match &cli.command {
+        #[cfg(debug_assertions)]
+        Some(Commands::ExportBindings {}) => {
+            let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
+                ...,
+                get_terminal_sessions,
+            ]);
+            ...
+        }
+        Some(Commands::Gui {}) | None => {
+          ...
+
+          tauri::Builder::default()
+              ...
+              .invoke_handler(tauri::generate_handler![
+                    ...,
+                    get_terminal_sessions,
+                ])
+              ...;
+        }
+    }
+}
+```
+
+Next, we add tests. We edit `src-tauri/src/commands/terminal/get_sessions.rs` to add these tests, and also to trim whitespace from the `last_io` string:
+
+```rs
+impl From<AsciiCast> for TerminalSessionReference {
+    fn from(value: AsciiCast) -> Self {
+        let mut last_io = value
+            ...
+            .map(|e| e.event_data.trim().to_string());
+        if last_io.is_none() {
+            last_io = value
+                ...
+                .map(|e| e.event_data.trim().to_string());
+        }
+        ...
+    }
+}
+
+...
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_result_test_case};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct GetTerminalSessionsRequest {
+        offset: i32,
+    }
+
+    async fn make_request_helper(
+        args: &GetTerminalSessionsRequest,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> ZammResult<Vec<TerminalSessionReference>> {
+        get_terminal_sessions_helper(side_effects.db.as_ref().unwrap(), args.offset)
+            .await
+    }
+
+    impl_result_test_case!(
+        GetTerminalSessionsTestCase,
+        get_terminal_sessions,
+        true,
+        GetTerminalSessionsRequest,
+        Vec<TerminalSessionReference>
+    );
+
+    check_sample!(
+        GetTerminalSessionsTestCase,
+        test_empty_list,
+        "./api/sample-calls/get_terminal_sessions-empty.yaml"
+    );
+
+    check_sample!(
+        GetTerminalSessionsTestCase,
+        test_small_list,
+        "./api/sample-calls/get_terminal_sessions-small.yaml"
+    );
+}
+
+```
+
+Our empty test at `src-tauri/api/sample-calls/get_terminal_sessions-empty.yaml` looks like this:
+
+```yaml
+request:
+  - get_terminal_sessions
+  - >
+    {
+      "offset": 0
+    }
+response:
+  message: >
+    []
+sideEffects:
+  database:
+    startStateDump: empty
+    endStateDump: empty
+
+```
+
+Our populated one (with only one entry!) at `src-tauri/api/sample-calls/get_terminal_sessions-small.yaml` looks like this:
+
+```yaml
+request:
+  - get_terminal_sessions
+  - >
+    {
+      "offset": 0
+    }
+response:
+  message: >
+    [
+      {
+        "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+        "timestamp": "2024-09-24T16:27:25",
+        "command": "bash",
+        "last_io": "python api/sample-terminal-sessions/interleaved.py"
+      }
+    ]
+sideEffects:
+  database:
+    startStateDump: command-run-bash-interleaved
+    endStateDump: command-run-bash-interleaved
+```
+
+Now we move on to the frontend. We run `export-bindings` to regenerate `src-svelte/src/lib/bindings.ts`. Now that we have upgraded to Tauri v2, we no longer have to worry about manually fixing the `EntityId` to `string` typing.
+
+We refactor the table logic from `src-svelte/src/routes/database/api-calls/ApiCallsTable.svelte` into `src-svelte/src/lib/Table.svelte`, renaming LLM call-related variable names into "blurb" and "item". Note that we're using [generics](https://svelte.dev/docs/svelte/typescript#Generic-$props) to make this component reusable for both API call and terminal session types. We also rename the `api-calls-page` CSS class to `database-page` instead. The slot is now for the default empty placeholder text.
+
+```svelte
+<script lang="ts" generics="Item extends { id: string, timestamp: string }">
+  ...
+
+  const MIN_BLURB_WIDTH = "5rem";
+  const MIN_TIME_WIDTH = "12.5rem";
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+  export let blurbLabel: string;
+  export let itemUrl: (item: Item) => string;
+  export let getItems: (offset: number) => Promise<Item[]>;
+  export let renderItem: ConstructorOfATypedSvelteComponent;
+  let items: Item[] = [];
+  let newItemsPromise: Promise<void> | undefined = undefined;
+  let allItemsLoaded = false;
+  let blurbWidth = MIN_BLURB_WIDTH;
+  let timeWidth = MIN_TIME_WIDTH;
+  let headerBlurbWidth = MIN_BLURB_WIDTH;
+
+  const formatter = new Intl.DateTimeFormat(dateTimeLocale, {
+    ...
+  });
+
+  export function formatTimestamp(timestamp: string): string {
+    ...
+  }
+
+  function getWidths(selector: string) {
+    ...
+  }
+
+  function resizeBlurbWidth() {
+    blurbWidth = MIN_BLURB_WIDTH;
+    // time width doesn't need a reset because it never decreases
+
+    setTimeout(() => {
+      const textWidths = getWidths(".database-page .text-container");
+      const timeWidths = getWidths(".database-page .time");
+      const minTextWidth = ...;
+      blurbWidth = `${minTextWidth}px`;
+      const maxTimeWidth = ...;
+      timeWidth = `${maxTimeWidth}px`;
+
+      headerBlurbWidth = blurbWidth;
+    }, 10);
+  }
+
+  function loadNewItems() {
+    if (newItemsPromise) {
+      return;
+    }
+
+    if (allItemsLoaded) {
+      return;
+    }
+
+    newItemsPromise = getItems(items.length)
+      .then((newItems) => {
+        items = [...items, ...newItems];
+        allItemsLoaded = newItems.length < PAGE_SIZE;
+        newItemsPromise = undefined;
+
+        requestAnimationFrame(resizeBlurbWidth);
+      })
+      .catch((error) => {
+        snackbarError(error);
+      });
+  }
+
+  onMount(() => {
+    resizeBlurbWidth();
+    window.addEventListener("resize", resizeBlurbWidth);
+
+    return () => {
+      window.removeEventListener("resize", resizeBlurbWidth);
+    };
+  });
+
+  $: minimumWidths =
+    `--blurb-width: ${blurbWidth}; ` +
+    `--header-blurb-width: ${headerBlurbWidth}; ` +
+    `--time-width: ${timeWidth}`;
+</script>
+
+<div class="container database-page full-height" style={minimumWidths}>
+  <div class="blurb header">
+    <div class="text-container">
+      <div class="text">{blurbLabel}</div>
+    </div>
+    <div class="time">Time</div>
+  </div>
+  <div class="scrollable-container full-height">
+    <Scrollable on:bottomReached={loadNewItems}>
+      {#if items.length > 0}
+        {#each items as item (item.id)}
+          <a href={itemUrl(item)}>
+            <div class="blurb instance">
+              <div class="text-container">
+                <div class="text">
+                  <svelte:component this={renderItem} {item} />
+                </div>
+              </div>
+              <div class="time">{formatTimestamp(item.timestamp)}</div>
+            </div>
+          </a>
+        {/each}
+      {:else}
+        <div class="blurb placeholder">
+          <div class="text-container">
+            <EmptyPlaceholder>
+              <slot />
+            </EmptyPlaceholder>
+          </div>
+          <div class="time"></div>
+        </div>
+      {/if}
+    </Scrollable>
+  </div>
+</div>
+
+<style>
+  ...
+
+  .blurb {
+    display: flex;
+    color: black;
+  }
+
+  .blurb.placeholder :global(p) {
+    margin-top: 0.5rem;
+  }
+
+  .blurb.header .text-container,
+  .blurb.header .time {
+    text-align: center;
+    font-weight: bold;
+  }
+
+  .blurb .text-container {
+    flex: 1;
+  }
+
+  .blurb.instance {
+    padding: 0.2rem var(--side-padding);
+    border-radius: var(--corner-roundness);
+    transition: background 0.5s;
+    height: 1.62rem;
+    box-sizing: border-box;
+  }
+
+  .blurb.instance:hover {
+    background: var(--color-hover);
+  }
+
+  .blurb .text-container .text {
+    max-width: var(--blurb-width);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .blurb.header .text-container .text {
+    max-width: var(--header-blurb-width);
+  }
+
+  .blurb .time {
+    min-width: var(--time-width);
+    box-sizing: border-box;
+    text-align: right;
+  }
+</style>
+
+```
+
+Because the CSS class name has changed, we must also edit `webdriver/test/specs/e2e.test.js` to fit:
+
+```js
+    it("should be able to view single LLM call", async function () {
+      ...
+      await findAndClick(".database-page a:nth-child(2)");
+      ...
+      await findAndClick(".database-page a:nth-child(2)");
+      ...
+    });
+```
+
+We create `src-svelte/src/routes/database/api-calls/ApiCallBlurb.svelte` to serve as the component that renders the API call blurb in the row:
+
+```svelte
+<script lang="ts">
+  import ApiCallReference from "$lib/ApiCallReference.svelte";
+  import { type LightweightLlmCall } from "$lib/bindings";
+
+  export let item: LightweightLlmCall;
+  $: reference = {
+    id: item.id,
+    snippet: item.response_message.text.trim(),
+  };
+</script>
+
+<ApiCallReference selfContained nolink apiCall={reference} />
+
+```
+
+All that remains of `src-svelte/src/routes/database/api-calls/ApiCallsTable.svelte` is this customization of the generic `Table`:
+
+```svelte
+<script lang="ts">
+  import Table from "$lib/Table.svelte";
+  import { commands, type LightweightLlmCall } from "$lib/bindings";
+  import { unwrap } from "$lib/tauri";
+  import ApiCallBlurb from "./ApiCallBlurb.svelte";
+
+  const getApiCalls = (offset: number) => unwrap(commands.getApiCalls(offset));
+  const apiCallUrl = (apiCall: LightweightLlmCall) =>
+    `/database/api-calls/${apiCall.id}/`;
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+</script>
+
+<Table
+  blurbLabel="Message"
+  getItems={getApiCalls}
+  itemUrl={apiCallUrl}
+  renderItem={ApiCallBlurb}
+  {dateTimeLocale}
+  {timeZone}
+>
+  Looks like you haven't made any calls to an LLM yet.<br />Get started via
+  <a href="/chat">chat</a>
+  or by making one <a href="/database/api-calls/new/">from scratch</a>.
+</Table>
+
+```
+
+Similarly, we create a `src-svelte/src/routes/database/terminal-sessions/TerminalSessionBlurb.svelte`:
+
+```svelte
+<script lang="ts">
+  import { type TerminalSessionReference } from "$lib/bindings";
+
+  export let item: TerminalSessionReference;
+</script>
+
+<div class="ellipsis-container">
+  <span class="blurb">
+    {item.command}
+    {#if item.last_io}
+      <span class="last-io">{item.last_io}</span>
+    {/if}
+  </span>
+</div>
+
+<style>
+  .ellipsis-container {
+    display: flex;
+    width: 100%;
+  }
+
+  .blurb {
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.22rem;
+  }
+
+  .last-io {
+    margin-left: 0.5rem;
+    color: var(--color-faded);
+    font-style: italic;
+  }
+</style>
+
+```
+
+and the corresponding `src-svelte/src/routes/database/terminal-sessions/TerminalSessionsTable.svelte`:
+
+```svelte
+<script lang="ts">
+  import Table from "$lib/Table.svelte";
+  import { commands, type TerminalSessionReference } from "$lib/bindings";
+  import { unwrap } from "$lib/tauri";
+  import TerminalSessionBlurb from "./TerminalSessionBlurb.svelte";
+
+  const getTerminalSessions = (offset: number) =>
+    unwrap(commands.getTerminalSessions(offset));
+  const terminalSessionUrl = (apiCall: TerminalSessionReference) =>
+    `/database/terminal-sessions/${apiCall.id}/`;
+
+  export let dateTimeLocale: string | undefined = undefined;
+  export let timeZone: string | undefined = undefined;
+</script>
+
+<Table
+  blurbLabel="Command"
+  getItems={getTerminalSessions}
+  itemUrl={terminalSessionUrl}
+  renderItem={TerminalSessionBlurb}
+  {dateTimeLocale}
+  {timeZone}
+>
+  Looks like you haven't <a href="/database/terminal-sessions/new/">started</a> any
+  terminal sessions yet.
+</Table>
+
+```
+
+We edit `src-svelte/src/routes/database/DatabaseView.svelte` to use both tables:
+
+```svelte
+<script lang="ts">
+  ...
+  import TerminalSessionsTable from "./terminal-sessions/TerminalSessionsTable.svelte";
+  ...
+</script>
+
+<InfoBox ...>
+  <div class="container full-height">
+    ...
+    {#if $dataType === "llm-calls"}
+      <ApiCallsTable {dateTimeLocale} {timeZone} />
+    {:else}
+      <TerminalSessionsTable {dateTimeLocale} {timeZone} />
+    {/if}
+  </div>
+</InfoBox>
+```
+
+We test this in `src-svelte/src/routes/database/DatabaseView.test.ts`. Because we want to trigger the API load on component mount, we mock the IntersectionObserver to automatically invoke an intersection. We also split the existing two into two separate ones to test the tables in both screens separately:
+
+```ts
+import { ..., type Mock } from "vitest";
+...
+import {
+  TauriInvokePlayback,
+  stubGlobalInvoke,
+} from "$lib/sample-call-testing";
+
+class MockIntersectionObserver {
+  constructor(callback: IntersectionObserverCallback) {
+    setTimeout(() => {
+      const entry: IntersectionObserverEntry = {
+        isIntersecting: true,
+        boundingClientRect: new DOMRectReadOnly(),
+        intersectionRatio: 1,
+        intersectionRect: new DOMRectReadOnly(),
+        rootBounds: new DOMRectReadOnly(),
+        target: document.createElement("div"),
+        time: 0,
+      };
+      callback([entry], this as unknown as IntersectionObserver);
+    }, 10);
+  }
+
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+}
+
+describe("Database View", () => {
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    stubGlobalInvoke(tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+
+    window.IntersectionObserver =
+      MockIntersectionObserver as unknown as typeof IntersectionObserver;
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_api_calls-small.yaml",
+    );
+  });
+
+  ...
+
+  test("renders LLM calls by default", async () => {
+    render(DatabaseView, {
+      dateTimeLocale: "en-GB",
+      timeZone: "Asia/Phnom_Penh",
+    });
+
+    expect(screen.getByRole("heading")).toHaveTextContent("LLM API Calls");
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+    await waitFor(() => {
+      const linkToApiCall = screen.getByRole("link", {
+        name: /yes, it works/i,
+      });
+      expect(linkToApiCall).toBeInTheDocument();
+      expect(linkToApiCall).toHaveAttribute(
+        "href",
+        "/database/api-calls/d5ad1e49-f57f-4481-84fb-4d70ba8a7a74/",
+      );
+    });
+  });
+
+  test("can switch to rendering terminal sessions list", async () => {
+    render(DatabaseView, {
+      dateTimeLocale: "en-GB",
+      timeZone: "Asia/Phnom_Penh",
+    });
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+
+    tauriInvokeMock.mockClear();
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_terminal_sessions-small.yaml",
+    );
+    userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Showing" }),
+      "Terminal Sessions",
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("heading")).toHaveTextContent(
+        "Terminal Sessions",
+      );
+    });
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(1));
+    await waitFor(() => {
+      const linkToTerminalSession = screen.getByRole("link", {
+        name: /python api/i,
+      });
+      expect(linkToTerminalSession).toBeInTheDocument();
+      expect(linkToTerminalSession).toHaveAttribute(
+        "href",
+        "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+      );
+    });
+  });
+});
+
+```
+
+We add the latest API call to `src-svelte/src/routes/database/DatabaseView.stories.ts` for manual testing:
+
+```ts
+Full.parameters = {
+  ...,
+  sampleCallFiles: [
+    ...,
+    "/api/sample-calls/get_terminal_sessions-small.yaml",
+  ],
+};
+```
+
+We do a little housecleaning and edit `src-svelte/src/routes/database/api-calls/ApiCallsTable.svelte` to use `$$restProps` instead:
+
+```svelte
+<Table
+  blurbLabel="Message"
+  getItems={getApiCalls}
+  itemUrl={apiCallUrl}
+  renderItem={ApiCallBlurb}
+  {...$$restProps}
+>
+```
+
+We do the same for `src-svelte/src/routes/database/terminal-sessions/TerminalSessionsTable.svelte`:
+
+```svelte
+<Table
+  blurbLabel="Command"
+  getItems={getTerminalSessions}
+  itemUrl={terminalSessionUrl}
+  renderItem={TerminalSessionBlurb}
+  {...$$restProps}
+>
+```
