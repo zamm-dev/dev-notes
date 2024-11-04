@@ -6836,3 +6836,1099 @@ We do the same for `src-svelte/src/routes/database/terminal-sessions/TerminalSes
   {...$$restProps}
 >
 ```
+
+Next, we edit `src-svelte/src/lib/Table.svelte` to set a bigger header blurb width before the resize, so as to reduce flicker.
+
+```ts
+  let headerBlurbWidth = "15rem"; // 3 * MIN_BLURB_WIDTH
+```
+
+### Creating the slug page
+
+Now, we have to create the slug page so that the links from the terminal sessions list page actually work.
+
+First, however, we'll need to create the backend API call that the slug will use. We create `src-tauri/src/commands/terminal/get_session.rs`:
+
+```rs
+use super::parse::clean_output;
+use crate::commands::errors::ZammResult;
+use crate::models::asciicasts::AsciiCast;
+use crate::models::os::OS;
+use crate::models::EntityId;
+use crate::schema::asciicasts;
+use crate::ZammDatabase;
+use anyhow::anyhow;
+use chrono::NaiveDateTime;
+use diesel::prelude::*;
+use diesel::RunQueryDsl;
+use serde::{Deserialize, Serialize};
+use specta::specta;
+use tauri::State;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RecoveredTerminalSession {
+    id: EntityId,
+    timestamp: NaiveDateTime,
+    command: String,
+    os: Option<OS>,
+    output: String,
+}
+
+async fn get_terminal_session_helper(
+    zamm_db: &ZammDatabase,
+    id: &str,
+) -> ZammResult<RecoveredTerminalSession> {
+    let parsed_uuid = EntityId {
+        uuid: Uuid::parse_str(id)?,
+    };
+    let mut db = zamm_db.0.lock().await;
+    let conn = db.as_mut().ok_or(anyhow!("Failed to lock database"))?;
+
+    let result: AsciiCast = asciicasts::table
+        .filter(asciicasts::id.eq(parsed_uuid))
+        .first::<AsciiCast>(conn)?;
+    let concantenated_output = result
+        .cast
+        .entries
+        .iter()
+        .flat_map(|e| {
+            if e.event_type == asciicast::EventType::Output {
+                Some(clean_output(&e.event_data))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    let recovered_session = RecoveredTerminalSession {
+        id: result.id,
+        timestamp: result.timestamp,
+        command: result.command.clone(),
+        os: result.os,
+        output: concantenated_output,
+    };
+    Ok(recovered_session)
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn get_terminal_session(
+    database: State<'_, ZammDatabase>,
+    id: &str,
+) -> ZammResult<RecoveredTerminalSession> {
+    get_terminal_session_helper(&database, id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::SideEffectsHelpers;
+    use crate::{check_sample, impl_result_test_case};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct GetTerminalSessionRequest {
+        id: String,
+    }
+
+    async fn make_request_helper(
+        args: &GetTerminalSessionRequest,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> ZammResult<RecoveredTerminalSession> {
+        get_terminal_session_helper(side_effects.db.as_ref().unwrap(), &args.id).await
+    }
+
+    impl_result_test_case!(
+        GetTerminalSessionTestCase,
+        get_terminal_session,
+        true,
+        GetTerminalSessionRequest,
+        RecoveredTerminalSession
+    );
+
+    check_sample!(
+        GetTerminalSessionTestCase,
+        test_start_bash,
+        "./api/sample-calls/get_terminal_session-bash.yaml"
+    );
+
+    check_sample!(
+        GetTerminalSessionTestCase,
+        test_bash_interleaved,
+        "./api/sample-calls/get_terminal_session-bash-interleaved.yaml"
+    );
+}
+
+```
+
+At first, we try to return an `AsciiCast` directly and edit `src-tauri/src/models/asciicasts.rs` to derive `specta::Type` for `AsciiCastData`:
+
+```rs
+use asciicast::{Entry, Header};
+
+#[derive(..., specta::Type)]
+pub struct AsciiCastData {
+    pub header: Header,
+    pub entries: Vec<Entry>,
+}
+```
+
+But then of course we get
+
+```
+the trait bound `Header: specta::Type` is not satisfied
+```
+
+But if we try to manually implement it
+
+```rs
+use specta::datatype::{DataType, StructType};
+
+impl specta::Type for AsciiCastData {
+    fn inline(type_map: &mut specta::TypeMap, generics: specta::Generics) -> DataType {
+        DataType::Struct(
+            StructType {
+                name: "AsciiCastData".to_string(),
+                sid: None,
+                fields: vec![
+                    ...
+                ],
+                generics: vec![],
+            }
+        )
+    }
+}
+```
+
+then we get an error because those fields are `pub[crate]`. We create [this issue](https://github.com/specta-rs/specta/issues/286) to ask for a way to derive `specta::Type` for our own custom structs, and apparently the official answer is to make a workaround struct. We decide not to do this in the end, but it is good to know for future purposes. Instead, for now we return the string as the frontend would want to display it.
+
+We create `src-tauri/api/sample-calls/get_terminal_session-bash.yaml` to return a fresh session that we can then invoke I/O on:
+
+```yaml
+request:
+  - get_terminal_session
+  - >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118"
+    }
+response:
+  message: >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      "timestamp": "2024-09-24T16:27:25",
+      "command": "bash",
+      "os": "Mac",
+      "output": "The default interactive shell is now zsh.\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\nFor more details, please visit https://support.apple.com/kb/HT208050.\nbash-3.2$ "
+    }
+sideEffects:
+  database:
+    startStateDump: command-run-bash
+    endStateDump: command-run-bash
+
+```
+
+We create `src-tauri/api/sample-calls/get_terminal_session-bash-interleaved.yaml` to return a fuller transcript of a session that involves I/O:
+
+```yaml
+request:
+  - get_terminal_session
+  - >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118"
+    }
+response:
+  message: >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      "timestamp": "2024-09-24T16:27:25",
+      "command": "bash",
+      "os": "Mac",
+      "output": "The default interactive shell is now zsh.\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\nFor more details, please visit https://support.apple.com/kb/HT208050.\nbash-3.2$ \npython api/sample-terminal-sessions/interleaved.py\nstdout\nstderr\nstdout\nbash-3.2$ "
+    }
+sideEffects:
+  database:
+    startStateDump: command-run-bash-interleaved
+    endStateDump: command-run-bash-interleaved
+
+```
+
+Both these tests pass. We expose this API call in `src-tauri/src/commands/terminal/mod.rs`:
+
+```rs
+mod get_session;
+...
+
+pub use get_session::get_terminal_session;
+...
+```
+
+and again in `src-tauri/src/commands/mod.rs`:
+
+```rs
+pub use terminal::{
+    get_terminal_session, ...
+};
+```
+
+and register it in `src-tauri/src/main.rs` as usual.
+
+Now, we create the frontend page for this. We update the bindings as usual, and create `src-svelte/src/routes/database/terminal-sessions/[slug]/+page.svelte` as such:
+
+```svelte
+<script lang="ts">
+  import TerminalSession from "../TerminalSession.svelte";
+  import { commands, type RecoveredTerminalSession } from "$lib/bindings";
+  import { onMount } from "svelte";
+  import { unwrap } from "$lib/tauri";
+  import { page } from "$app/stores";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+
+  let terminalSession: RecoveredTerminalSession | undefined = undefined;
+
+  onMount(async () => {
+    try {
+      terminalSession = await unwrap(
+        commands.getTerminalSession($page.params.slug),
+      );
+    } catch (error) {
+      snackbarError(error as string | Error);
+    }
+  });
+</script>
+
+{#if terminalSession}
+  <TerminalSession
+    sessionId={terminalSession.id}
+    command={terminalSession.command}
+    output={terminalSession.output}
+  />
+{:else}
+  <p>Loading...</p>
+{/if}
+
+```
+
+Upon browsing to a past terminal session, we find that we have to edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to mark the command div as `atomic-reveal`:
+
+```svelte
+    {#if command}
+      <p class="atomic-reveal">
+        Current command: <span class="command">{command}</span>
+      </p>
+    {:else}
+```
+
+As it is, unfortunately the form to send input at the bottom is still present, even though it of course doesn't work anymore because the terminal session is no longer even active. As such, we edit `src-tauri/src/commands/terminal/get_session.rs` to return an `is_active` field. While doing so, we are reminded that our Tauri backend API can take in `Uuid` directly instead of `String`. We also use a custom test case instead of the default one constructed by the macro:
+
+```rs
+...
+use crate::ZammTerminalSessions;
+...
+
+#[derive(...)]
+pub struct RecoveredTerminalSession {
+    ...
+    is_active: bool,
+}
+
+async fn get_terminal_session_helper(
+    ...,
+    zamm_sessions: &ZammTerminalSessions,
+    id: Uuid,
+) -> ZammResult<RecoveredTerminalSession> {
+    let mut db = ...;
+    let conn = ...;
+    let sessions = zamm_sessions.0.lock().await;
+
+    let parsed_uuid: EntityId = id.into();
+    let result: AsciiCast = asciicasts::table
+        .filter(asciicasts::id.eq(&parsed_uuid))
+        ...;
+    ...
+    let is_active = sessions.contains_key(&parsed_uuid);
+    let recovered_session = RecoveredTerminalSession {
+        ...,
+        is_active,
+    };
+    ...
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn get_terminal_session(
+    ...,
+    zamm_sessions: State<'_, ZammTerminalSessions>,
+    id: Uuid,
+) -> ZammResult<RecoveredTerminalSession> {
+    get_terminal_session_helper(..., &zamm_sessions, id).await
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+    use crate::sample_call::SampleCall;
+    use crate::test_helpers::api_testing::{standard_test_subdir, TerminalHelper};
+    use crate::test_helpers::{
+        SampleCallTestCase, SideEffectsHelpers, ZammResultReturn,
+    };
+    ...
+    use stdext::function_name;
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct GetTerminalSessionRequest {
+        id: Uuid,
+    }
+
+    struct GetTerminalSessionTestCase {
+        test_fn_name: &'static str,
+        session_should_exist: bool,
+    }
+
+    impl
+        SampleCallTestCase<
+            GetTerminalSessionRequest,
+            ZammResult<RecoveredTerminalSession>,
+        > for GetTerminalSessionTestCase
+    {
+        const EXPECTED_API_CALL: &'static str = "get_terminal_session";
+        const CALL_HAS_ARGS: bool = true;
+
+        fn temp_test_subdirectory(&self) -> String {
+            standard_test_subdir(Self::EXPECTED_API_CALL, self.test_fn_name)
+        }
+
+        async fn make_request(
+            &mut self,
+            args: &GetTerminalSessionRequest,
+            side_effects: &mut SideEffectsHelpers,
+        ) -> ZammResult<RecoveredTerminalSession> {
+            let mut terminal_helper = TerminalHelper::new();
+            if self.session_should_exist {
+                terminal_helper.change_mock_id(args.id).await;
+            }
+
+            get_terminal_session_helper(
+                side_effects.db.as_ref().unwrap(),
+                &terminal_helper.sessions,
+                args.id,
+            )
+            .await
+        }
+
+        fn serialize_result(
+            &self,
+            sample: &SampleCall,
+            result: &ZammResult<RecoveredTerminalSession>,
+        ) -> String {
+            ZammResultReturn::serialize_result(self, sample, result)
+        }
+
+        async fn check_result(
+            &self,
+            sample: &SampleCall,
+            args: &GetTerminalSessionRequest,
+            result: &ZammResult<RecoveredTerminalSession>,
+        ) {
+            ZammResultReturn::check_result(self, sample, args, result).await
+        }
+    }
+
+    impl ZammResultReturn<GetTerminalSessionRequest, RecoveredTerminalSession>
+        for GetTerminalSessionTestCase
+    {
+    }
+
+    #[tokio::test]
+    async fn test_start_bash() {
+        let mut test_case = GetTerminalSessionTestCase {
+            test_fn_name: function_name!(),
+            session_should_exist: true,
+        };
+        test_case
+            .check_sample_call("./api/sample-calls/get_terminal_session-bash.yaml")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_bash_interleaved() {
+        let mut test_case = GetTerminalSessionTestCase {
+            test_fn_name: function_name!(),
+            session_should_exist: false,
+        };
+        test_case
+            .check_sample_call(
+                "./api/sample-calls/get_terminal_session-bash-interleaved.yaml",
+            )
+            .await;
+    }
+}
+
+```
+
+Note that for convenience, we edit `src-tauri/src/models/llm_calls/entity_id.rs` to make it easier to construct an `EntityId`:
+
+```rs
+impl From<Uuid> for EntityId {
+    fn from(uuid: Uuid) -> Self {
+        EntityId { uuid }
+    }
+}
+
+impl TryFrom<&str> for EntityId {
+    type Error = uuid::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let uuid = Uuid::parse_str(value)?;
+        Ok(EntityId { uuid })
+    }
+}
+```
+
+We also edit `src-tauri/src/test_helpers/api_testing.rs` to make it possible to easily modify the state of the terminal sessions:
+
+```rs
+...
+use crate::commands::terminal::{ActualTerminal, ...};
+...
+use uuid::Uuid;
+...
+
+impl TerminalHelper {
+    pub fn new() -> Self {
+        let new_session_id = EntityId::new();
+        let sessions = ZammTerminalSessions(Mutex::new(HashMap::from([(
+            new_session_id.clone(),
+            Box::new(ActualTerminal::new()) as Box<dyn Terminal>,
+        )])));
+        TerminalHelper {
+            sessions,
+            mock_session_id: new_session_id,
+        }
+    }
+
+    pub async fn change_mock_id(&mut self, new_uuid: Uuid) {
+        let new_id: EntityId = new_uuid.into();
+        let mut sessions = self.sessions.0.lock().await;
+        let mock_terminal = sessions.remove(&self.mock_session_id).unwrap();
+        sessions.insert(new_id.clone(), mock_terminal);
+
+        self.mock_session_id = new_id;
+    }
+}
+```
+
+We refactor `src-tauri/src/commands/terminal/send_input.rs` to use this new method as well:
+
+```rs
+    async fn make_request_helper(
+        ...,
+        side_effects: &mut SideEffectsHelpers,
+    ) -> ZammResult<String> {
+        let terminal_helper = side_effects.terminal.as_mut().unwrap();
+        terminal_helper.change_mock_id(args.session_id).await;
+        ...
+    }
+```
+
+We edit `src-tauri/api/sample-calls/get_terminal_session-bash-interleaved.yaml` to reflect this new feature:
+
+```yaml
+response:
+  message: >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      ...,
+      "output": "The default interactive shell is now zsh...",
+      "is_active": false
+    }
+```
+
+and `src-tauri/api/sample-calls/get_terminal_session-bash.yaml` for an example where it is true:
+
+```yaml
+response:
+  message: >
+    {
+      "id": "3717ed48-ab52-4654-9f33-de5797af5118",
+      ...,
+      "output": "The default interactive shell is now zsh...",
+      "is_active": true
+    }
+```
+
+Now we update the frontend to make use of this new information. We export the bindings to `src-svelte/src/lib/bindings.ts` as usual, and edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to make use of this information. We change the command label from `Current command` to just `Command` because "current" doesn't make as much sense if the session isn't active anymore. We also wrap the input form in the `isActive` check:
+
+```svelte
+<script lang="ts">
+  ...
+  export let isActive = true;
+  ...
+</script>
+
+<InfoBox title="Terminal Session" ...>
+  <div class="terminal-container ...">
+    {#if command}
+      <p class="atomic-reveal">
+        Command: ...
+      </p>
+    {:else}
+      ...
+    {/if}
+
+    ...
+
+    {#if isActive}
+      <SendInputForm
+        ...
+      />
+    {:else}
+      <EmptyPlaceholder>
+        This terminal session is no longer active.
+      </EmptyPlaceholder>
+    {/if}
+```
+
+We then create `src-svelte/src/routes/database/terminal-sessions/UnloadedTerminalSession.svelte`, which basically has the contents of the old `src-svelte/src/routes/database/terminal-sessions/[slug]/+page.svelte` except that it takes in an `id` instead of getting it from the page slug:
+
+```svelte
+<script lang="ts">
+  import TerminalSession from "./TerminalSession.svelte";
+  import { commands, type RecoveredTerminalSession } from "$lib/bindings";
+  import { onMount } from "svelte";
+  import { unwrap } from "$lib/tauri";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+
+  export let id: string;
+  let terminalSession: RecoveredTerminalSession | undefined = undefined;
+
+  onMount(async () => {
+    try {
+      terminalSession = await unwrap(commands.getTerminalSession(id));
+    } catch (error) {
+      snackbarError(error as string | Error);
+    }
+  });
+</script>
+
+{#if terminalSession}
+  <TerminalSession
+    sessionId={terminalSession.id}
+    command={terminalSession.command}
+    output={terminalSession.output}
+    isActive={terminalSession.is_active}
+  />
+{:else}
+  <p>Loading...</p>
+{/if}
+
+```
+
+The old `src-svelte/src/routes/database/terminal-sessions/[slug]/+page.svelte` now looks like this instead:
+
+```svelte
+<script lang="ts">
+  import UnloadedTerminalSession from "../UnloadedTerminalSession.svelte";
+  import { page } from "$app/stores";
+</script>
+
+<UnloadedTerminalSession id={$page.params.slug} />
+
+```
+
+We test the terminal session loading at `src-svelte/src/routes/database/terminal-sessions/UnloadedTerminalSession.test.ts`:
+
+```ts
+import { expect, test, vi, type Mock } from "vitest";
+import "@testing-library/jest-dom";
+import { render, screen, waitFor } from "@testing-library/svelte";
+import UnloadedTerminalSession from "./UnloadedTerminalSession.svelte";
+import userEvent from "@testing-library/user-event";
+import {
+  TauriInvokePlayback,
+  stubGlobalInvoke,
+} from "$lib/sample-call-testing";
+
+describe("Unloaded terminal session", () => {
+  let tauriInvokeMock: Mock;
+  let playback: TauriInvokePlayback;
+
+  beforeEach(() => {
+    tauriInvokeMock = vi.fn();
+    stubGlobalInvoke(tauriInvokeMock);
+    playback = new TauriInvokePlayback();
+    tauriInvokeMock.mockImplementation(
+      (...args: (string | Record<string, string>)[]) =>
+        playback.mockCall(...args),
+    );
+
+    window.IntersectionObserver = vi.fn(() => {
+      return {
+        observe: vi.fn(),
+        unobserve: vi.fn(),
+        disconnect: vi.fn(),
+      };
+    }) as unknown as typeof IntersectionObserver;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("can resume active session", async () => {
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_terminal_session-bash.yaml",
+    );
+    render(UnloadedTerminalSession, {
+      id: "3717ed48-ab52-4654-9f33-de5797af5118",
+    });
+
+    // check that the page loads correctly
+    await waitFor(() => {
+      expect(tauriInvokeMock).toHaveReturnedTimes(1);
+      expect(
+        screen.getByText(
+          new RegExp("The default interactive shell is now zsh"),
+        ),
+      ).toBeInTheDocument();
+    });
+
+    // check that we can still interact with the session
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/send_command_input-bash-interleaved.yaml",
+    );
+    // this part differs from TerminalSession.test.ts
+    const commandInput = screen.getByLabelText("Enter input for command");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    await userEvent.type(
+      commandInput,
+      "python api/sample-terminal-sessions/interleaved.py",
+    );
+    await userEvent.click(sendButton);
+    expect(tauriInvokeMock).toHaveReturnedTimes(2);
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp("stderr"))).toBeInTheDocument();
+    });
+  });
+
+  test("can load inactive session without allowing for further input", async () => {
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/get_terminal_session-bash-interleaved.yaml",
+    );
+    render(UnloadedTerminalSession, {
+      id: "3717ed48-ab52-4654-9f33-de5797af5118",
+    });
+
+    // check that the page loads correctly
+    await waitFor(() => {
+      expect(tauriInvokeMock).toHaveReturnedTimes(1);
+      const commandOutput = screen.getByText(
+        new RegExp("The default interactive shell is now zsh"),
+      );
+      expect(commandOutput).toBeInTheDocument();
+      expect(commandOutput).toHaveTextContent("stderr");
+    });
+
+    // check that we can no longer interact with the session
+    const commandInput = screen.queryByLabelText("Enter input for command");
+    // expect inpupt to not exist
+    expect(commandInput).not.toBeInTheDocument();
+    expect(
+      screen.getByText("This terminal session is no longer active."),
+    ).toBeInTheDocument();
+  });
+});
+
+```
+
+In the process of creating this test file, we realize that the test at `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` should be changed from `"Terminal session"` (which is the name for the test *suite*):
+
+```ts
+describe("Terminal session", () => {
+  ...
+
+  test("can start and send input to command", async () => {
+    ...
+  });
+});
+```
+
+We move the in-progress terminal session story from `src-svelte/src/routes/database/terminal-sessions/TerminalSession.stories.ts` to `src-svelte/src/routes/database/terminal-sessions/UnloadedTerminalSession.stories.ts`, which is a new file that also contains an example of a finished terminal session:
+
+```ts
+import UnloadedTerminalSession from "./UnloadedTerminalSession.svelte";
+import type { StoryFn, StoryObj } from "@storybook/svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import MockFullPageLayout from "$lib/__mocks__/MockFullPageLayout.svelte";
+
+export default {
+  component: UnloadedTerminalSession,
+  title: "Screens/Database/Terminal Session",
+  argTypes: {},
+  decorators: [
+    SvelteStoresDecorator,
+    TauriInvokeDecorator,
+    (story: StoryFn) => {
+      return {
+        Component: MockFullPageLayout,
+        slot: story,
+      };
+    },
+  ],
+};
+
+const Template = ({ ...args }) => ({
+  Component: UnloadedTerminalSession,
+  props: args,
+});
+
+export const InProgress: StoryObj = Template.bind({}) as any;
+InProgress.args = {
+  id: "3717ed48-ab52-4654-9f33-de5797af5118",
+};
+InProgress.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/get_terminal_session-bash.yaml",
+    "/api/sample-calls/send_command_input-bash-interleaved.yaml",
+  ],
+};
+
+export const Finished: StoryObj = Template.bind({}) as any;
+Finished.args = {
+  id: "3717ed48-ab52-4654-9f33-de5797af5118",
+};
+Finished.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/get_terminal_session-bash-interleaved.yaml",
+  ],
+};
+
+```
+
+We add the new story to `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "database", "terminal-session"],
+    variants: [..., "finished"],
+    ...
+  },
+  ...
+];
+```
+
+While viewing the new story, we realize that there is a stray newline in between the bash prompt and the input to the bash command. We fix this in `src-tauri/src/commands/terminal/get_session.rs` by joining on an empty string instead of `\n`:
+
+```rs
+async fn get_terminal_session_helper(
+    ...
+) -> ZammResult<RecoveredTerminalSession> {
+    ...
+    let concantenated_output = result
+        ...
+        .join("");
+    ...
+}
+```
+
+We update `src-tauri/api/sample-calls/get_terminal_session-bash-interleaved.yaml` to match, so that it looks like `"...bash-3.2$ python..."` instead of `"...bash-3.2$ \npython..."`.
+
+We take a detour below, but in doing so, we realize that we should edit `src-svelte/src/routes/database/terminal-sessions/UnloadedTerminalSession.svelte` to use our own proper loading component:
+
+```svelte
+<script lang="ts">
+  ...
+  import Loading from "$lib/Loading.svelte";
+  ...
+</script>
+
+{#if terminalSession}
+  ...
+{:else}
+  <Loading />
+{/if}
+```
+
+### Detour: refactoring API call page to use `Unloaded` naming schema
+
+Doing this for terminal sessions makes us want to do it for our API calls too. To keep Git history clean, we first rename `ApiCall` to `UnloadedApiCall`. This is a straightforward task that the IDE does well.
+
+Next, we rename `ApiCallDisplay` to `ApiCall`. The IDE does this well too, but we further edit the import in `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.svelte` from
+
+```ts
+  import ApiCallDisplay from "./ApiCall.svelte";
+```
+
+to
+
+```ts
+  import ApiCall from "./ApiCall.svelte";
+```
+
+This is a detail that the IDE doesn't automatically take care of, for understandable reasons.
+
+Next, we edit the Storybook stories. For example, `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.stories.ts` now only imports
+
+```ts
+import { KHMER_CALL, LOTS_OF_CODE_CALL } from "./sample-calls";
+```
+
+and the stories `Narrow`, `Wide`, `Variant` and `UnknownProviderPrompt` are all removed from this file. Instead, the new file `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.stories.ts` looks like this:
+
+```ts
+import UnloadedApiCall from "./UnloadedApiCall.svelte";
+import type { StoryObj } from "@storybook/svelte";
+import TauriInvokeDecorator from "$lib/__mocks__/invoke";
+
+export default {
+  component: UnloadedApiCall,
+  title: "Screens/Database/LLM Call",
+  argTypes: {},
+  decorators: [TauriInvokeDecorator],
+};
+
+const Template = ({ ...args }) => ({
+  Component: UnloadedApiCall,
+  props: args,
+});
+
+export const Regular: StoryObj = Template.bind({}) as any;
+Regular.args = {
+  id: "c13c1e67-2de3-48de-a34c-a32079c03316",
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+Regular.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/get_api_call-continue-conversation.yaml",
+  ],
+};
+
+export const Variant: StoryObj = Template.bind({}) as any;
+Variant.args = {
+  id: "7a35a4cf-f3d9-4388-bca8-2fe6e78c9648",
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+Variant.parameters = {
+  sampleCallFiles: ["/api/sample-calls/get_api_call-edit.yaml"],
+};
+
+export const UnknownProviderPrompt: StoryObj = Template.bind({}) as any;
+UnknownProviderPrompt.args = {
+  id: "037b28dd-6f24-4e68-9dfb-3caa1889d886",
+  dateTimeLocale: "en-GB",
+  timeZone: "Asia/Phnom_Penh",
+};
+UnknownProviderPrompt.parameters = {
+  sampleCallFiles: [
+    "/api/sample-calls/get_api_call-unknown-provider-prompt.yaml",
+  ],
+};
+
+```
+
+Note that the `Narrow` and `Wide` stories are smushed into one because we will be manually changing the Storybook window size at test time. Instead, we edit `src-svelte/src/routes/storybook.test.ts`:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["screens", "database", "llm-call"],
+    variants: [
+      {
+        name: "narrow",
+        prefix: "regular",
+        ...
+      },
+      {
+        name: "wide",
+        prefix: "regular",
+        ...
+      },
+      ...
+  },
+  ...
+];
+```
+
+`src-svelte/src/routes/database/api-calls/[slug]/sample-calls.ts` loses the sample calls `CONTINUE_CONVERSATION_CALL`, `VARIANT_CALL`, and `UNKNOWN_PROVIDER_PROMPT_CALL`. However, the first prompt is actually still needed in other tests, so we keep a remnant of it:
+
+```ts
+export const CONTINUE_CONVERSATION_PROMPT = {
+  type: "Chat",
+  messages: [
+    {
+      role: "System",
+      text: "You are ZAMM, a chat program. Respond in first person.",
+    },
+    {
+      role: "Human",
+      text: "Hello, does this work?",
+    },
+    {
+      role: "AI",
+      text: "Yes, it works. How can I assist you today?",
+    },
+    {
+      role: "Human",
+      text: "Tell me something funny.",
+    },
+  ],
+};
+```
+
+We then edit `src-svelte/src/routes/database/api-calls/[slug]/Prompt.stories.ts` from this:
+
+```ts
+import { CONTINUE_CONVERSATION_CALL } from "./sample-calls";
+...
+
+export const Uneditable: StoryObj = ...;
+Uneditable.args = {
+  prompt: CONTINUE_CONVERSATION_CALL.request.prompt,
+};
+
+export const Editable: StoryObj = ...;
+Editable.args = {
+  ...
+  prompt: CONTINUE_CONVERSATION_CALL.request.prompt,
+};
+```
+
+to this:
+
+```ts
+import { CONTINUE_CONVERSATION_PROMPT } from "./sample-calls";
+...
+
+export const Uneditable: StoryObj = ...;
+Uneditable.args = {
+  prompt: CONTINUE_CONVERSATION_PROMPT,
+};
+
+export const Editable: StoryObj = ...;
+Editable.args = {
+  ...
+  prompt: CONTINUE_CONVERSATION_PROMPT,
+};
+```
+
+Similarly, `src-svelte/src/routes/database/api-calls/new/ApiCallEditor.stories.ts`, which also depends on the same prompt, gets edited too. In this file, we also realize we haven't been using the `EDIT_CANONICAL_REF` to cut down on redundancy:
+
+```ts
+import { CONTINUE_CONVERSATION_PROMPT } from "../[slug]/sample-calls";
+import { EDIT_CANONICAL_REF, ... } from "./test.data";
+
+...
+EditContinuedConversation.parameters = {
+  stores: {
+    apiCallEditing: {
+      canonicalRef: EDIT_CANONICAL_REF,
+      prompt: CONTINUE_CONVERSATION_PROMPT,
+    },
+  },
+};
+
+...
+Busy.parameters = {
+  stores: {
+    apiCallEditing: {
+      canonicalRef: EDIT_CANONICAL_REF,
+      prompt: CONTINUE_CONVERSATION_PROMPT,
+    },
+  },
+};
+```
+
+In the end, the neat per-commit Git renames don't carry over to the overall PR diff on GitHub, but at least the history is clean and legible.
+
+It turns out this doesn't quite work because as of now, `ApiCall` does not include actions, but `UnloadedApiCall` does. As such, our screenshot tests fail on CI.
+
+We rename the existing `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.svelte` back to `src-svelte/src/routes/database/api-calls/[slug]/ApiCallDisplay.svelte`. However, we keep all the imports the same because we actually create `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.svelte` again, but this time encapsulating most of the rest of the logic of the unloaded component:
+
+```svelte
+<script lang="ts">
+  import ApiCallDisplay from "./ApiCallDisplay.svelte";
+  import { type LlmCall } from "$lib/bindings";
+  import Actions from "./Actions.svelte";
+
+  export let apiCall: LlmCall;
+  export let showActions = true;
+</script>
+
+<div class="container">
+  <ApiCallDisplay {...$$restProps} bind:apiCall />
+  {#if showActions}
+    <Actions {apiCall} />
+  {/if}
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+</style>
+
+```
+
+The unloaded component at `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.svelte` is left with just simple loading code, along with using our own proper `Loading` component instead of Copilot's suggested ad-hoc loading HTML. This is the sort of project-specific knowledge that would be good for ZAMM to encapsulate someday, but it is unclear how the relevant information could be retrieved around which components are or are not standardized within the current project.
+
+```svelte
+<script lang="ts">
+  import ApiCall from "./ApiCall.svelte";
+  import { type LlmCall, commands } from "$lib/bindings";
+  import { unwrap } from "$lib/tauri";
+  import { snackbarError } from "$lib/snackbar/Snackbar.svelte";
+  import Loading from "$lib/Loading.svelte";
+
+  export let id: string;
+  let apiCall: LlmCall | undefined = undefined;
+
+  unwrap(commands.getApiCall(id))
+    ...;
+</script>
+
+{#if apiCall}
+  <ApiCall {...$$restProps} {apiCall} />
+{:else}
+  <Loading />
+{/if}
+
+```
+
+We get a TypeScript error in VS Code
+
+```
+Module './ApiCall.svelte' was resolved to '/Users/amos/Documents/zamm/src-svelte/src/routes/database/api-calls/[slug]/ApiCall.d.svelte.ts', but '--allowArbitraryExtensions' is not set.
+```
+
+But the Svelte build succeeds. After it succeeds, the error goes away in VS Code as well.
+
+We use the new prop in `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.stories.ts`:
+
+```ts
+export const Khmer: StoryObj = ...;
+Khmer.args = {
+  ...,
+  showActions: false,
+  ...
+};
+
+...
+
+export const LotsOfCode: StoryObj = ...;
+LotsOfCode.args = {
+  ...
+  showActions: false,
+  ...
+};
+
+```
+
+We repeat this for all of the stories in `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.stories.ts`.
