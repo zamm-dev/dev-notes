@@ -2709,3 +2709,95 @@ This allows us to do a staggered fade-in for a new chat, but fading in an entire
 - recalculating fade timing when chat messages are long enough to require scrolling
 
 We leave this for the future, and just edit `src-svelte/src/routes/chat/Chat.stories.ts` in the meantime to take out the args from the `FullPage` story.
+
+### Minimum reproducible example
+
+Since Safari on Mac OS shows a similar bug as WebKit across multiple platforms, we do a minimum reproducible example so that we could potentially report a bug on WebKit. The previous bug we reported was reproducible on WebKit via Playwright on Linux, but not on Safari; this should not have the same problem.
+
+We use the [mountable story](http://localhost:6006/?path=/story/reusable-infobox--mount-transition) as a quick test. We whittle `src-svelte/src/lib/InfoBox.svelte` down to this:
+
+```svelte
+<script lang="ts">
+  import { type TransitionConfig } from "svelte/transition";
+
+  function revealOutline(
+    node: Element,
+  ): TransitionConfig {
+    const parentNode = node.parentNode as Element;
+    const actualWidth = parentNode.clientWidth;
+    const actualHeight = parentNode.clientHeight;
+
+    return {
+      delay: 0,
+      duration: 330,
+      tick: (tGlobalFraction: number) => {
+        const width = `width: ${tGlobalFraction * actualWidth}px;`;
+        const height = `height: ${tGlobalFraction * actualHeight}px;`;
+        node.setAttribute("style", width + height);
+
+        if (tGlobalFraction === 1) {
+          // does not appear to affect Firefox or Chrome, but makes it worse on Safari
+          node.removeAttribute("style");
+        }
+      },
+    };
+  }
+</script>
+
+<section
+  class="container"
+>
+  <div class="border-container">
+    <div
+      class="border-box"
+      in:revealOutline|global
+    >
+      <div class="background"></div>
+    </div>
+    <div class="info-box">
+      <h2>
+        Simulation
+      </h2>
+    </div>
+  </div>
+</section>
+
+<style>
+  .container {
+    position: relative;
+  }
+
+  .border-box,
+  .border-box div,
+  .border-box div::before {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+  }
+
+  .border-box .background {
+    filter: drop-shadow(0px 1px 4px rgba(26, 58, 58, 0.4));
+  }
+
+  .border-box .background::before {
+    background: #fff;
+    content: "";
+  }
+
+  .info-box {
+    position: relative;
+    padding: 1rem;
+  }
+
+  .info-box h2 {
+    margin: -0.25rem 0 0.5rem 1rem;
+  }
+
+  .info-box :global(p:last-child) {
+    margin-bottom: 0;
+  }
+</style>
+
+```
+
+Unfortunately, while this example reproduces on Safari in Storybook, it does not on the Svelte playground. This could be because the Svelte playground is using Svelte 5, whereas our project is using Svelte 4. It could be the Storybook decorators that we wrap around the story too, but after some testing where we pass the slots directly through, we determine that this isn't the case.

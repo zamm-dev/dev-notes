@@ -6843,6 +6843,20 @@ Next, we edit `src-svelte/src/lib/Table.svelte` to set a bigger header blurb wid
   let headerBlurbWidth = "15rem"; // 3 * MIN_BLURB_WIDTH
 ```
 
+Later on, we realize from a `git bisect` that `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` is now failing after this commit. It turns out this is just because we changed the CSS classes, and so we edit the function to look for `.blurb.instance` instead of `.message.instance`:
+
+```ts
+  const expectLastMessage = async (
+    ...
+  ) => {
+    ...
+    const lastMessageContainer = apiCallsScrollElement.locator(
+      "... .blurb.instance ...",
+    );
+    ...
+  };
+```
+
 ### Creating the slug page
 
 Now, we have to create the slug page so that the links from the terminal sessions list page actually work.
@@ -7932,3 +7946,512 @@ LotsOfCode.args = {
 ```
 
 We repeat this for all of the stories in `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.stories.ts`.
+
+### Refactoring the slug page
+
+The `TerminalSession` component is starting to take in too many props for comfort. While changing the frontend, we realize that we also need the backend to change. We edit `src-tauri/src/commands/terminal/run.rs` to remove `RunCommandResponse`. In the process, we realize that we didn't even need to retrieve the `command` variable from the AsciiCast header, because it was available in the function arguments all along. Also in the process, the `serde::Serialize` trait is no longer imported, and therefore must be specified explicitly in the tests section.
+
+```rs
+async fn run_command_helper(
+    ...
+) -> ZammResult<RecoveredTerminalSession> {
+    ...
+    let os = get_os();
+
+    if let Some(conn) = db.as_mut() {
+        diesel::insert_into(asciicasts::table)
+            .values(NewAsciiCast {
+                ...
+                command,
+                os,
+                ...
+            })
+            ...;
+    }
+
+    let output = ...;
+    Ok(RecoveredTerminalSession {
+        ...,
+        os,
+        command: command.to_string(),
+        is_active: true,
+    })
+}
+
+#[tauri::command(async)]
+#[specta]
+pub async fn run_command(
+    ...
+) -> ZammResult<RecoveredTerminalSession> {
+    ...
+}
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    fn to_yaml_string<T: serde::Serialize>(...) -> String {
+        ...
+    }
+
+    fn parse_response(response_str: &str) -> RecoveredTerminalSession {
+        ...
+    }
+
+    // ... rest of tests also have RunCommandResponse replaced by RecoveredTerminalSession ...
+}
+```
+
+We need to make all fields public in `src-tauri/src/commands/terminal/get_session.rs`:
+
+```rs
+#[derive(...)]
+pub struct RecoveredTerminalSession {
+    pub id: EntityId,
+    pub timestamp: NaiveDateTime,
+    pub command: String,
+    pub os: Option<OS>,
+    pub output: String,
+    pub is_active: bool,
+}
+```
+
+`src-tauri/api/sample-calls/run_command-bash.yaml` are now populated with new fields like this:
+
+```yaml
+...
+response:
+  message: >
+    {
+      ...,
+      "command": "bash",
+      "os": "Mac",
+      "output": "The default interactive ...",
+      "is_active": true
+    }
+...
+```
+
+`src-tauri/api/sample-calls/run_command-cmd.yaml` and `src-tauri/api/sample-calls/run_command-date.yaml` are updated similarly.
+
+We export bindings as usual, and edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to render the terminal session from a single `session` variable:
+
+```svelte
+<script lang="ts">
+  ...
+  import { ..., type RecoveredTerminalSession } from "$lib/bindings";
+  ...
+
+  export let session: RecoveredTerminalSession | undefined = undefined;
+  ...
+  $: awaitingSession = session === undefined;
+  ...
+
+  async function sendCommand(newInput: string) {
+    try {
+      ...
+      if (session === undefined) {
+        session = await unwrap(...);
+      } else {
+        let result = await unwrap(
+          commands.sendCommandInput(session.id, ...),
+        );
+        session.output += result;
+      }
+      ...
+    } ...
+  }
+</script>
+
+<InfoBox title="Terminal Session" ...>
+  <div class="terminal-container ...">
+    {#if session?.command}
+      <p class="atomic-reveal">
+        Command: <span class="command">{session.command}</span>
+      </p>
+    {:else}
+      ...
+    {/if}
+
+    <Scrollable ...>
+      <pre>{session?.output ?? ""}</pre>
+    </Scrollable>
+
+    {#if session === undefined || session.is_active}
+      ...
+    {/if}
+  </div>
+</div>
+```
+
+We also edit `src-svelte/src/routes/database/terminal-sessions/UnloadedTerminalSession.svelte` to pass in the right prop:
+
+```svelte
+<script lang="ts">
+  ...
+  let session: RecoveredTerminalSession | undefined = undefined;
+
+  onMount(async () => {
+    try {
+      session = await unwrap(...);
+    } ...
+  });
+</script>
+
+{#if session}
+  <TerminalSession {session} />
+{:else}
+  ...
+{/if}
+```
+
+Finally, because `RecoveredTerminalSession` is no longer a good name for the data structure if it's also used for active sessions, we rename it to `TerminalSessionInfo` and move it to `src-tauri/src/commands/terminal/models.rs`. We do the refactor on the backend, export the bindings, and update the frontend as well.
+
+### Returning to terminal session when navigating back to tab
+
+We make it so that when the user navigates to a different tab and back, the terminal session is preserved (or, in reality, the backend returns the session data back to the frontend to re-render). However, we realize that we also need to tell the sidebar to update its icon location, or else when the user navigates back, they will still encounter a new terminal session page. Of [the options](https://stackoverflow.com/a/71905476) presented, we try out a new method of using Svelte contexts. We try to follow [this example](https://svelte.dev/tutorial/svelte/context-api) to create a way for other components to notify the sidebar that the URL has changed.
+
+We realize that `src-svelte/src/routes/SidebarUI.svelte` has two separate functions with the name `updateIndicator`, one of which is in `onMount`. We rename the one in `onMount` to `updateIndicatorPosition` because that more accurately describes its purpose:
+
+```ts
+    const updateIndicatorPosition = () => {
+      transitionDuration = "0";
+      indicatorPosition = getIndicatorPosition(getMatchingRoute(currentRoute));
+      setTimeout(() => {
+        transitionDuration = REGULAR_TRANSITION_DURATION;
+      }, 10);
+    };
+```
+
+We see
+
+```
+[HMR][Svelte]"Unrecoverable HMR error in <Root>: next update will trigger a full reload"
+
+[Error] Unhandled Promise Rejection: Error: Function called outside component initialization
+
+Avoid using `history.pushState(...)` and `history.replaceState(...)` as these will conflict with SvelteKit's router. Use the `pushState` and `replaceState` imports from `$app/navigation` instead.
+
+undefined is not an object (evaluating 'sidebarContext.updateIndicator')
+```
+
+We tackle each of these.
+
+```
+[HMR][Svelte]"Unrecoverable HMR error in <Root>: next update will trigger a full reload"
+
+[Error] Unhandled Promise Rejection: Error: Function called outside component initialization
+```
+
+It turns out that what `Function called outside component initialization` means is calling it from `onMount` instead of outside of it. We make sure to do that instead.
+
+```
+Avoid using `history.pushState(...)` and `history.replaceState(...)` as these will conflict with SvelteKit's router. Use the `pushState` and `replaceState` imports from `$app/navigation` instead.
+```
+
+We import `replaceState` from `$app/navigation` and use that as suggested.
+
+```
+undefined is not an object (evaluating 'sidebarContext.updateIndicator')
+```
+
+It turns out Svelte contexts [only work for children](https://stackoverflow.com/a/69070541). As such, we modify a store instead.
+
+It is unclear how we test this. Trying to edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` as such:
+
+```ts
+describe("Terminal session", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    window.history.replaceState = vi.fn();
+    ...
+  });
+
+  ...
+});
+```
+
+only gives us
+
+```
+stderr | src/routes/database/terminal-sessions/TerminalSession.test.ts > Terminal session > can start and send input to command
+__vite_ssr_import_10__.replaceState is not a function
+```
+
+We find [this gist](https://gist.github.com/tkrotoff/52f4a29e919445d6e97f9a9e44ada449), but unfortunately it gives us the same error.
+
+Upon further investigation, we find that this error is actually not due to the test code, but due to calling `replaceState` from `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` itself. We work around this by doing a null-check first:
+
+```ts
+        if (replaceState) {
+          replaceState(newUrl, $page.state);
+        } else {
+          window.history.replaceState($page.state, "", newUrl);
+        }
+```
+
+We would want to notify the page transition page of the change too, so that it does not play a page transition animation when the user goes back to the terminal session that they had just created.
+
+Our final solution looks like this:
+
+The sidebar page at `src-svelte/src/routes/SidebarUI.svelte` exports a store:
+
+```svelte
+<script lang="ts" context="module">
+  import { writable } from "svelte/store";
+
+  export interface SidebarContext {
+    updateIndicator: (newRoute: string) => void;
+  }
+
+  export const sidebar = writable<SidebarContext | null>(null);
+</script>
+
+<script lang="ts">
+
+<script lang="ts">
+  ...
+
+  onMount(() => {
+    ...
+    sidebar.set({ updateIndicator });
+    ...
+  });
+
+  ...
+</script>
+```
+
+The page transition page at `src-svelte/src/routes/PageTransition.svelte` exports a page transition store too:
+
+```svelte
+<script lang="ts" context="module">
+  import { writable } from "svelte/store";
+  ...
+
+  export interface PageTransitionContext {
+    addVisitedRoute: (newRoute: string) => void;
+  }
+  export const pageTransition = writable<PageTransitionContext | null>(null);
+</script>
+
+<script lang="ts">
+  ...
+
+  onMount(async () => {
+    ...
+    pageTransition.set({
+      addVisitedRoute: (newRoute: string) => {
+        visitedKeys.add(newRoute);
+      },
+    });
+  });
+  ...
+</script>
+```
+
+We make use of these stores in `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte`:
+
+```ts
+  ...
+  import { sidebar } from "../../SidebarUI.svelte";
+  import { replaceState } from "$app/navigation";
+  import { page } from "$app/stores";
+  import { pageTransition } from "../../PageTransition.svelte";
+
+  ...
+
+  async function sendCommand(newInput: string) {
+    try {
+      ...
+      if (session === undefined) {
+        session = await unwrap(...);
+        const newUrl = `/database/terminal-sessions/${session.id}/`;
+        if (replaceState) {
+          // replaceState undefined in Vitest
+          replaceState(newUrl, $page.state);
+        } else {
+          window.history.replaceState($page.state, "", newUrl);
+        }
+        $sidebar?.updateIndicator(newUrl);
+        $pageTransition?.addVisitedRoute(newUrl);
+      }
+    } ...
+  }
+```
+
+We finall get the tests to work with `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` by checking that the relevant functions have been invoked after the user's interactions with the terminal session:
+
+```ts
+...
+import { sidebar } from "../../SidebarUI.svelte";
+import { pageTransition } from "../../PageTransition.svelte";
+import { get } from "svelte/store";
+
+describe("Terminal session", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    window.history.replaceState = vi.fn();
+    sidebar.set({ updateIndicator: vi.fn() });
+    pageTransition.set({ addVisitedRoute: vi.fn() });
+    ...
+  });
+
+  ...
+
+  test("can start and send input to command", async () => {
+    ...
+    await userEvent.type(...);
+    await userEvent.click(...);
+    expect(tauriInvokeMock).toHaveReturnedTimes(...);
+    await waitFor(() => {
+      expect(...).toBeInTheDocument();
+    });
+    expect(window.history.replaceState).toHaveBeenCalledWith(
+      undefined,
+      "",
+      "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+    );
+    expect(get(sidebar)?.updateIndicator).toHaveBeenCalledWith(
+      "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+    );
+    expect(get(pageTransition)?.addVisitedRoute).toHaveBeenCalledWith(
+      "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+    );
+    ...
+  });
+
+  ...
+});
+
+```
+
+### CI errors
+
+We get the error
+
+```
+node:internal/event_target:1054
+  process.nextTick(() => { throw err; });
+                           ^
+Error: The following routes were marked as prerenderable, but were not prerendered because they were not found while crawling your app:
+  - /database/terminal-sessions/[slug]
+
+See https://kit.svelte.dev/docs/page-options#prerender-troubleshooting for info on how to solve this
+    at prerender (file:///__w/zamm/zamm/node_modules/@sveltejs/kit/src/core/postbuild/prerender.js:495:9)
+    at async MessagePort.<anonymous> (file:///__w/zamm/zamm/node_modules/@sveltejs/kit/src/utils/fork.js:22:16)
+Emitted 'error' event on Worker instance at:
+    at [kOnErrorMessage] (node:internal/worker:326:10)
+```
+
+As such, we edit `src-svelte/svelte.config.js`:
+
+```js
+/** @type {import('@sveltejs/kit').Config} */
+const config = {
+  ...
+
+  kit: {
+    ...
+    prerender: {
+      ...
+      entries: [
+        ...,
+        "/database/terminal-sessions/[slug]",
+      ],
+    },
+  },
+};
+```
+
+We also see these errors in the e2e tests:
+
+```
+[wry 0.46.3 linux #0-0] 2) App should allow navigation to the new terminal session page
+[wry 0.46.3 linux #0-0] element ("a=start") still not clickable after 5000ms
+[wry 0.46.3 linux #0-0] Error: element ("a=start") still not clickable after 5000ms
+[wry 0.46.3 linux #0-0]     at async findAndClick (e2e.test.js:12:3)
+[wry 0.46.3 linux #0-0]     at async Context.<anonymous> (e2e.test.js:117:5)
+[wry 0.46.3 linux #0-0]
+[wry 0.46.3 linux #0-0] 3) App should successfully interact with the terminal
+[wry 0.46.3 linux #0-0] element ("a=start") still not clickable after 5000ms
+[wry 0.46.3 linux #0-0] Error: element ("a=start") still not clickable after 5000ms
+[wry 0.46.3 linux #0-0]     at async findAndClick (e2e.test.js:12:3)
+[wry 0.46.3 linux #0-0]     at async Context.<anonymous> (e2e.test.js:131:5)
+```
+
+This is because we've changed the wording on that screen. We edit `webdriver/test/specs/e2e.test.js` to update the selectors:
+
+```js
+  it("should allow navigation to the new terminal session page", async function () {
+    ...
+    await findAndClick("a=started");
+    ...
+  });
+
+  it("should successfully interact with the terminal", async function () {
+    ...
+    await findAndClick("a=started");
+    ...
+  });
+```
+
+The second test still fails on CI for some reason, but it is not reproducible on our own local Linux machine. We try taking a screenshot of the page right before the failure, to debug:
+
+```js
+  it("should successfully interact with the terminal", async function () {
+    ...
+    expect(
+      await browser.checkFullPageScreen("running-terminal-session", {}),
+    ).toBeLessThanOrEqual(maxMismatch);
+    await findAndClick("a=started");
+    ...
+  });
+```
+
+The "started" link appears in the screenshot, as expected. We try adding a `await browser.pause(500);` instead. This still doesn't work, as it turns out the default waits for 5,000 ms already on the selector itself. This error doesn't pop up for manual testing either. We try to instead click on the + button on that page:
+
+```js
+await findAndClick('a[title="New Terminal Session"]');
+```
+
+This finally works.
+
+We also get
+
+```
+⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of null (reading 'classList')
+ ❯ src/lib/FixedScrollable.svelte:35:16
+     33|       let indicator = entries[0];
+     34|       if (indicator.isIntersecting) {
+     35|         shadow.classList.remove("visible");
+       |                ^
+     36|       } else {
+     37|         shadow.classList.add("visible");
+ ❯ src/lib/FixedScrollable.svelte:55:42
+ ❯ Timeout._onTimeout src/routes/database/DatabaseView.test.ts:23:7
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+
+This error originated in "src/routes/database/DatabaseView.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+```
+
+This appears to be perhaps similar to the `"scrollable.getDimensions() is not a function"` error we handled above, as sometimes the test locally succeeds with that and sometimes it fails with this. As such, we edit `src-svelte/src/lib/FixedScrollable.svelte` to introduce a new guard:
+
+```ts
+  function intersectionCallback(shadow: HTMLDivElement) {
+    return (entries: IntersectionObserverEntry[]) => {
+      if (!shadow) {
+        console.warn("Shadow not mounted");
+        return;
+      }
+
+      ...
+    };
+  }
+```
