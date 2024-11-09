@@ -8455,3 +8455,551 @@ This appears to be perhaps similar to the `"scrollable.getDimensions() is not a 
     };
   }
 ```
+
+## Fixing databse import/export
+
+We find out that terminal import/export doesn't quite work because we don't filter out duplicate IDs for terminal sessions. We also don't serialize the JSON in a way that's readable by other AsciiCast software.
+
+We find that some of the earlier `#[allow(dead_code)]` annotations are no longer necessary, so we remove or replace them with `#[cfg(test)]` in `src-tauri/src/models/asciicasts.rs`:
+
+```rs
+impl AsciiCastData {
+    ...
+
+    #[cfg(test)]
+    pub fn load(...) -> ZammResult<Self> {
+        ...
+    }
+
+    #[cfg(test)]
+    pub fn save(...) -> ZammResult<()> {
+        ...
+    }
+
+    ...
+}
+
+...
+
+impl AsciiCast {
+    pub fn as_insertable(&self) -> NewAsciiCast {
+        ...
+    }
+
+    ...
+}
+```
+
+Next, we edit `src-tauri/src/models/asciicasts.rs` to manually implement the Serde serialize and deserialize traits, and to test that they work as expected:
+
+```rs
+#[derive(... remove serde::Serialize and serde::Deserialize ...)]
+...
+pub struct AsciiCastData {
+    ...
+}
+
+...
+
+impl serde::Serialize for AsciiCastData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        format!("{}", self).serialize(serializer)
+    }
+}
+
+struct AsciiCastDataVisitor;
+
+impl<'de> serde::de::Visitor<'de> for AsciiCastDataVisitor {
+    type Value = AsciiCastData;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an asciicast string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        AsciiCastData::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AsciiCastData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(AsciiCastDataVisitor)
+    }
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+    use chrono::{DateTime, ...};
+
+    const TEST_CAST_STR: &str = r#""{\"version\":2,\"width\":80,\"height\":24,\"timestamp\":1731159783}\n[0.0,\"i\",\"echo hello\"]\n[1.0,\"o\",\"hello\"]""#;
+
+    fn get_test_ascii_cast() -> AsciiCastData {
+        AsciiCastData {
+            header: Header {
+                version: 2,
+                width: 80,
+                height: 24,
+                // `asciicast` crate has problems parsing non-existent time
+                timestamp: DateTime::from_timestamp(1731159783, 0),
+                duration: None,
+                idle_time_limit: None,
+                command: None,
+                title: None,
+                env: None,
+            },
+            entries: vec![
+                Entry {
+                    time: 0.0,
+                    event_type: EventType::Input,
+                    event_data: "echo hello".to_string(),
+                },
+                Entry {
+                    time: 1.0,
+                    event_type: EventType::Output,
+                    event_data: "hello".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_serialize_ascii_cast_data() {
+        let serialized = serde_json::to_string(&get_test_ascii_cast()).unwrap();
+        assert_eq!(serialized, TEST_CAST_STR);
+    }
+
+    #[test]
+    fn test_deserialize_ascii_cast_data() {
+        let deserialized: AsciiCastData = serde_json::from_str(TEST_CAST_STR).unwrap();
+        assert_eq!(deserialized, get_test_ascii_cast());
+    }
+
+    ...
+}
+```
+
+We remove all `*.yaml` files and check that the updates look right. For example, `src-tauri/api/sample-database-writes/command-run-bash-interleaved/dump.yaml` now looks like this:
+
+```yaml
+terminal_sessions:
+- id: 3717ed48-ab52-4654-9f33-de5797af5118
+  ...
+  cast: |-
+    {"version":2,"width":80,"height":24,"timestamp":1727195245,"command":"bash"}
+    [0.208,"o","\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "]
+    [0.208,"i","python api/sample-terminal-sessions/interleaved.py\n"]
+    [0.412,"o","python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "]
+
+```
+
+instead of this:
+
+```yaml
+terminal_sessions:
+- id: 3717ed48-ab52-4654-9f33-de5797af5118
+  ...
+  cast:
+    header:
+      version: 2
+      width: 80
+      height: 24
+      timestamp: 1727195245
+      command: bash
+    entries:
+    - - 0.208
+      - 'o'
+      - "\r\nThe default interactive shell is now zsh.\r\nTo update your account to use zsh, please run `chsh -s /bin/zsh`.\r\nFor more details, please visit https://support.apple.com/kb/HT208050.\r\nbash-3.2$ "
+    - - 0.208
+      - 'i'
+      - |
+        python api/sample-terminal-sessions/interleaved.py
+    - - 0.412
+      - 'o'
+      - "python api/sample-terminal-sessions/interleaved.py\r\nstdout\r\nstderr\r\nstdout\r\nbash-3.2$ "
+```
+
+We do have to manually restore the original version of `src-tauri/api/sample-database-writes/unknown-provider-prompt/dump.yaml` because that one involves unknown future prompts, and we have to run the `test_cmd_dir` test in `src-tauri/src/commands/terminal/send_input.rs` on Windows to regenerate `src-tauri/api/sample-database-writes/command-run-cmd-dir/dump.yaml`.
+
+Now, we finally tackle the database import/export problem for terminal sessions. We find that we have to add a new count to `src-tauri/src/commands/database/metadata.rs`:
+
+```rs
+pub struct DatabaseCounts {
+    ...,
+    pub num_terminal_sessions: i32,
+}
+```
+
+We edit `src-tauri/src/commands/database/export.rs` to:
+
+```rs
+pub async fn write_database_contents(
+    ...
+) -> ZammResult<DatabaseCounts> {
+    ...
+    Ok(DatabaseCounts {
+        ...,
+        num_terminal_sessions: db_contents.terminal_sessions.len() as i32,
+    })
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    check_sample!(
+        ExportDbTestCase,
+        test_export_llm_calls,
+        "./api/sample-calls/export_db-conversations.yaml"
+    );
+
+    check_sample!(
+        ExportDbTestCase,
+        test_export_terminal_sessions,
+        "./api/sample-calls/export_db-terminal-sessions.yaml"
+    );
+}
+```
+
+In this process, we rename the generic sample call file `src-tauri/api/sample-calls/export_db-populated.yaml` to the more descriptive `src-tauri/api/sample-calls/export_db-conversations.yaml`.
+
+We create `src-tauri/api/sample-calls/export_db-terminal-sessions.yaml` as such:
+
+```yaml
+request:
+  - export_db
+  - >
+    {
+      "path": "exported-db.yaml"
+    }
+response:
+  message: >
+    {
+      "num_terminal_sessions": 1
+    }
+sideEffects:
+  disk:
+    endStateDirectory: db-import-export/terminal-sessions
+  database:
+    startStateDump: command-run-cmd-dir
+    endStateDump: command-run-cmd-dir
+
+```
+
+We edit `src-tauri/src/commands/database/import.rs`:
+
+```rs
+...
+use crate::models::asciicasts::NewAsciiCast;
+...
+
+pub async fn read_database_contents(
+    ...
+) -> ZammResult<DatabaseImportCounts> {
+    ...
+    let new_llm_calls: Vec<NewApiKey> = ...;
+    let new_terminal_sessions: Vec<NewAsciiCast> = db_contents
+        .insertable_terminal_sessions()
+        .into_iter()
+        .filter(|session| {
+            asciicasts::table
+                .filter(asciicasts::id.eq(&session.id))
+                .count()
+                .get_result::<i64>(db)
+                .unwrap_or(0)
+                == 0
+        })
+        .collect();
+    let new_llm_call_ids = ...;
+    ...
+
+    Ok(DatabaseImportCounts {
+        imported: DatabaseCounts {
+            ...,
+            num_terminal_sessions: new_terminal_sessions.len() as i32,
+        },
+        ignored: DatabaseCounts {
+            ...,
+            num_terminal_sessions: (db_contents.terminal_sessions.len()
+                - new_terminal_sessions.len())
+                as i32,
+        },
+    })
+}
+
+...
+
+#[cfg(test)]
+mod tests {
+    ...
+
+    check_sample!(
+        ImportDbTestCase,
+        test_terminal_sessions,
+        "./api/sample-calls/import_db-terminal-sessions.yaml"
+    );
+
+    ...
+}
+```
+
+and we create `src-tauri/api/sample-calls/import_db-terminal-sessions.yaml` as such:
+
+```yaml
+request:
+  - import_db
+  - >
+    {
+      "path": "exported-db.yaml"
+    }
+response:
+  message: >
+    {
+      "imported": {
+        "num_terminal_sessions": 1
+      }
+    }
+sideEffects:
+  disk:
+    startStateDirectory: db-import-export/terminal-sessions
+    endStateDirectory: db-import-export/terminal-sessions
+  database:
+    endStateDump: command-run-cmd-dir
+
+```
+
+where our expected golden import/export file at `src-tauri/api/sample-disk-writes/db-import-export/terminal-sessions/exported-db.yaml`, used for both tests, looks like this:
+
+```yaml
+zamm_version: 0.2.1
+terminal_sessions:
+- id: 319cc7fd-58cc-4320-ab46-2f0ba11c5402
+  timestamp: 2024-10-17T06:02:13
+  command: cmd
+  os: Windows
+  cast: |-
+    {"version":2,"width":80,"height":24,"timestamp":1729144933,"command":"cmd"}
+    [0.208,"o","\u001b[?25l\u001b[2J\u001b[m\u001b[HMicrosoft Windows [Version 10.0.22631.4169]\r\n(c) Microsoft Corporation. All rights reserved.\u001b[4;1HC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007\u001b[?25h"]
+    [0.208,"i","dir\r\n"]
+    [0.41,"o","\u001b[?25ldir\r\n Volume in drive C is Windows\r\n Volume Serial Number is 30A7-E02E\u001b[8;1H Directory of C:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri\u001b[10;1H25/09/2024  05:54 pm    <DIR>          .\r\n20/09/2024  07:02 pm    <DIR>          ..\r\n14/02/2024  08:37 pm                73 .gitignore\r\n14/02/2024  08:37 pm                52 .rustfmt.toml\r\n17/10/2024  12:47 pm    <DIR>          api\r\n14/02/2024  08:37 pm    <DIR>          binaries\r\n14/02/2024  08:37 pm                90 build.rs\r\n25/09/2024  05:54 pm           142,536 Cargo.lock\r\n17/10/2024  12:58 pm             2,102 Cargo.toml\r\n20/09/2024  07:02 pm               830 clippy.py\r\n14/02/2024  08:37 pm               244 diesel.toml\r\n20/09/2024  07:02 pm    <DIR>          icons\r\n14/05/2024  03:37 pm               495 Makefile\r\n20/09/2024  07:02 pm    <DIR>          migrations\r\n14/02/2024  08:37 pm    <DIR>          sounds\r\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE - dir\u0007\u001b[?25h\n17/10/2024  12:47 pm    <DIR>          src\r\n25/06/2024  08:14 pm    <DIR>          target\r\n20/09/2024  07:02 pm             1,645 tauri.conf.json\r\n               9 File(s)        148,067 bytes\r\n               9 Dir(s)  190,782,652,416 bytes free\r\n\u001b]0;C:\\WINDOWS\\system32\\cmd.EXE\u0007\nC:\\Users\\Amos Ng\\Documents\\projects\\zamm-dev\\zamm\\src-tauri>"]
+
+```
+
+Because the version number in the export changes with the latest version of ZAMM, we update `RELEASE.md` to refer to this document as well:
+
+```md
+...
+9. Bump version number in:
+  ...
+   - [`src-tauri/api/sample-disk-writes/db-import-export/terminal-sessions/exported-db.yaml`](/src-tauri/api/sample-disk-writes/db-import-export/terminal-sessions/exported-db.yaml)
+...
+```
+
+Our other tests fail due to the new field. We have to update all of them now, but we want to avoid doing this again in the future. As such, we edit `src-tauri/src/commands/database/metadata.rs` to skip serialization of zero fields:
+
+```rs
+fn is_zero(num: &i32) -> bool {
+    *num == 0
+}
+
+#[derive(...)]
+pub struct DatabaseCounts {
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(default)]
+    pub num_api_keys: i32,
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(default)]
+    pub num_llm_calls: i32,
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(default)]
+    pub num_terminal_sessions: i32,
+}
+
+impl DatabaseCounts {
+    pub fn is_empty(&self) -> bool {
+        self.num_api_keys == 0
+            && self.num_llm_calls == 0
+            && self.num_terminal_sessions == 0
+    }
+}
+```
+
+and we add `serde(skip_serializing_if)` to  `src-tauri/src/commands/database/import.rs`:
+
+```rs
+#[derive(...)]
+pub struct DatabaseImportCounts {
+    #[serde(skip_serializing_if = "DatabaseCounts::is_empty")]
+    pub imported: DatabaseCounts,
+    #[serde(skip_serializing_if = "DatabaseCounts::is_empty")]
+    pub ignored: DatabaseCounts,
+}
+```
+
+Now we edit the other sample call files to not have zero-numbered keys. For example, `src-tauri/api/sample-calls/export_db-api-key.yaml` now looks like this:
+
+```yaml
+...
+response:
+  message: >
+    {
+      "num_api_keys": 1
+    }
+...
+```
+
+and the export sample calls like `src-tauri/api/sample-calls/import_db-api-key.yaml` looks like:
+
+```yaml
+...
+  message: >
+    {
+      "imported": {
+        "num_api_keys": 1
+      }
+    }
+...
+```
+
+Now all our backend tests pass. We update the Specta bindings, and find that `src-svelte/src/routes/settings/Database.test.ts` is failing. We realize during debugging that `src-svelte/src/lib/bindings.ts` isn't generated with optional elements for `DatabaseImportCounts`, so we update `src-tauri/src/commands/database/import.rs` to add `#[serde(default)]` to both fields:
+
+```rs
+#[derive(...)]
+pub struct DatabaseImportCounts {
+    #[serde(skip_serializing_if = ...)]
+    #[serde(default)]
+    pub imported: DatabaseCounts,
+    #[serde(skip_serializing_if = ...)]
+    #[serde(default)]
+    pub ignored: DatabaseCounts,
+}
+
+```
+
+Now the bindings correctly mark the `imported` and `ignored` fields as optional. We go on to edit `src-svelte/src/routes/settings/Database.svelte`:
+
+```ts
+  interface DefinedDatabaseCounts {
+    num_api_keys: number;
+    num_llm_calls: number;
+    num_terminal_sessions: number;
+  }
+
+  function substituteUndefinedCounts(
+    counts: DatabaseCounts | undefined,
+  ): DefinedDatabaseCounts {
+    if (counts === undefined) {
+      return {
+        num_api_keys: 0,
+        num_llm_calls: 0,
+        num_terminal_sessions: 0,
+      };
+    }
+
+    return {
+      num_api_keys: counts.num_api_keys ?? 0,
+      num_llm_calls: counts.num_llm_calls ?? 0,
+      num_terminal_sessions: counts.num_terminal_sessions ?? 0,
+    };
+  }
+
+  function nounify(counts: DatabaseCounts | undefined): string {
+    if (counts === undefined) {
+      return "0 items";
+    }
+
+    let noun: string;
+    const itemTypes = Object.keys(counts).length;
+    const definedCounts = substituteUndefinedCounts(counts);
+    if (itemTypes === 0 || itemTypes > 1) {
+      noun = "item";
+    } else if (definedCounts.num_api_keys > 0) {
+      noun = "API key";
+    } else if (definedCounts.num_llm_calls > 0) {
+      noun = "LLM call";
+    } else {
+      if (definedCounts.num_terminal_sessions === 0) {
+        console.error("Unexpected terminal session count");
+      }
+      noun = "terminal session";
+    }
+
+    const total =
+      definedCounts.num_api_keys +
+      definedCounts.num_llm_calls +
+      definedCounts.num_terminal_sessions;
+    const nounified = ...;
+    ...
+  }
+
+  async function importData() {
+    ...
+
+    try {
+      ...
+      const ignoredImports = substituteUndefinedCounts(importCounts.ignored);
+      if (
+        ignoredImports.num_api_keys > 0 ||
+        ignoredImports.num_llm_calls > 0 ||
+        ignoredImports.num_terminal_sessions > 0
+      ) {
+        ...
+      }
+    } ...
+  }
+```
+
+We update `src-svelte/src/routes/settings/Database.test.ts` to use the new filename for the LLM call export, and .
+
+```ts
+  test("can export LLM calls", async () => {
+    ...
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/export_db-conversations.yaml",
+    );
+    ...
+  });
+
+  ...
+
+  test("can export terminal sessions", async () => {
+    mockFilePicker("save", "exported-db.yaml");
+    playback.addSamples("../src-tauri/api/sample-calls/export_db-terminal-sessions.yaml");
+    render(Database, {});
+
+    const exportButton = screen.getByText("Export data");
+    await act(() => userEvent.click(exportButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(2));
+
+    await checkForAlert("Exported 1 terminal session");
+  });
+
+  ...
+
+  test("can import terminal sessions", async () => {
+    mockFilePicker("open", "exported-db.yaml");
+    playback.addSamples(
+      "../src-tauri/api/sample-calls/import_db-terminal-sessions.yaml",
+    );
+    render(Database, {});
+
+    const importButton = screen.getByText("Import data");
+    await act(() => userEvent.click(importButton));
+    await waitFor(() => expect(tauriInvokeMock).toHaveReturnedTimes(2));
+
+    await checkForAlert("Imported 1 terminal session");
+  });
+```
