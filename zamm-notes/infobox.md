@@ -2800,4 +2800,4 @@ We use the [mountable story](http://localhost:6006/?path=/story/reusable-infobox
 
 ```
 
-Unfortunately, while this example reproduces on Safari in Storybook, it does not on the Svelte playground. This could be because the Svelte playground is using Svelte 5, whereas our project is using Svelte 4. It could be the Storybook decorators that we wrap around the story too, but after some testing where we pass the slots directly through, we determine that this isn't the case.
+Unfortunately, while this example reproduces on Safari in Storybook, it does not on the Svelte playground. This could be because the Svelte playground is using Svelte 5, whereas our project is using Svelte 4. It could be the Storybook decorators that we wrap around the story too, but after some testing where we pass the slots directly through, we determine that this isn't the case. We [upgrade](/zamm-notes/svelte.md) to Svelte 5, but it turns out this does not fix the issue. Nonetheless, it remains the case that it is reproducible on Safari in Storybook, but not directly on the Svelte website itself.

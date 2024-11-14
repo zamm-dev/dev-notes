@@ -9003,3 +9003,97 @@ We update `src-svelte/src/routes/settings/Database.test.ts` to use the new filen
     await checkForAlert("Imported 1 terminal session");
   });
 ```
+
+### Refactoring to use `serde_with`
+
+We find out from [this comment](https://www.reddit.com/r/rust/comments/kouecb/comment/ghtjvi8/) that we can actually use the crate `serde_with`, and that the standard trait `FromStr` can be used for string parsing. We edit `src-tauri/src/models/asciicasts.rs` to implement this by moving the implementation of `AsciiCastData::parse` to `FromStr::from_str`:
+
+```rs
+use crate::commands::errors::Error;
+#[cfg(test)]
+use crate::commands::errors::ZammResult;
+...
+use std::str::FromStr;
+
+...
+
+impl AsciiCastData {
+    ...
+
+    #[cfg(test)]
+    pub fn load(file: &str) -> ZammResult<Self> {
+        let contents = ...;
+        contents.parse()
+    }
+
+    ... // parse fn removed
+}
+
+...
+
+impl<'de> serde::de::Visitor<'de> for AsciiCastDataVisitor {
+    ...
+
+    fn visit_str<E>(...) -> Result<Self::Value, E>
+    where ...
+    {
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+...
+
+impl FromStr for AsciiCastData {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut lines = s.lines();
+        let header_str = lines.next().ok_or(anyhow!("Empty cast"))?;
+        let header: Header = serde_json::from_str(header_str)?;
+        let entries = lines
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<Entry>, _>>()?;
+        Ok(Self { header, entries })
+    }
+}
+
+...
+
+impl<DB> FromSql<Text, DB> for AsciiCastData
+where
+    ...
+{
+    fn from_sql(bytes: DB::RawValue<'_>) -> deserialize::Result<Self> {
+        let json_str = String::from_sql(bytes)?;
+        json_str.parse().map_err(Into::into)
+    }
+}
+```
+
+We then add `serde_with` to `src-tauri/Cargo.toml`:
+
+```toml
+[dependencies]
+...
+serde_with = "3.11.0"
+```
+
+We edit `src-tauri/src/models/asciicasts.rs` again. At first it doesn't work if we use `#[serde_as]` as mentioned on the project's documentation homepage, but then we find out upon further reading that we need to use [`SerializeDisplay`](https://docs.rs/serde_with/3.11.0/serde_with/derive.SerializeDisplay.html) and `DeserializeFromStr`.
+
+```rs
+...
+use serde_with::{DeserializeFromStr, SerializeDisplay};
+...
+
+#[derive(
+    ...,
+    SerializeDisplay,
+    DeserializeFromStr,
+)]
+#[diesel(sql_type = Text)]
+pub struct AsciiCastData {
+    ...
+}
+
+// ... remove custom implementations for `serde::Serialize`, `AsciiCastDataVisitor`, `serde::de::Visitor`, and `serde::Deserialize`
+```
