@@ -25,3 +25,11 @@ Once you try to do that, you get the additional message
 > To do this, shut down your system. Then press and hold the Touch ID or power button to launch Startup Security Utility. In Startup Security Utility, enable kernel extensions from the Security Policy button.
 
 You'll have to restart twice: once to allow kernel extensions, then another time to actually enable that specific kernel extension. Once you do so, the external volume will no longer be mounted under `/Volumes/`, but instead under your home directory at (for example) `/Users/amos/.mounty/external`.
+
+## Decoupling mouse versus trackpad scrolling
+
+We find [a Reddit thread](https://www.reddit.com/r/apple/comments/zlurhe/how_has_apple_still_not_fixed_natural_scrolling/), which links to [this site](https://pilotmoon.com/scrollreverser/), which tells us we just need to do:
+
+```bash
+$ brew install scroll-reverser
+```

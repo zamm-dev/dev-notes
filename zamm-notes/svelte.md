@@ -1225,6 +1225,136 @@ Trace:
 
 We eventually find [someone else](https://github.com/testing-library/svelte-testing-library/issues/284#issuecomment-2434162767) with the same problem. Unfortunately the provided solution does not work -- but then we realize that the Storybook story isn't quite working either.
 
+We come back to this later after fixing the Storybook TypeScript errors. We try to make it a Playwright test instead to skip the difficulties with mocking browser APIs. Initially it fails, but upon debugging we find that it is because the add-ons close button is now titled `Hide addons [⌥ A]` instead, perhaps because it is on the Mac. We see from [this answer](https://stackoverflow.com/a/35073007) that we can do partial string matches instead. We end up with a solution that refactors the test setup out of `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` and into `src-svelte/src/lib/test-helpers.ts`:
+
+```ts
+...
+import { type Page } from "@playwright/test";
+...
+
+export async function getStorybookFrame(page: Page, url: string) {
+  await page.goto(url);
+  await page.locator("button[title^='Hide addons ']").dispatchEvent("click");
+  const maybeFrame = page.frame({ name: "storybook-preview-iframe" });
+
+  if (!maybeFrame) {
+    throw new Error("Could not find Storybook iframe");
+  }
+  return maybeFrame;
+}
+
+```
+
+where `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` now looks like:
+
+```ts
+...
+import {
+  ...,
+  getStorybookFrame,
+} from "$lib/test-helpers";
+
+...
+
+  const getScrollElement = async (url: string) => {
+    const frame = await getStorybookFrame(page, url);
+    ...
+  });
+
+  ...
+
+  test(
+    "updates title when changing dropdown",
+    async () => {
+      const frame = await getStorybookFrame(
+        page,
+        ...,
+      );
+      ...
+    },
+    ...
+  );
+```
+
+We then create `src-svelte/src/lib/snackbar/Snackbar.playwright.test.ts` as such:
+
+```ts
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  expect,
+  type Page,
+} from "@playwright/test";
+import { afterAll, beforeAll, describe, test } from "vitest";
+import {
+  PLAYWRIGHT_TIMEOUT,
+  PLAYWRIGHT_TEST_TIMEOUT,
+  getStorybookFrame,
+} from "$lib/test-helpers";
+
+describe("Snackbar", () => {
+  let page: Page;
+  let browser: Browser;
+  let context: BrowserContext;
+
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext();
+    context.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  beforeEach(async () => {
+    page = await context.newPage();
+    page.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);
+  });
+
+  test(
+    "should hide a message if the dismiss button is clicked",
+    { timeout: PLAYWRIGHT_TEST_TIMEOUT },
+    async () => {
+      const frame = await getStorybookFrame(
+        page,
+        `http://localhost:6006/?path=/story/layout-snackbar--default`,
+      );
+      const newErrorButton = frame.locator("button:has-text('Show Error')");
+      await newErrorButton.click();
+
+      const errorAlert = frame.locator("div[role='alertdialog']");
+      const dismissButton = errorAlert.locator("button[title='Dismiss']");
+      await dismissButton.click();
+      // timeout here is much shorter because otherwise the test may pass due to the
+      // alert going away naturally
+      await expect(errorAlert).toHaveCount(0, { timeout: 1000 });
+    },
+  );
+});
+
+```
+
+We remove the same test out of `src-svelte/src/lib/snackbar/Snackbar.test.ts`, and mock the `animate` API as described previously:
+
+```ts
+describe("Snackbar", () => {
+  beforeAll(() => {
+    HTMLElement.prototype.animate = vi.fn().mockReturnValue({
+      onfinish: null,
+      cancel: vi.fn(),
+    });
+  });
+
+  ...
+});
+```
+
+We don't use [vitest's new built-in browser mode](https://vitest.dev/guide/browser/) because it appears that there's no option to selectively define tests to be run in or out of browser mode.
+
+### Storybook TypeScript decorators
+
 We try to commit the previous changes first before experimenting further. Now we run into
 
 ```
@@ -1523,6 +1653,8 @@ const preview = {
 };
 ```
 
+### InfoBox reveal
+
 We also notice that various InfoBox-related things are broken now, especially on Safari. We edit `src-svelte/src/lib/InfoBox.svelte` to first remove the `import { run } from "svelte/legacy";` that the migration script introduced:
 
 ```ts
@@ -1663,9 +1795,88 @@ We notice that there are still problems with content reveal on the API calls pag
     }
 ```
 
+Eventually, we realize that there are still a lot of problems with this. For one, the database view now reveals everything in one single chunk. Another thing is that the database view title doesn't update during the animation, but only after the intro animation ends. Finally, the content reveal speed is divorced from the page transition speed.
+
+We edit `src-svelte/src/lib/InfoBox.svelte` to directly set the title text from the component's title variable rather than from reading the text set on the HTML element (which means the animation will now alwasy use the most up-to-date version of the title). We also add reveal animation exceptions for common HTML tags:
+
+```ts
+  class TypewriterEffect extends SubAnimation<void> {
+    constructor(anim: { ... }) {
+      super({
+        timing: anim.timing,
+        tick: (tLocalFraction: number) => {
+          ...
+          let length = title.length + 1;
+          ...
+          anim.node.textContent = i === 0 ? "" : title.slice(0, i - 1);
+          ...
+        },
+      });
+    }
+  }
+
+  ...
+
+    const getNodeAnimations = (
+      currentNode: Element,
+      root?: DOMRect,
+    ): RevealContent[] => {
+      ...
+      let isAtomicNode = false;
+      if (...) {
+        ...
+      } else if (
+        currentNode.tagName === "DIV" ||
+        currentNode.tagName === "TABLE" ||
+        currentNode.tagName === "TBODY"
+      ) {
+        isAtomicNode = false;
+      } ...
+      ...
+    }
+
+    ...
+
+  function forceUpdateTitleText(newTitle: string) {
+    if (titleElement && !isAnimatingTitle) {
+      titleElement.textContent = newTitle;
+    }
+  }
+
+  $effect.pre(() => {
+    forceUpdateTitleText(title);
+  });
+```
+
+We edit `src-svelte/src/lib/controls/ButtonGroup.svelte` to clamp down on the reveals again, now that div's are revealed in composite by default:
+
+```svelte
+<div class="outer-container atomic-reveal">
+  ...
+</div>
+```
+
+We do the same edit in `src-svelte/src/routes/components/api-keys/Service.svelte`, `src-svelte/src/routes/settings/SettingsSwitch.svelte`, and `src-svelte/src/routes/settings/SettingsSlider.svelte` as well.
+
+It turns out the decoupling of content reveal speed from page transition speed is a Storybook testing artifact, caused by manually editing the defaults in `src-svelte/src/lib/preferences.ts` for testing purposes while `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` sets it to a different value on component mount (which is too late to affect InfoBox component transition timing).
+
+As for other minor edits, we edit `src-svelte/src/routes/database/DatabaseView.full-page.stories.ts` to allow terminal sessions to be populated:
+
+```ts
+FullPage.parameters = {
+  ...,
+  sampleCallFiles: [
+    ...,
+    "/api/sample-calls/get_terminal_sessions-small.yaml",
+  ],
+};
+```
+
+and edit `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` to move the `{ retry: 2, timeout: PLAYWRIGHT_TEST_TIMEOUT },` to be the second argument rather than the last argument for the `test(...)` definition calls, because that is how the latest vitest defines tests now -- the old way has become deprecated.
+
 ### Page transitions
 
-Page transition animations are also broken. We edit `src-svelte/src/routes/PageTransition.svelte` to properly introduce `TransitionType.Init` (which is only ever the transition state on app startup and never gets assigned again thereafter) instead of relying on `await tick();` as before to set the initial transition duration on app startup:
+Page transition animations are also broken. We edit `src-svelte/src/routes/PageTransition.svelte` to properly introduce `TransitionType.Init` (which is only ever the transition state on app startup and never gets assigned again thereafter) instead of relying on `await tick();` as before to set the initial transition duration on app startup. Also note the use of [`$effect.pre`](https://svelte.dev/docs/svelte/$effect#$effect.pre), because we need to update the configuration for the transitions *before* they happen.
 
 ```svelte
   ...
@@ -1750,3 +1961,5 @@ For manual testing purposes, we also edit `src-svelte/src/lib/__mocks__/MockPage
 
   ...
 ```
+
+It's hard to test this because it involves animations rather than any end-state changes to the DOM, so we avoid testing this for now.

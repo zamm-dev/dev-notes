@@ -181,6 +181,8 @@ Now it works as expected except for the vertical scrollbars that appear temporar
 
 ```
 
+(Note that a [potentially better solution](https://stackoverflow.com/a/75567980) is to use a grid display on the parent element.)
+
 We notice that the settings page is now squished because the settings container only takes up half the space. We move the `1 rem` padding for `main` from `src-svelte/src/routes/AppLayout.svelte` to `PageTransition.svelte`:
 
 ```css
