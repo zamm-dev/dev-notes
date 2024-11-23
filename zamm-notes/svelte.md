@@ -295,6 +295,8 @@ In VS Code, we get
 Cannot find module '@testing-library/svelte/vite' or its corresponding type declarations. ts(2307)
 ```
 
+### Fixing compilation errors
+
 We try to at least get things compiling first.
 
 ```
@@ -865,6 +867,8 @@ It seems Storybook v8 [supports Svelte 5](https://github.com/storybookjs/storybo
 
 We replace all instances of `7.5.1` (the previous version of Storybook we were using) with `8.4.2` (the latest version of Storybook) in `src-svelte/package.json` and restart Storybook. Safari shows a blank page with 404 errors for resources such as `http://localhost:6006/sb-manager/chunk-2IXBUOFS.js`, but it displays just fine in Firefox. We [remove](https://usqassist.custhelp.com/app/answers/detail/a_id/3199/~/how-do-i-clear-my-cache%2C-cookies-and-history-in-safari%3F) the website data for `localhost` in Safari, and it works fine.
 
+### Fixing frontend unit tests
+
 We try to run our frontend tests. We are met with
 
 ```
@@ -1351,7 +1355,1035 @@ describe("Snackbar", () => {
 });
 ```
 
-We don't use [vitest's new built-in browser mode](https://vitest.dev/guide/browser/) because it appears that there's no option to selectively define tests to be run in or out of browser mode.
+We don't use [vitest's new built-in browser mode](https://vitest.dev/guide/browser/) because it appears that there's no option to selectively define tests to be run in or out of browser mode. There apparently is a way to toggle it on or off [as a whole](https://github.com/sveltejs/svelte/issues/11394#issuecomment-2085747668) depending on the Vitest config, but this doesn't help for our per-test purposes.
+
+Next, we move on to `src/routes/components/Metadata.test.ts`. Not only does this test fail with:
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: element.animate is not a function
+ ❯ animate ../node_modules/svelte/src/internal/client/dom/elements/transitions.js:377:26
+    375|   // for bidirectional transitions, we start from the c…
+    376|   // rather than doing a full intro/outro
+    377|   var t1 = counterpart?.t() ?? 1 - t2;
+       |                          ^
+    378|   counterpart?.abort();
+    379|
+ ❯ Object.in ../node_modules/svelte/src/internal/client/dom/elements/transitions.js:243:12
+ ❯ ../node_modules/svelte/src/internal/client/dom/elements/transitions.js:298:54
+ ❯ Module.untrack ../node_modules/svelte/src/internal/client/runtime.js:874:10
+ ❯ ../node_modules/svelte/src/internal/client/dom/elements/transitions.js:298:27
+ ❯ update_reaction ../node_modules/svelte/src/internal/client/runtime.js:329:56
+ ❯ update_effect ../node_modules/svelte/src/internal/client/runtime.js:457:18
+ ❯ flush_queued_effects ../node_modules/svelte/src/internal/client/runtime.js:547:4
+ ❯ flush_queued_root_effects ../node_modules/svelte/src/internal/client/runtime.js:528:4
+ ❯ Module.flush_sync ../node_modules/svelte/src/internal/client/runtime.js:700:3
+
+This error originated in "src/routes/components/Metadata.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "src/routes/components/Metadata.test.ts". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+     Errors  4 errors
+   Start at  21:44:36
+   Duration  984ms (transform 379ms, setup 0ms, collect 419ms, tests 23ms, environment 154ms, prepare 42ms)
+```
+
+but it also causes Vitest to hang:
+
+```
+<--- Last few GCs --->
+
+[69757:0x138008000]   132906 ms: Mark-Compact 4041.5 (4130.8) -> 4026.2 (4131.5) MB, 481.96 / 0.12 ms  (average mu = 0.123, current mu = 0.019) allocation failure; scavenge might not succeed
+[69757:0x138008000]   133409 ms: Mark-Compact 4042.5 (4131.5) -> 4026.9 (4132.3) MB, 491.71 / 0.12 ms  (average mu = 0.075, current mu = 0.022) allocation failure; scavenge might not succeed
+
+
+<--- JS stacktrace --->
+
+FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+ 1: 0x100bd4588 node::Abort() [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 2: 0x100bd4770 node::ModifyCodeGenerationFromStrings(v8::Local<v8::Context>, v8::Local<v8::Value>, bool) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 3: 0x100d5639c v8::internal::V8::FatalProcessOutOfMemory(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 4: 0x100f2aa54 v8::internal::Heap::GarbageCollectionReasonToString(v8::internal::GarbageCollectionReason) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 5: 0x100f2e908 v8::internal::Heap::CollectGarbageShared(v8::internal::LocalHeap*, v8::internal::GarbageCollectionReason) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 6: 0x100f2b36c v8::internal::Heap::PerformGarbageCollection(v8::internal::GarbageCollector, v8::internal::GarbageCollectionReason, char const*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 7: 0x100f290f4 v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 8: 0x100f1fd48 v8::internal::HeapAllocator::AllocateRawWithLightRetrySlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+ 9: 0x100f205a8 v8::internal::HeapAllocator::AllocateRawWithRetryOrFailSlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+10: 0x100f055ac v8::internal::Factory::NewFillerObject(int, v8::internal::AllocationAlignment, v8::internal::AllocationType, v8::internal::AllocationOrigin) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+11: 0x1012ecfbc v8::internal::Runtime_AllocateInYoungGeneration(int, unsigned long*, v8::internal::Isolate*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+12: 0x10164cc44 Builtins_CEntry_Return1_ArgvOnStack_NoBuiltinExit [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+13: 0x106b6fc20
+14: 0x106b6e338
+15: 0x106a284f8
+16: 0x1015c250c Builtins_JSEntryTrampoline [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+17: 0x1015c21f4 Builtins_JSEntry [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+18: 0x100e98004 v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+19: 0x100e97450 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, int, v8::internal::Handle<v8::internal::Object>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+20: 0x100d71d28 v8::Function::Call(v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+21: 0x100b0b8a8 node::PrepareStackTraceCallback(v8::Local<v8::Context>, v8::Local<v8::Value>, v8::Local<v8::Array>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+22: 0x100eb4420 v8::internal::Isolate::RunPrepareStackTraceCallback(v8::internal::Handle<v8::internal::Context>, v8::internal::Handle<v8::internal::JSObject>, v8::internal::Handle<v8::internal::JSArray>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+23: 0x100ebb004 v8::internal::ErrorUtils::FormatStackTrace(v8::internal::Isolate*, v8::internal::Handle<v8::internal::JSObject>, v8::internal::Handle<v8::internal::Object>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+24: 0x100ebea64 v8::internal::ErrorUtils::GetFormattedStack(v8::internal::Isolate*, v8::internal::Handle<v8::internal::JSObject>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+25: 0x100dc2e78 v8::internal::Accessors::ErrorStackGetter(v8::Local<v8::Name>, v8::PropertyCallbackInfo<v8::Value> const&) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+26: 0x1011d9594 v8::internal::Object::GetPropertyWithAccessor(v8::internal::LookupIterator*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+27: 0x1011d8ca0 v8::internal::Object::GetProperty(v8::internal::LookupIterator*, bool) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+28: 0x1012f29dc v8::internal::Runtime::GetObjectProperty(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, bool*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+29: 0x1012f4d3c v8::internal::Runtime_GetProperty(int, unsigned long*, v8::internal::Isolate*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+30: 0x10164cc44 Builtins_CEntry_Return1_ArgvOnStack_NoBuiltinExit [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+31: 0x106b70cdc
+32: 0x106b78354
+33: 0x106b7afcc
+34: 0x1015c250c Builtins_JSEntryTrampoline [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+35: 0x1015c21f4 Builtins_JSEntry [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+36: 0x100e98004 v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+37: 0x100e97450 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, int, v8::internal::Handle<v8::internal::Object>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+38: 0x100d71d28 v8::Function::Call(v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+39: 0x100bd5738 node::errors::TriggerUncaughtException(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Message>, bool) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+40: 0x100ebac64 v8::internal::MessageHandler::ReportMessageNoExceptions(v8::internal::Isolate*, v8::internal::MessageLocation const*, v8::internal::Handle<v8::internal::Object>, v8::Local<v8::Value>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+41: 0x100ebab08 v8::internal::MessageHandler::ReportMessage(v8::internal::Isolate*, v8::internal::MessageLocation const*, v8::internal::Handle<v8::internal::JSMessageObject>) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+42: 0x100eac988 v8::internal::Isolate::ReportPendingMessages() [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+43: 0x100e9802c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+44: 0x100e97450 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Object>, v8::internal::Handle<v8::internal::Object>, int, v8::internal::Handle<v8::internal::Object>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+45: 0x100d71d28 v8::Function::Call(v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+46: 0x100b7e21c node::Environment::RunTimers(uv_timer_s*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+47: 0x10159e8b8 uv__run_timers [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+48: 0x1015a2118 uv_run [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+49: 0x100b09754 node::SpinEventLoopInternal(node::Environment*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+50: 0x100c149e4 node::NodeMainInstance::Run(node::ExitCode*, node::Environment*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+51: 0x100c1478c node::NodeMainInstance::Run() [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+52: 0x100ba04b0 node::LoadSnapshotDataAndRun(node::SnapshotData const**, node::InitializationResultImpl const*) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+53: 0x100ba07d0 node::Start(int, char**) [/Users/amos/.asdf/installs/nodejs/20.5.1/bin/node]
+54: 0x18965a0e0 start [/usr/lib/dyld]
+Cancelling test run. Press CTRL+c again to exit forcefully.
+```
+
+All this appears to be fixed with just doing the same mock we did before for this error:
+
+```ts
+  beforeAll(() => {
+    HTMLElement.prototype.animate = vi.fn().mockReturnValue({
+      onfinish: null,
+      cancel: vi.fn(),
+    });
+  });
+```
+
+We try address `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` next. We run into the same exact error, so we do the same exact mock. This time, the test still fails with
+
+```
+stderr | src/routes/database/terminal-sessions/TerminalSession.test.ts > Terminal session > can start and send input to command
+Cannot call replaceState(...) before router is initialized
+
+ ❯ src/routes/database/terminal-sessions/TerminalSession.test.ts (1)
+   ❯ Terminal session (1)
+     × can start and send input to command
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/database/terminal-sessions/TerminalSession.test.ts > Terminal session > can start and send input to command
+AssertionError: expected "spy" to be called with arguments: [ undefined, '', …(1) ]
+
+Received:
+
+
+
+Number of calls: 0
+
+ ❯ src/routes/database/terminal-sessions/TerminalSession.test.ts:69:41
+     67|       ).toBeInTheDocument();
+     68|     });
+     69|     expect(window.history.replaceState).toHaveBeenCalle…
+       |                                         ^
+     70|       undefined,
+     71|       "",
+```
+
+We realize that this is because in Svelte 5, `replaceState` as an import from `$app/navigation` is actually defined, even in Vitest -- it just fails when called. We find [this answer](https://stackoverflow.com/a/77346450), and through it find that our `src-svelte/vitest.config.ts` already contains:
+
+```ts
+export default defineConfig({
+  ...,
+  resolve: {
+    alias: {
+      ...,
+      $app: path.resolve("src/vitest-mocks"),
+    },
+  },
+  ...
+});
+```
+
+and we see that our `src-svelte/src/vitest-mocks/navigation.ts` has this already:
+
+```ts
+import { mockStores } from "./stores";
+
+export function goto(url: string) {
+  mockStores.page.set({
+    url: new URL(url, window.location.href),
+    params: {},
+  });
+}
+```
+
+We try to add a new function:
+
+```ts
+export function replaceState(data: any, unused: string, url: string) {
+  mockStores.history.set({ currentUrl: url });
+}
+```
+
+and a new store to go with it in `src-svelte/src/vitest-mocks/stores.ts`:
+
+```ts
+export const mockStores = {
+  ...
+  history: writable({ currentUrl: "http://localhost" }),
+  ...
+};
+```
+
+Unfortunately, it appears that function never gets called, and our test still fails.
+
+We check out `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts`, which has an existing use of `mockStores`. We run into the same `element.animate` problem as before, so we fix that, and run into:
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'hooks')
+ ❯ handle_error ../node_modules/@sveltejs/kit/src/runtime/client/client.js:1623:7
+    1621| function handle_error(error, event) {
+    1622|  if (error instanceof HttpError) {
+    1623|   return error.body;
+       |       ^
+    1624|  }
+    1625|
+ ❯ navigate ../node_modules/@sveltejs/kit/src/runtime/client/client.js:1294:10
+ ❯ _goto ../node_modules/@sveltejs/kit/src/runtime/client/client.js:368:9
+ ❯ Module.goto ../node_modules/@sveltejs/kit/src/runtime/client/client.js:1739:9
+ ❯ Object.restoreConversation src/routes/database/api-calls/[slug]/Actions.svelte:64:5
+ ❯ ../node_modules/svelte/src/index-client.js:128:8
+ ❯ HTMLButtonElement.handleClick src/lib/controls/Button.svelte:24:5
+ ❯ HTMLDivElement.handle_event_propagation ../node_modules/svelte/src/internal/client/dom/elements/events.js:253:10
+ ❯ HTMLDivElement.callTheUserObjectsOperation ../node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30
+ ❯ innerInvokeEventListeners ../node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:350:25
+
+This error originated in "src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "can restore chat conversation". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+```
+
+Scrolling up, we see more of this error:
+
+```
+stderr | src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts > Individual API call > can restore chat conversation
+TypeError: Cannot read properties of undefined (reading 'hooks')
+    at get_navigation_intent (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/client/client.js:1160:18)
+    at navigate (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/client/client.js:1264:17)
+    at _goto (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/client/client.js:368:9)
+    at Module.goto (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/client/client.js:1739:9)
+    at Object.restoreConversation (/Users/amos/Documents/zamm/src-svelte/src/routes/database/api-calls/[slug]/Actions.svelte:64:5)
+    at /Users/amos/Documents/zamm/node_modules/svelte/src/index-client.js:128:8
+    at HTMLButtonElement.handleClick (/Users/amos/Documents/zamm/src-svelte/src/lib/controls/Button.svelte:24:5)
+    at HTMLDivElement.handle_event_propagation (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/dom/elements/events.js:253:10)
+    at HTMLDivElement.callTheUserObjectsOperation (/Users/amos/Documents/zamm/node_modules/jsdom/lib/jsdom/living/generated/EventListener.js:26:30)
+    at innerInvokeEventListeners (/Users/amos/Documents/zamm/node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:350:25)
+The next HMR update will cause the page to reload
+```
+
+If we look at the failing line, it is calling `goto` from `$app/navigation` inside of `src-svelte/src/routes/database/api-calls/[slug]/Actions.svelte`.
+
+From [this comment](https://old.reddit.com/r/sveltejs/comments/pakmb1/has_anyone_managed_to_mock_page_from_appstores/lb9oxc6/) we find out about the possibility of using `vitest.mock`. We try editing `src-svelte/src/vitest-mocks/navigation.ts` to export a replacement for the module:
+
+```ts
+export const mockNavigationModule = () => ({
+  goto,
+  replaceState,
+});
+```
+
+and edit `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts` to import this:
+
+```ts
+import { mockNavigationModule } from "../../../../vitest-mocks/navigation";
+
+vi.mock("$app/navigation", mockNavigationModule);
+```
+
+This produces the error
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts [ src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts ]
+ReferenceError: Cannot access '__vi_import_10__' before initialization
+ ❯ src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts:2:50
+      1| import { expect, test, vi, type Mock } from "vitest";
+      2| import "@testing-library/jest-dom";
+       |                                                  ^
+      3|
+      4| import { render, screen, waitFor, within } from "@testi…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+```
+
+We see from [the documentation](https://vitest.dev/api/vi#vi-mock) that `vi.mock` is "hoisted". Using `vi.doMock` instead just reverts us to the previous behavior.
+
+We finally end up fixing the test in `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.test.ts` after tweaking [this answer](https://stackoverflow.com/a/73363053). Note the need to import `"$app/navigation"` in the test as well, since `vi.mock` will change things even *after* the import is done:
+
+```ts
+...
+import { goto } from "$app/navigation";
+
+vi.mock("$app/navigation", () => {
+  return { goto: vi.fn() };
+});
+
+describe("Individual API call", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    (goto as Mock).mockClear();
+    ...
+  });
+
+  ...
+
+  test("can restore chat conversation", async () => {
+    ...
+    expect(goto).toBeCalledTimes(0);
+    ...
+    expect(goto).toBeCalledWith("/chat");
+  });
+
+  // ditto for the rest of the tests in the file
+});
+```
+
+With the success of this test, we fix `src-svelte/src/routes/database/terminal-sessions/TerminalSession.test.ts` as well:
+
+```ts
+import { replaceState } from "$app/navigation";
+
+vi.mock("$app/navigation", () => {
+  return { replaceState: vi.fn() };
+});
+
+describe("Terminal session", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    (replaceState as Mock).mockClear();
+    ...
+  });
+
+  ...
+
+  test("can start and send input to command", async () => {
+    ...
+    expect(replaceState).toBeCalledWith(
+      "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+      undefined,
+    );
+    ...
+  });
+});
+
+```
+
+We then also edit `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` to simplify the logic without using `if (replaceState)`, since the workaround for test code is no longer needed anymore:
+
+```ts
+  async function sendCommand(newInput: string) {
+    ...
+      const newUrl = ...;
+      replaceState(newUrl, $page.state);
+    ...
+  }
+```
+
+We add comment TODO markets in `src-svelte/src/vitest-mocks/navigation.ts`:
+
+```ts
+// todo: remove because no longer useful in Svelte 5 with vitest
+export function goto(url: string) {
+  ...
+}
+```
+
+and `src-svelte/src/vitest-mocks/stores.ts`:
+
+```ts
+// todo: remove file because no longer useful in Svelte 5 with vitest
+```
+
+to remind ourselves to clean up these files later.
+
+Next we turn our attention to `src/routes/database/DatabaseView.test.ts`. The file `src-svelte/src/routes/database/DatabaseView.test.ts` has the same `element.animate` error, and after we fix that:
+
+```ts
+describe("Database View", () => {
+  ...
+
+  beforeAll(() => {
+    HTMLElement.prototype.animate = vi.fn().mockReturnValue({
+      onfinish: null,
+      cancel: vi.fn(),
+    });
+  });
+
+  ...
+});
+```
+
+we also get the error
+
+```
+stderr | src/routes/database/DatabaseView.test.ts > Database View > can switch to rendering terminal sessions list
+No matching call found for ["get_api_calls",{"offset":0}].
+Candidates are ["get_terminal_sessions",{"offset":0}]
+No matching call found for ["get_api_calls",{"offset":0}].
+Candidates are ["get_terminal_sessions",{"offset":0}]
+```
+
+So, we move the call to `resetDataType();` from `afterEach` to `beforeEach`, but this doesn't change anything.
+
+We also get the error
+
+```
+ FAIL  src/routes/database/DatabaseView.test.ts > Database View > renders LLM calls by default
+Error: expect(element).toHaveTextContent()
+
+Expected element to have text content:
+  LLM API Calls
+Received:
+
+ ❯ src/routes/database/DatabaseView.test.ts:66:41
+     64|     });
+     65|
+     66|     expect(screen.getByRole("heading")).toHaveTextConte…
+       |                                         ^
+     67|     await waitFor(() => expect(tauriInvokeMock).toHaveR…
+     68|     await waitFor(() => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+```
+
+This is because the animation never finishes in the mocked tests. We can clearly see this if we do some debug logging in `src-svelte/src/lib/InfoBox.svelte`:
+
+```ts
+  class TypewriterEffect extends SubAnimation<void> {
+    constructor(anim: ...) {
+      super({
+        ...,
+        tick: (tLocalFraction: number) => {
+          console.log(`ticking at ${tLocalFraction}`);
+          ...
+        },
+      });
+    }
+  }
+```
+
+We then see no record of any animation ticks being rendered past 0:
+
+```
+
+stdout | src/routes/database/DatabaseView.test.ts > Database View > renders LLM calls by default
+ticking at 0
+
+stdout | src/routes/database/DatabaseView.test.ts > Database View > can switch to rendering terminal sessions list
+ticking at 0
+
+stderr | src/routes/database/DatabaseView.test.ts > Database View > can switch to rendering terminal sessions list
+Shadow not mounted
+Container or scrollable not mounted
+
+stderr | src/routes/database/DatabaseView.test.ts > Database View > can switch to rendering terminal sessions list
+No matching call found for ["get_api_calls",{"offset":0}].
+Candidates are ["get_terminal_sessions",{"offset":0}]
+No matching call found for ["get_api_calls",{"offset":0}].
+Candidates are ["get_terminal_sessions",{"offset":0}]
+```
+
+[This GitHub comment](https://github.com/testing-library/svelte-testing-library/issues/284#issuecomment-2455090535) doesn't appear to help either. If we trace the animation cancel function, we see that in this case it appears to be called when the component unmounts:
+
+```
+stderr | src/routes/database/DatabaseView.test.ts > Database View > renders LLM calls by default
+Trace:
+    at Object.cancel (/Users/amos/Documents/zamm/src-svelte/src/routes/database/DatabaseView.test.ts:46:17)
+    at Object.abort (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/dom/elements/transitions.js:432:15)
+    at Object.stop (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/dom/elements/transitions.js:268:11)
+    at destroy_effect (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/reactivity/effects.js:439:15)
+    at destroy_effect_children (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/reactivity/effects.js:383:3)
+    at destroy_effect (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/reactivity/effects.js:430:2)
+    at /Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/reactivity/effects.js:226:3
+    at Module.unmount (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/render.js:282:3)
+    at /Users/amos/Documents/zamm/node_modules/@testing-library/svelte/src/core/modern.svelte.js:40:62
+    at Module.flush_sync (/Users/amos/Documents/zamm/node_modules/svelte/src/internal/client/runtime.js:702:20)
+```
+
+After noodling around for a while and discovering the `onintrostart` and `onintroend` functions, we submit [our own update](https://github.com/testing-library/svelte-testing-library/issues/284#issuecomment-2493424952) to the issue. `onintrostart` gets called and so does `tick` at the beginning of the animation, but not `onintroend` nor `tick` at the end. The response recommends browser mode, so we try doing that after realizing that there in fact does appear to be [a way](https://vitest.dev/guide/workspace) to keep tests running in both browser and non-browser mode:
+
+```bash
+$ yarn add -D @vitest/browser
+```
+
+We try to create `src-svelte/vitest.workspace.ts` as such:
+
+```ts
+import { defineWorkspace } from 'vitest/config'
+
+const defaultTestConfig = {
+  globals: true,
+  globalSetup: "src/testSetup.ts",
+  poolOptions: {
+    threads: {
+      singleThread: true,
+    },
+  },
+};
+
+export default defineWorkspace([
+  {
+    test: {
+      ...defaultTestConfig,
+      include: ["src/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
+      environment: "jsdom",
+    },
+  },
+  {
+    test: {
+      name: 'browser',
+      include: ["src/**/*.browser.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
+      browser: {
+        provider: 'playwright',
+        enabled: true,
+        name: 'chromium',
+      },
+    },
+  },
+])
+
+```
+
+One of the errors we get after trying a couple of times is:
+
+```
+$ yarn vitest src/routes/database/DatabaseView.browser.test.ts
+yarn run v1.22.22
+$ /Users/amos/Documents/zamm/node_modules/.bin/vitest src/routes/database/DatabaseView.browser.test.ts
+9:52:20 PM [vite-plugin-svelte] WARNING: The following packages have a svelte field in their package.json but no exports condition for svelte.
+
+@rgossiaux/svelte-headlessui@2.0.0
+
+Please see https://github.com/sveltejs/vite-plugin-svelte/blob/main/docs/faq.md#missing-exports-condition for details.
+Loaded  vitest@2.1.4  and  @vitest/browser@2.1.5 .
+Running mixed versions is not supported and may lead into bugs
+Update your dependencies and make sure the versions match.
+WebSocket server error: Port is already in use
+WebSocket server error: Port is already in use
+
+ DEV  v2.1.4 /Users/amos/Documents/zamm/src-svelte
+      [browser] Browser runner started by playwright at http://localhost:63315/
+
+
+ Test Files  no tests
+      Tests  no tests
+   Start at  21:52:20
+   Duration  8ms (transform 3ms, setup 0ms, collect 0ms, tests 0ms, environment 0ms, prepare 0ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: Failed to load url $lib/test-helpers (resolved id: $lib/test-helpers) in /Users/amos/Documents/zamm/src-svelte/src/testSetup.ts. Does the file exist?
+ ❯ loadAndTransform ../node_modules/vitest/node_modules/vite/dist/node/chunks/dep-stQc5rCc.js:53572:21
+ ❯ ViteNodeServer._transformRequest ../node_modules/vite-node/dist/server.mjs:532:16
+ ❯ ViteNodeServer._fetchModule ../node_modules/vite-node/dist/server.mjs:499:17
+ ❯ ViteNodeRunner.directRequest ../node_modules/vite-node/dist/client.mjs:277:46
+ ❯ ViteNodeRunner.cachedRequest ../node_modules/vite-node/dist/client.mjs:206:14
+ ❯ ViteNodeRunner.dependencyRequest ../node_modules/vite-node/dist/client.mjs:259:12
+ ❯ src/testSetup.ts:1:31
+ ❯ ViteNodeRunner.runModule ../node_modules/vite-node/dist/client.mjs:399:5
+ ❯ ViteNodeRunner.directRequest ../node_modules/vite-node/dist/client.mjs:381:5
+ ❯ ViteNodeRunner.cachedRequest ../node_modules/vite-node/dist/client.mjs:206:14
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: 'ERR_LOAD_URL' }
+
+```
+
+It appears Vitest is now unable to find the `$lib` import. We try renaming `src-svelte/vitest.workspace.ts` to something that `vitest` won't recognize, such as `src-svelte/vitest.workspace.ts.debug`, and then editing `src-svelte/vitest.config.ts` to enable browser mode:
+
+```ts
+export default defineConfig({
+  ...,
+  test: {
+    ...
+    // environment: "jsdom",
+    browser: {
+      provider: 'playwright',
+      enabled: true,
+      name: 'chromium',
+    },
+    ...
+  },
+});
+```
+
+We run into a whole bunch of errors:
+
+```
+...
+
+✘ [ERROR] No matching export in "html:/Users/amos/Documents/zamm/src-svelte/src/routes/PageTransition.svelte" for import "pageTransition"
+
+    src/routes/database/terminal-sessions/TerminalSession.test.ts:11:9:
+      11 │ import { pageTransition } from "../../PageTransition.svelte";
+         ╵          ~~~~~~~~~~~~~~
+
+
+✘ [ERROR] No matching export in "html:/Users/amos/Documents/zamm/src-svelte/src/lib/snackbar/Snackbar.svelte" for import "clearAllMessages"
+
+    src/routes/settings/Database.test.ts:5:19:
+      5 │ import Snackbar, { clearAllMessages } from "$lib/snackbar/Snackbar....
+        ╵                    ~~~~~~~~~~~~~~~~
+
+
+    at failureErrorWithLog (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1651:15)
+    at /Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1059:25
+    at runOnEndCallbacks (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1486:45)
+    at buildResponseToResult (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1057:7)
+    at /Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1069:9
+    at new Promise (<anonymous>)
+    at requestCallbacks.on-end (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:1068:54)
+    at handleRequest (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:732:17)
+    at handleIncomingPacket (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:757:7)
+    at Socket.readFromStdout (/Users/amos/Documents/zamm/node_modules/vitest/node_modules/esbuild/lib/main.js:680:7)
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/dist/runners.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/dist/chunks/setup-common.DDmVKp6O.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/node_modules/@vitest/snapshot/dist/index.js" points to missing source files
+SvelteKitError: Not found: /favicon.ico
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:530:13)
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:330:5)
+    at #options.hooks.handle (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/index.js:71:56)
+    at Module.respond (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:327:40) {
+  status: 404,
+  text: 'Not Found'
+}
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/chunk-FTJTBIUN.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/chunk-YPVHU3AH.js" points to missing source files
+9:56:47 PM [vite] ✨ new dependencies optimized: @testing-library/jest-dom, @testing-library/svelte, @testing-library/user-event, js-yaml, lodash, @tauri-apps/api/core, @tauri-apps/api/event, @tauri-apps/api/webviewWindow, nanoid/non-secure
+9:56:47 PM [vite] ✨ optimized dependencies changed. reloading
+
+[vitest] Vite unexpectedly reloaded a test. This may cause tests to fail, lead to flaky behaviour or duplicated test runs.
+For a stable experience, please add mentioned dependencies to your config's `optimizeDeps.include` field manually.
+
+
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/@testing-library_jest-dom.js" points to missing source files
+ ❯ src/routes/database/DatabaseView.browser.test.ts (0)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/database/DatabaseView.browser.test.ts [ src/routes/database/DatabaseView.browser.test.ts ]
+ReferenceError: process is not defined
+ ❯ ../../../../../node_modules/.vite/deps/@testing-library_svelte.js:278:41
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+```
+
+We had tried commenting out the `jsdom` environment line because it would appear that it would be redundant at best if we were using browser mode, but it appears that that is not the case:
+
+```
+$ yarn vitest src/routes/database/DatabaseView.browser.test.ts
+yarn run v1.22.22
+$ /Users/amos/Documents/zamm/node_modules/.bin/vitest src/routes/database/DatabaseView.browser.test.ts
+9:59:19 PM [vite-plugin-svelte] WARNING: The following packages have a svelte field in their package.json but no exports condition for svelte.
+
+@rgossiaux/svelte-headlessui@2.0.0
+
+Please see https://github.com/sveltejs/vite-plugin-svelte/blob/main/docs/faq.md#missing-exports-condition for details.
+Loaded  vitest@2.1.4  and  @vitest/browser@2.1.5 .
+Running mixed versions is not supported and may lead into bugs
+Update your dependencies and make sure the versions match.
+9:59:19 PM [vite-plugin-svelte] WARNING: The following packages have a svelte field in their package.json but no exports condition for svelte.
+
+@rgossiaux/svelte-headlessui@2.0.0
+
+Please see https://github.com/sveltejs/vite-plugin-svelte/blob/main/docs/faq.md#missing-exports-condition for details.
+The following Vite config options will be overridden by SvelteKit:
+  - base
+
+ DEV  v2.1.4 /Users/amos/Documents/zamm/src-svelte
+      Browser runner started by playwright at http://localhost:63315/
+
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/dist/runners.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/node_modules/@vitest/snapshot/dist/index.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/node_modules/vitest/dist/chunks/setup-common.DDmVKp6O.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/@testing-library_jest-dom.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/chunk-YPVHU3AH.js" points to missing source files
+Sourcemap for "/Users/amos/Documents/zamm/src-svelte/node_modules/.vite/deps/chunk-FTJTBIUN.js" points to missing source files
+SvelteKitError: Not found: /favicon.ico
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:530:13)
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:330:5)
+    at #options.hooks.handle (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/index.js:71:56)
+    at Module.respond (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:327:40) {
+  status: 404,
+  text: 'Not Found'
+}
+ ❯ src/routes/database/DatabaseView.browser.test.ts (0)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/database/DatabaseView.browser.test.ts [ src/routes/database/DatabaseView.browser.test.ts ]
+ReferenceError: process is not defined
+ ❯ ../../../../../node_modules/.vite/deps/@testing-library_svelte.js:278:41
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  21:59:19
+   Duration  1.68s (transform 119ms, setup 0ms, collect 0ms, tests 0ms, environment 0ms, prepare 200ms)
+```
+
+We see from [this comment](https://github.com/vitejs/vite/issues/1973#issuecomment-787571499) that we can perhaps fix the issue by simply adding:
+
+```ts
+export default defineConfig({
+  ...,
+  define: {
+    'process.env': {}
+  },
+  ...
+};
+```
+
+Now the tests finally fail in a more conventional manner:
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/database/DatabaseView.browser.test.ts > Database View > renders LLM calls by default
+ FAIL  src/routes/database/DatabaseView.browser.test.ts > Database View > can switch to rendering terminal sessions list
+Error: Module "fs" has been externalized for browser compatibility. Cannot access "fs.readFileSync" in client code.  See https://vitejs.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+ ❯ Object.get ../../../../../@id/__vite-browser-external:fs:3:11
+ ❯ parseSampleCall src/lib/sample-call-testing.ts:40:11
+     38|   const sample_call_yaml =
+     39|     typeof process === "object"
+     40|       ? fs.readFileSync(sampleFile, "utf-8")
+       |           ^
+     41|       : loadYamlFromNetwork(sampleFile);
+     42|   const sample_call_json = JSON.stringify(yaml.load(sam…
+ ❯ src/lib/sample-call-testing.ts:124:48
+ ❯ TauriInvokePlayback.addSamples src/lib/sample-call-testing.ts:124:30
+ ❯ src/routes/database/DatabaseView.browser.test.ts:54:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+```
+
+We need to figure out a way to load sample call files in Vitest's browser mode. We see that we can [import](https://vitest.dev/guide/browser/commands) a server module and edit `src-svelte/src/lib/sample-call-testing.ts` as such:
+
+```ts
+import { server } from '@vitest/browser/context';
+
+const { readFile } = server.commands
+
+export function parseSampleCall(sampleFile: string): ParsedCall {
+  const sample_call_yaml =
+    typeof process === "object"
+      ? readFile(sampleFile)
+      : ...;
+  ...
+}
+```
+
+Unfortunately, we now get
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+Vitest caught 2 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: ENOENT: no such file or directory, open '/Users/amos/Documents/zamm/src-svelte/src/routes/src-tauri/api/sample-calls/get_api_calls-small.yaml'
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: ENOENT: no such file or directory, open '/Users/amos/Documents/zamm/src-svelte/src/routes/src-tauri/api/sample-calls/get_api_calls-small.yaml'
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+It appears the relative path `..` is not being resolved correctly. We see from [this comment](https://github.com/vitest-dev/vitest/discussions/5828#discussioncomment-9830174) that we can edit `src-svelte/vitest.config.ts` again to specify the public folder:
+
+```ts
+export default defineConfig({
+  ...,
+  publicDir: "../src-tauri",
+  ...
+}
+```
+
+and then we try editing the paths at `src-svelte/src/routes/database/DatabaseView.browser.test.ts` accordingly, and the retrieval code at `src-svelte/src/lib/sample-call-testing.ts`.
+
+Unfortunately, this does not appear to work -- the URL `http://localhost:63315/api/sample-calls/get_api_calls-small.yaml` still just returns the HTML
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="../../favicon.png" />
+    <meta name="viewport" content="width=device-width" />
+    
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">
+			<script>
+				{
+					__sveltekit_dev = {
+						base: new URL("../..", location).pathname.slice(0, -1),
+						env: {}
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/@fs/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/client/entry.js"),
+						import("/@fs/Users/amos/Documents/zamm/src-svelte/.svelte-kit/generated/client/app.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+  </body>
+</html>
+```
+
+The commandline produces similar errors:
+
+```
+SvelteKitError: Not found: /favicon.ico
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:530:13)
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:330:5)
+    at #options.hooks.handle (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/index.js:71:56)
+    at Module.respond (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:327:40) {
+  status: 404,
+  text: 'Not Found'
+}
+SvelteKitError: Not found: /api/sample-calls/get_api_calls-small.yaml
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:530:13)
+    at resolve (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:330:5)
+    at #options.hooks.handle (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/index.js:71:56)
+    at Module.respond (/Users/amos/Documents/zamm/node_modules/@sveltejs/kit/src/runtime/server/respond.js:327:40)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+  status: 404,
+  text: 'Not Found'
+}
+```
+
+Scrolling further up, we see this relevant message:
+
+```
+The following Vite config options will be overridden by SvelteKit:
+  - base
+  - publicDir
+```
+
+It is unclear how to resolve this -- it does not appear that there is a great way to set a test-only public directory config for SvelteKit.
+
+We finally just use the tried and true method of running tests in Playwright with Storybook. We edit the existing test in `src-svelte/src/routes/database/DatabaseView.playwright.test.ts` to cover our intended use case, changing its name from `"updates title when changing dropdown"`:
+
+```ts
+  test(
+    "updates title and links when changing dropdown",
+    ...,
+    async () => {
+      ...
+      await expect(frame.locator("h2")).toHaveText("LLM API Calls", ...);
+      const linkToApiCall = frame.locator("a:has-text('Mocking number 59.')");
+      await expect(linkToApiCall).toHaveAttribute(
+        "href",
+        "/database/api-calls/d5ad1e49-f57f-4481-84fb-4d70ba8a7a59/",
+      );
+
+      ...
+      await expect(frame.locator("h2")).toHaveText("Terminal Sessions", ...);
+      const linkToTerminalSession = frame.locator("a:has-text('python api')");
+      await expect(linkToTerminalSession).toHaveAttribute(
+        "href",
+        "/database/terminal-sessions/3717ed48-ab52-4654-9f33-de5797af5118/",
+      );
+    },
+  );
+```
+
+We also edit `src-svelte/src/routes/database/DatabaseView.stories.ts` to avoid erroring when switching to terminal sessions:
+
+```ts
+Small.parameters = {
+  ...
+  sampleCallFiles: [
+    "/api/sample-calls/get_api_calls-small.yaml",
+    "/api/sample-calls/get_terminal_sessions-small.yaml",
+  ],
+};
+```
+
+Next, we go to `src-svelte/src/routes/settings/Database.test.ts`. Mocking `HTMLElement.prototype.animate` is all that is needed to fix the tests here. Ditto for `src-svelte/src/routes/settings/Settings.test.ts`.
+
+Two tests in `src/routes/chat/Chat.test.ts` are fixed this way, but not the rest. An error we see is
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: Textarea input not found
+ ❯ src/lib/controls/SendInputForm.svelte:70:12
+     68|   class="atomic-reveal cut-corners outer"
+     69|   autocomplete="off"
+     70|   onsubmit={preventDefault(submitInput)}
+       |            ^
+     71| >
+     72|   <label for="message" class="accessibility-only">{acce…
+ ❯ invokeTheCallbackFunction ../node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26
+ ❯ runAnimationFrameCallbacks ../node_modules/jsdom/lib/jsdom/browser/Window.js:662:13
+ ❯ Timeout._onTimeout ../node_modules/jsdom/lib/jsdom/browser/Window.js:640:11
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+
+This error originated in "src/routes/chat/Chat.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "persists chat text after returning to it". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+```
+
+As we continue editing the file, we find that the quoted line in the error is completely off. For example, we still see
+
+```
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Error: Textarea input not found
+ ❯ src/lib/controls/SendInputForm.svelte:69:12
+     68|   onsubmit={submitInput}
+     69| >
+     70|   <label for="message" class="accessibility-only">{acce…
+       |          ^
+     71|   <textarea
+     72|     id="message"
+ ❯ invokeTheCallbackFunction ../node_modules/jsdom/lib/jsdom/living/generated/Function.js:19:26
+ ❯ runAnimationFrameCallbacks ../node_modules/jsdom/lib/jsdom/browser/Window.js:662:13
+ ❯ Timeout._onTimeout ../node_modules/jsdom/lib/jsdom/browser/Window.js:640:11
+ ❯ listOnTimeout node:internal/timers:573:17
+ ❯ processTimers node:internal/timers:514:7
+```
+
+even though it is clearly not the relevant line. Even cleaning and rebuilding does not help our case, so we give up on fixing the error output. In other errors, we see
+
+```
+
+ FAIL  src/routes/chat/Chat.test.ts > Chat conversation > can start and continue a conversation
+TypeError: Cannot read properties of undefined (reading 'text')
+ ❯ sendChatMessage src/routes/chat/Chat.test.ts:97:52
+     95|     const lastResult: LightweightLlmCall =
+     96|       tauriInvokeMock.mock.results[0].value;
+     97|     const aiResponse = lastResult.response_message.text;
+       |                                                    ^
+     98|     const lastSentence = aiResponse.split("\n").slice(-…
+     99|     await waitFor(() => {
+ ❯ src/routes/chat/Chat.test.ts:113:5
+```
+
+From logging, we see
+
+```
+stdout | src/routes/chat/Chat.test.ts > Chat conversation > listens for updates to conversation store
+[ { type: 'return', value: Promise { [Object] } } ]
+```
+
+We fix this by being more explicit with our tests and editing `src-svelte/src/routes/chat/Chat.test.ts` to take in the hardcoded expected value instead of reading it from the sample call file, because clearly something about mocked return values has changed now:
+
+```ts
+  async function sendChatMessage(
+    message: ...,
+    expectedAiResponse: string,
+    correspondingApiCallSample: ...,
+  ) {
+    ...
+    expect(tauriInvokeMock).toHaveReturnedTimes(...);
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          new RegExp(expectedAiResponse.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        ),
+      ).toBeInTheDocument();
+    });
+    ...
+  }
+
+  test("can start and continue a conversation", async () => {
+    ...
+    await sendChatMessage(
+      "Hello, does this work?",
+      "Yes, it works. How can I assist you today?",
+      ...
+    );
+    await sendChatMessage(
+      "Tell me something funny.",
+      "Sure, here's a joke for you",
+      ...
+    );
+  });
+
+  // repeat for all other tests
+```
+
+While the test assertions now pass, the tests still end up causing uncaught errors to be thrown, which Vitest understandably does not like. We edit `src-svelte/src/lib/controls/SendInputForm.svelte` to fix this by merely logging a console error, and also to remove the deprecated `import { preventDefault } from "svelte/legacy";` import where `textareaInput` is incorrectly made to be a `$state`:
+
+```svelte
+<script lang="ts">
+  ...
+  let textareaInput: HTMLTextAreaElement | null = null;
+  ...
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (...) {
+      ...
+      submitInput(event);
+    }
+  }
+
+  function submitInput(e: Event) {
+    e.preventDefault();
+    ...
+      requestAnimationFrame(() => {
+        if (!textareaInput) {
+          console.error("Textarea input not found");
+          return;
+        }
+        ...
+      });
+    ...
+  }
+</script>
+
+<form
+  ...
+  onsubmit={submitInput}
+>
+  ...
+</form>
+```
 
 ### Storybook TypeScript decorators
 

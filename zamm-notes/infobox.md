@@ -2708,7 +2708,7 @@ This allows us to do a staggered fade-in for a new chat, but fading in an entire
 - hiding the scrollbars during the reveal
 - recalculating fade timing when chat messages are long enough to require scrolling
 
-We leave this for the future, and just edit `src-svelte/src/routes/chat/Chat.stories.ts` in the meantime to take out the args from the `FullPage` story.
+We leave this for the future, and just edit `src-svelte/src/routes/chat/Chat.stories.ts` in the meantime to take out the args from the `FullPage` story. Scrollbar hiding is done in [`credits.md`](/zamm-notes/credits.md), but does not work in Safari.
 
 ### Minimum reproducible example
 

@@ -26,10 +26,16 @@ Once you try to do that, you get the additional message
 
 You'll have to restart twice: once to allow kernel extensions, then another time to actually enable that specific kernel extension. Once you do so, the external volume will no longer be mounted under `/Volumes/`, but instead under your home directory at (for example) `/Users/amos/.mounty/external`.
 
-## Decoupling mouse versus trackpad scrolling
+## Mouse behavior
+
+### Decoupling mouse versus trackpad scrolling
 
 We find [a Reddit thread](https://www.reddit.com/r/apple/comments/zlurhe/how_has_apple_still_not_fixed_natural_scrolling/), which links to [this site](https://pilotmoon.com/scrollreverser/), which tells us we just need to do:
 
 ```bash
 $ brew install scroll-reverser
 ```
+
+### Mapping side buttons
+
+To simply use back/forward buttons, install [SensibleSideButtons](https://sensible-side-buttons.archagon.net). To do more advanced button mapping, install [Mac Mouse Fix](https://mousefix.org/), which is a paid app.

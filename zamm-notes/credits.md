@@ -1172,7 +1172,17 @@ We find that adding the scrollbars in can shift the layout. We don't want this j
   }
 ```
 
-instead of `overflow-y: hidden`.
+instead of `overflow-y: hidden`. Unfortunately, it turns out Safari doesn't support the `scrollbar-color` property, and doing
+
+```css
+  :global(.wait-for-infobox) .scroll-contents::-webkit-scrollbar {
+    visibility: hidden;
+  }
+```
+
+causes the scrollbar to be hidden even after the infobox transition finishes on the Mac. Moreover, this only has an effect in Safari; the scrollbar on Webkit for ZAMM remains completely unchanged. Using `-webkit-appearance: none;` as [this answer](https://stackoverflow.com/a/47346557) suggests doesn't change anything. On the other hand, setting `overflow-y: hidden;` as [this answer](https://stackoverflow.com/a/25561646) suggests works, but then the contents are rearranged as the sidebar comes into view, which is one of the things we had wanted to avoid in the first place. The padding trick doesn't work here either.
+
+We finally just give up on making this work for the Mac, as there doesn't appear to be any way to do so smoothly without negatively impacting how it looks on other platforms. We could do a custom check for whether the OS is Mac and then applying OS-specific CSS, but that would introduce too much complexity for now.
 
 After these changes, we are ready for the end-to-end test. We edit `webdriver\test\specs\e2e.test.js`:
 
