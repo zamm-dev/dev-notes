@@ -2385,6 +2385,577 @@ While the test assertions now pass, the tests still end up causing uncaught erro
 </form>
 ```
 
+Next, we tackle `src/routes/database/terminal-sessions/UnloadedTerminalSession.test.ts`. The regular `element.animate` mock is all we need to fix this file. The same is true for `src/routes/AppLayout.test.ts`.
+
+`src/routes/database/api-calls/new/ApiCallEditor.test.ts` has more errors:
+
+```
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of undefined (reading 'hooks')
+ ❯ handle_error ../node_modules/@sveltejs/kit/src/runtime/client/client.js:1623:7
+    1621| function handle_error(error, event) {
+    1622|  if (error instanceof HttpError) {
+    1623|   return error.body;
+       |       ^
+    1624|  }
+    1625|
+```
+
+We apply the previous fix again for `$app/navigation`, where we do
+
+```ts
+...
+import { goto } from "$app/navigation";
+
+vi.mock("$app/navigation", () => {
+  return { goto: vi.fn() };
+});
+
+describe("API call editor", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+
+    (goto as Mock).mockClear();
+  });
+
+  ...
+});
+```
+
+and all `expect(get(mockStores.page).url.pathname).toEqual(...)` get replaced by `expect(goto).toBeCalledWith(...)`.
+
+When we test just that file, we run into
+
+```
+
+ FAIL  src-svelte/src/routes/database/api-calls/new/ApiCallEditor.test.ts [ src-svelte/src/routes/database/api-calls/new/ApiCallEditor.test.ts ]
+ReferenceError: expect is not defined
+ ❯ node_modules/@testing-library/jest-dom/dist/index.mjs:10:1
+ ❯ src-svelte/src/routes/database/api-calls/new/ApiCallEditor.test.ts:5:1
+      3| import { render, screen, waitFor } from "@testing-libra…
+      4| import ApiCallEditor, {
+      5|   canonicalRef,
+       | ^
+      6|   prompt,
+      7|   provider,
+```
+
+It does not happen again when we rerun the test.
+
+We can now delete the entire `src-svelte/src/vitest-mocks` folder.
+
+We add the `element.animate` mock to `src-svelte/src/routes/components/api-keys/Display.test.ts`, but only the tests that don't depend on animations pass. We edit `src-svelte/src/routes/components/api-keys/Display.stories.ts` to include a default shell init file for the "Unknown" Storybook story:
+
+```ts
+Unknown.parameters = {
+  ...,
+  stores: {
+    systemInfo: {
+      shell_init_file: ".bashrc",
+    },
+  },
+  ...
+};
+```
+
+We then create the file `src-svelte/src/routes/components/api-keys/Display.playwright.test.ts` as such, to replace just two of the remaining failing tests first:
+
+```ts
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  expect,
+  type Frame,
+  type Page,
+} from "@playwright/test";
+import { afterAll, beforeAll, describe, test } from "vitest";
+import {
+  PLAYWRIGHT_TIMEOUT,
+  PLAYWRIGHT_TEST_TIMEOUT,
+  getStorybookFrame,
+} from "$lib/test-helpers";
+
+describe("Snackbar", () => {
+  let page: Page;
+  let browser: Browser;
+  let context: BrowserContext;
+  const openAiRowLocator = "div.row:has-text('OpenAI')";
+
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: false });
+    context = await browser.newContext();
+    context.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  beforeEach(async () => {
+    page = await context.newPage();
+    page.setDefaultTimeout(PLAYWRIGHT_TIMEOUT);
+  });
+
+  async function toggleOpenAIForm(frame: Frame) {
+    await frame.click(openAiRowLocator);
+  }
+
+  test(
+    "can open and close form",
+    { timeout: PLAYWRIGHT_TEST_TIMEOUT },
+    async () => {
+      const frame = await getStorybookFrame(
+        page,
+        `http://localhost:6006/?path=/story/screens-dashboard-api-keys-display--known`,
+      );
+      const form = frame.locator("form");
+      await expect(form).not.toBeVisible();
+
+      await toggleOpenAIForm(frame);
+      await expect(form).toBeVisible();
+
+      await toggleOpenAIForm(frame);
+      await expect(form).not.toBeVisible();
+    },
+  );
+
+  test(
+    "can edit API key",
+    { timeout: PLAYWRIGHT_TEST_TIMEOUT },
+    async () => {
+      const frame = await getStorybookFrame(
+        page,
+        `http://localhost:6006/?path=/story/screens-dashboard-api-keys-display--unknown`,
+      );
+      const openAiRow = frame.locator(openAiRowLocator);
+      await expect(openAiRow.locator(".api-key")).toHaveText("Inactive");
+
+      const form = frame.locator("form");
+      await toggleOpenAIForm(frame);
+      await expect(form).toBeVisible();
+
+      await form.getByLabel("API key:").fill("0p3n41-4p1-k3y");
+      await form.getByRole("button", { name: "Save" }).click();
+      await expect(form).not.toBeVisible();
+      await expect(openAiRow.locator(".api-key")).toHaveText("Active");
+    },
+  );
+});
+```
+
+Somehow this test fails. The story works as expected when done manually, just not here. We edit `src-svelte/src/routes/components/api-keys/Form.svelte` to remove the deprecated `preventDefault` from `svelte/legacy`, and also log the field values that the submission function is working with:
+
+```svelte
+<script lang="ts">
+  ...
+
+  function submitApiKey(e: Event) {
+    e.preventDefault();
+    console.log(fields);
+    ...
+  }
+
+  ...
+</script>
+
+<div class="container" ...>
+  <div ...>
+    <form onsubmit={submitApiKey}>
+      ...
+    </form>
+  </div>
+</div>
+```
+
+Interestingly enough, the browser outputs
+
+```
+[snapshot] {apiKey: '0p3n41-4p1-k3y', saveKey: true, saveKeyLocation: '.bashrc'}
+
+Proxy(Object) {apiKey: '', saveKey: true, saveKeyLocation: ''}
+```
+
+It appears that this is because `src-svelte/src/routes/components/api-keys/Service.svelte` now has form fields that are defined as a `$state`:
+
+```ts
+  let formFields: FormFields = $state({
+    apiKey: "",
+    saveKey: true,
+    saveKeyLocation: "",
+  });
+```
+
+We notice the deprecated legacy `run` method being used here as well, so we take the opportunity to update
+
+```ts
+  $effect(() => {
+    updateFormFields(editing);
+  });
+```
+
+While verifying that reactivity works and that the display is correctly updating with updated values, we also take the chance to simplify `src-svelte/src/routes/components/api-keys/Display.svelte` after the migration script created an indirection with:
+
+```ts
+  import { apiKeys as apiKeysStore } from "$lib/system-info";
+
+  let apiKeys = $derived($apiKeysStore);
+```
+
+Instead, we restore it to
+
+```svelte
+<script lang="ts">
+  ...
+  import { apiKeys } from "$lib/system-info";
+
+  ...
+
+  onMount(() => {
+    unwrap(...)
+      .then((keys) => {
+        apiKeys.set(keys);
+      })
+      ...;
+  });
+</script>
+
+...
+      <Service
+        ...
+        apiKey={$apiKeys.openai}
+        ...
+      />
+...
+```
+
+We also edit `src-svelte/src/routes/components/api-keys/Form.svelte` to make sure that any errors with the new API call retrieval are logged:
+
+```ts
+  function submitApiKey(e: Event) {
+    ...
+
+    unwrap(
+      ...
+    )
+      ...
+      .finally(() => {
+        setTimeout(async () => {
+          ...
+          try {
+            const newKeys = await unwrap(commands.getApiKeys());
+            apiKeys.set(newKeys);
+          } catch (err) {
+            snackbarError(err as string);
+          }
+        }, ...);
+      });
+  }
+```
+
+We also realize a potential problem with running these tests in the browser: any potential non-matching API call snackbar errors are not caught. We will keep this test in regular jsdom, but in the meantime we try to figure out why this is failing anyways. We find out that the wrong update information is being returned to the UI component. After some additional logging, we see that in one call to the mock invoke function, we have just two remaining API calls left over:
+
+```
+POST: Remaining calls are [{"request":["set_api_key",{"filename":".bashrc","service":"OpenAI","apiKey":"0p3n41-4p1-k3y"}],"response":null,"succeeded":true},{"request":["get_api_keys"],"response":{"openai":"0p3n41-4p1-k3y"},"succeeded":true}]
+```
+
+but then in the next call, somehow the original `get_api_keys` is back:
+
+```
+PRE: Remaining calls are [{"request":["get_api_keys"],"response":{"openai":null},"succeeded":true},{"request":["set_api_key",{"filename":".bashrc","service":"OpenAI","apiKey":"0p3n41-4p1-k3y"}],"response":null,"succeeded":true},{"request":["get_api_keys"],"response":{"openai":"0p3n41-4p1-k3y"},"succeeded":true}]
+```
+
+We do some quick ID debugging in `src-svelte/src/lib/sample-call-testing.ts`:
+
+```ts
+let counter = 0;
+
+export class TauriInvokePlayback {
+  id: number;
+  ...
+
+  constructor() {
+    this.id = counter++;
+    ...
+  }
+
+  ...
+}
+```
+
+and from additional logging, we find that there are indeed two playbacks being created.
+
+We wonder if this has anything to do with
+
+```
+globals-runtime.js:6406 storybook/viewport was loaded twice, this could have bad side-effects
+```
+
+For one, we don't see much about this error anywhere else on the web. There is [this discussion](https://github.com/storybookjs/addon-styling/issues/80), but that is from an add-on that we are not using. Moreover, this warning message is output on regular Firefox and Chrome as well, without resulting in such deleterious effects. It appears to be an artifact specifically with Storybook, Playwright, and perhaps Chromium. We end the investigation here and remove the test from `src-svelte/src/routes/components/api-keys/Display.playwright.test.ts`. Instead, we edit `src-svelte/src/routes/components/api-keys/Display.test.ts`:
+
+```ts
+import { ..., animationsOn } from "$lib/preferences";
+
+describe("API Keys Display", () => {
+  ...
+
+  beforeEach(() => {
+    ...
+    animationsOn.set(false);
+  });
+
+  ...
+});
+```
+
+Next, we see that the test `"can submit with invalid file"` fails with:
+
+```
+
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > can submit with invalid file
+AssertionError: expected "spy" to be successfully called 1 times
+ ❯ src/routes/components/api-keys/Display.test.ts:307:29
+    305|     await waitFor(() => expect(tauriInvokeMock).toHaveB…
+    306|     expect(getOpenAiStatus()).toBe("Active");
+    307|     expect(tauriInvokeMock).toHaveReturnedTimes(1);
+       |                             ^
+    308|
+    309|     render(Snackbar, {});
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+```
+
+We make this test slightly clearer for next time by adding an additional comment and assert:
+
+```ts
+    // should be called twice -- once unsuccessfully to set the API key, once
+    // successfully to get the new API key
+    expect(tauriInvokeMock).toBeCalledTimes(2);
+    expect(tauriInvokeMock).toHaveReturnedTimes(...);
+```
+
+It turns out that we should actually change the second assert to
+
+```ts
+expect(tauriInvokeMock).toHaveResolvedTimes(1);
+```
+
+Now that test passes. We move on to the next failing test, `""can submit with custom file"`, where we try the same trick, but it doesn't work. Because a mismatched count itself doesn't tell us much, we try doing `expect(tauriInvokeMock).toHaveReturnedWith(2);` to get a better clue of the actual return values:
+
+```
+AssertionError: expected "spy" to return with: 2 at least once
+
+Received:
+
+  1st spy call return:
+
+- Expected:
+2
+
++ Received:
+[Error: No matching call found for ["set_api_key",{"apiKey":"0p3n41-4p1-k3y","filename":"/home/rando/.bashrcfolder/.bashrc","service":"OpenAI"}].
+Candidates are ["set_api_key",{"apiKey":"0p3n41-4p1-k3y","filename":"folder/.bashrc","service":"OpenAI"}]
+["get_api_keys"]]
+
+
+Number of calls: 1
+```
+
+Interestingly enough, simply doing this gets the *next* test to fail as well. Debugging the next text with a failing assert in this manner also gets the *next* test after that to also fail. Somehow these tests are not being isolated properly.
+
+We realize from [this documentation](https://testing-library.com/docs/user-event/utility/) that there is a better way to clear the input element than repeatedly inputting `"{backspace}"`. We do
+
+```ts
+  test("can submit with custom file", async () => {
+    ...
+    await userEvent.clear(fileInput);
+    await userEvent.type(fileInput, ...);
+    ...
+  });
+```
+
+This does not solve the issue, but it does simplify our code.
+
+Since each test appears to affect the next, we take a look at the first failing test:
+
+```
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > preserves unsubmitted changes after opening and closing form
+Error: expect(element).toHaveValue(/home/different/.bashrc)
+
+Expected the element to have value:
+  /home/different/.bashrc
+Received:
+  /home/rando/.bashrc/home/different/.bashrc
+ ❯ src/routes/components/api-keys/Display.test.ts:214:23
+    212|     expect(apiKeyInput).toHaveValue(customApiKey);
+    213|     expect(saveKeyCheckbox).not.toBeChecked();
+    214|     expect(fileInput).toHaveValue(customInitFile);
+       |                       ^
+    215|
+    216|     // close and reopen form
+```
+
+This is when we realize that this test, with its animated and pure UI functionality, may be better suited for the Playwright test. We add a test to `src-svelte/src/routes/components/api-keys/Display.playwright.test.ts`:
+
+```ts
+  test(
+    "preserves unsubmitted changes after opening and closing form",
+    { timeout: PLAYWRIGHT_TEST_TIMEOUT },
+    async () => {
+      const frame = await getStorybookFrame(
+        page,
+        `http://localhost:6006/?path=/story/screens-dashboard-api-keys-display--unknown`,
+      );
+      const testApiKeyInput = "0p3n41-4p1-k3y";
+      const testFileInput = "/home/different/.bashrc";
+      const form = frame.locator("form");
+      const apiKeyInput = form.locator("input[name='apiKey']");
+      const fileInput = form.locator("input[name='saveKeyLocation']");
+
+      // open form and check that fields have default values
+      await toggleOpenAIForm(frame);
+      await expect(apiKeyInput).toHaveValue("");
+      await expect(fileInput).toHaveValue(".bashrc");
+
+      // fill in fields and check that values have changed
+      await apiKeyInput.fill(testApiKeyInput);
+      await expect(apiKeyInput).toHaveValue(testApiKeyInput);
+      await fileInput.fill(testFileInput);
+      await expect(fileInput).toHaveValue(testFileInput);
+
+      // close form and check that form is hidden
+      await toggleOpenAIForm(frame);
+      await expect(apiKeyInput).not.toBeVisible();
+      await expect(fileInput).not.toBeVisible();
+
+      // reopen form and check that values are preserved
+      await toggleOpenAIForm(frame);
+      await expect(apiKeyInput).toHaveValue(testApiKeyInput);
+      await expect(fileInput).toHaveValue(testFileInput);
+    },
+  );
+```
+
+and remove that test from `src-svelte/src/routes/components/api-keys/Display.test.ts`.
+
+The `"can submit with custom file"` test still fails for some reason. We try doing an assert:
+
+```ts
+    await userEvent.clear(fileInput);
+    expect(fileInput).toHaveValue("");
+```
+
+Unfortunately, it has no effect at all:
+
+```
+ FAIL  src/routes/components/api-keys/Display.test.ts > API Keys Display > can submit with custom file
+Error: expect(element).toHaveValue()
+
+Expected the element to have value:
+
+Received:
+  /home/rando/.bashrc
+ ❯ src/routes/components/api-keys/Display.test.ts:188:23
+    186|     const fileInput = screen.getByLabelText("Export fro…
+    187|     await userEvent.clear(fileInput);
+    188|     expect(fileInput).toHaveValue("");
+       |                       ^
+    189|     await userEvent.type(fileInput, "folder/.bashrc");
+    190|     await userEvent.type(screen.getByLabelText("API key…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+```
+
+In the browser, we notice the warning
+
+```
+[svelte] ownership_invalid_mutation
+src/routes/components/api-keys/Form.svelte mutated a value owned by src/routes/components/api-keys/Service.svelte. This is strongly discouraged. Consider passing values to child components with `bind:`, or use a callback instead
+
+[svelte] ownership_invalid_mutation
+Mutating a value outside the component that created it is strongly discouraged. Consider passing values to child components with `bind:`, or use a callback instead
+```
+
+Interestingly, this may just be an [HMR artifact](https://github.com/sveltejs/svelte/issues/10649#issuecomment-2189162706), as the warning goes away after a refresh of the Storybook page.
+
+Upon further testing, we find that it appears the text input gets *appended* to the initial value. For example, if we do
+
+```ts
+    await userEvent.type(fileInput, "folder/.bashrc");
+    expect(fileInput).toHaveValue("");
+```
+
+then the failing assert becomes:
+
+```
+Expected the element to have value:
+
+Received:
+  /home/rando/.bashrcfolder/.bashrc
+```
+
+We add more logging to `src-svelte/src/routes/components/api-keys/Service.svelte`:
+
+```ts
+  $effect(() => {
+    console.log("testing", formFields.saveKeyLocation);
+  })
+```
+
+This reveals that the text field does in fact respond to backspace inputs -- at least until we backspace all the way and the text field becomes completely empty, at which point it reverts to its initial value. This is reproducible in the Storybook story in the browser. We realize that this is due to
+
+```ts
+  function updateFormFields(trigger: boolean) {
+    if (!trigger) {
+      return;
+    }
+
+    if (formFields.apiKey === "") {
+      formFields.apiKey = apiKey ?? "";
+    }
+    if (formFields.saveKeyLocation === "") {
+      formFields.saveKeyLocation = $systemInfo?.shell_init_file ?? "";
+    }
+  }
+```
+
+While it's unclear why the `$effect` rune would be triggered here, we realize that there is after all a better way to accomplish this without using runes altogether. This method is after all only used to pre-fill form fields prior to the form being opened. We edit `src-svelte/src/routes/components/api-keys/Service.svelte` accordingly, to explicitly trigger this logic in `toggleEditing` instead of implicity through runes. By doing so, we also no longer need to take in a `trigger` argument to that function.
+
+```ts
+  function toggleEditing() {
+    ...
+    if (editing) {
+      initializeFormFields();
+    }
+  }
+
+  ...
+
+  function initializeFormFields() {
+    if (formFields.apiKey === "") {
+      ...
+    }
+    if (formFields.saveKeyLocation === "") {
+      ...
+    }
+  }
+```
+
+And then `src-svelte/src/routes/components/api-keys/Display.test.ts` ends up looking like
+
+```ts
+  test("can submit with custom file", async () => {
+    ...
+    await userEvent.clear(fileInput);
+    expect(fileInput).toHaveValue("");
+    ...
+    await waitFor(() => expect(tauriInvokeMock).toHaveResolvedTimes(2));
+  });
+```
+
 ### Storybook TypeScript decorators
 
 We try to commit the previous changes first before experimenting further. Now we run into
@@ -2995,3 +3566,189 @@ For manual testing purposes, we also edit `src-svelte/src/lib/__mocks__/MockPage
 ```
 
 It's hard to test this because it involves animations rather than any end-state changes to the DOM, so we avoid testing this for now.
+
+### Storybook full-page transition
+
+While recording a video for the blog, we realize that the full-page mock takes a split second to render the background, during which the video captures a blank background along with the child elements on display. Moreoever, scrollbars can briefly appear and then disappear on the "Large mobile" display (at least on Safari), which leave behind white space that's not painted over by the background canvas. To fix these issues, we edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+
+  let showChildren = $state(false);
+
+  onMount(() => {
+    ...
+
+    setTimeout(() => {
+      showChildren = true;
+    }, 500);
+  });
+
+  ...
+</script>
+
+<div id="mock-transitions">
+  <MockFullPageLayout>
+    ...
+
+    {#if showChildren}
+      <PageTransition ...>
+        ...
+      </PageTransition>
+    {/if}
+  </MockFullPageLayout>
+</div>
+
+<style>
+  #mock-transitions {
+    ...
+    overflow: hidden;
+  }
+
+  ...
+</style>
+```
+
+### Fixing Storybook screenshot tests
+
+Because the Storybook tests are running into the same "Hide addons" problem as before, we edit `src-svelte/src/routes/storybook.test.ts` in the same way as before, importing the common code and moving the test options up to be the second argument:
+
+```ts
+...
+import { ..., getStorybookFrame } from "$lib/test-helpers";
+
+...
+      test(
+        `${testName} should render the same`,
+        {
+          retry: 1,
+          timeout: PLAYWRIGHT_TEST_TIMEOUT,
+        },
+        async ({ expect }) => {
+          ...
+          const frame = await getStorybookFrame(page, `http://localhost:6006/?path=/story/${storybookUrl}${variantPrefix}`);
+          // wait for fonts to load
+          await frame.evaluate(() => document.fonts.ready);
+          // wait for images to load
+          const imagesLocator = frame.locator("//img");
+          ...
+        },
+      );
+```
+
+We get errors around being unable to find the Storybook iframe.
+
+```
+ FAIL  src/routes/storybook.test.ts > Storybook visual tests > screens/database/terminal-session/finished.png should render the same
+Error: Could not find Storybook iframe
+ ❯ Module.getStorybookFrame src/lib/test-helpers.ts:72:11
+     70|   const maybeFrame = page.frame({ name: "storybook-prev…
+     71|   if (!maybeFrame) {
+     72|     throw new Error("Could not find Storybook iframe");
+       |           ^
+     73|   }
+     74|   return maybeFrame;
+ ❯ src/routes/storybook.test.ts:426:25
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+```
+
+After some experimentation, we find that we can edit `src-svelte/src/lib/test-helpers.ts` to first wait for the iframe:
+
+```ts
+export async function getStorybookFrame(page: Page, url: string) {
+  ...
+  await page.waitForSelector("iframe");
+  const maybeFrame = page.frame(...);
+  ...
+}
+```
+
+The screenshots are taken now, but because animations now play, they often end up very different from the static screenshots taken before. We try to modify `src-svelte/src/lib/__mocks__/MockAppLayout.svelte` as such:
+
+```svelte
+<script lang="ts">
+  ...
+  import { onMount } from "svelte";
+  import { animationsOn } from "$lib/preferences";
+  import type { Snippet } from "svelte";
+  
+  interface Props {
+    fullHeight?: boolean;
+    animated?: boolean;
+    children: Snippet;
+  }
+
+  let { fullHeight = false, animated = false, children }: Props = $props();
+  let ready = $state(false);
+
+  onMount(() => {
+    animationsOn.set(animated);
+    ready = true;
+  });
+</script>
+
+<div id="mock-app-layout" class="storybook-wrapper" class:full-height={fullHeight}>
+  <AnimationControl>
+    {#if ready}
+      {@render children?.()}
+    {/if}
+    <Snackbar />
+  </AnimationControl>
+</div>
+
+<style>
+  .storybook-wrapper {
+    ...
+  }
+
+  .storybook-wrapper.full-height {
+    height: calc(100vh - 2rem);
+    box-sizing: border-box;
+  }
+</style>
+
+```
+
+which leaves `src-svelte/src/lib/__mocks__/MockFullPageLayout.svelte` reduced to just
+
+```svelte
+<script lang="ts">
+  import MockAppLayout from "./MockAppLayout.svelte";
+
+  let props = $props();
+</script>
+
+<MockAppLayout fullHeight {...props} />
+
+```
+
+We edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` as well to make use of this while keeping the transitions, importing `Snippet` directly instead of doing the `import("svelte").Snippet` thing that the migration script does:
+
+```svelte
+<script lang="ts">
+  import MockAppLayout from "./MockAppLayout.svelte";
+  ...
+
+  import { onMount, type Snippet } from "svelte";
+
+  interface Props {
+    children: Snippet;
+  }
+
+  ...
+
+  const children_render = $derived(children);
+</script>
+
+<div id="mock-transitions">
+  <MockAppLayout animated fullHeight>
+    ...
+  </MockAppLayout>
+</div>
+```
+
+We also rename `showChildren` to `ready` to keep in line with the `MockAppLayout` file.
+
+Now our screenshots at least look more similar to the way they looked before, while still preserving the full page transitions. Upon further inspection, it turns out that the screenshots are different from before because the Playwright window is wider now, even wider than the width of the maximum infobox size, and so there's unused whitespace on the right side of the `body` element that we're taking a screenshot of. Ideally, we want to take a screenshot of only 1 rem around the target element.
