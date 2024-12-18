@@ -3752,3 +3752,324 @@ We edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` as well to mak
 We also rename `showChildren` to `ready` to keep in line with the `MockAppLayout` file.
 
 Now our screenshots at least look more similar to the way they looked before, while still preserving the full page transitions. Upon further inspection, it turns out that the screenshots are different from before because the Playwright window is wider now, even wider than the width of the maximum infobox size, and so there's unused whitespace on the right side of the `body` element that we're taking a screenshot of. Ideally, we want to take a screenshot of only 1 rem around the target element.
+
+### Refactoring Storybook layouts
+
+But before we do that, we start by engaging in a bit of refactoring first. We edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` to allow animation speeds to be overridden:
+
+```ts
+  interface Props {
+    customStoreValues?: boolean;
+    ...
+  }
+
+  let { customStoreValues = false, ... }: Props = $props();
+
+  onMount(() => {
+    ...
+    if (!customStoreValues) {
+      animationSpeed.set(0.1);
+    }
+
+    ...
+  });
+```
+
+We then create `src-svelte/src/lib/__mocks__/MockTransitionUsingStore.svelte` to allow for the animation speed to be set using the store, because it appears it may not be possible to pass in arguments to Storybook's Svelte component decorators:
+
+```svelte
+<script lang="ts">
+  import MockPageTransitions from "./MockPageTransitions.svelte";
+
+  let props = $props();
+</script>
+
+<MockPageTransitions customStoreValues {...props} />
+```
+
+We also edit `src-svelte/src/lib/__mocks__/decorators.ts` to remove `mockTransitionFn` (after which we also remove `src-svelte/src/lib/__mocks__/MockTransitions.svelte`), make `mockPageTransitionFn` take in an optional animation speed override (so that it is responsible for all animated stories), and create a `mockAppLayoutFn` that disables animation by default altogether for screenshot testing:
+
+```ts
+...
+import MockAppLayout from "./MockAppLayout.svelte";
+import type { StoryContext, SvelteRenderer } from "@storybook/svelte";
+import MockFullPageLayout from "./MockFullPageLayout.svelte";
+import MockTransitionUsingStore from "./MockTransitionUsingStore.svelte";
+
+const mockPageTransitionFn = (story: PartialStoryFn, { parameters }: StoryContext,) => {
+  const component = parameters.preferences?.animationSpeed !== undefined ? MockTransitionUsingStore : MockPageTransitions;
+  return {
+    Component: component,
+    slot: story,
+  };
+};
+export const MockPageTransitionsDecorator: DecoratorFunction<SvelteRenderer> =
+  mockPageTransitionFn as unknown as DecoratorFunction<SvelteRenderer>;
+
+const mockAppLayoutFn = (
+  story: PartialStoryFn,
+  { parameters }: StoryContext,
+) => {
+  const component = parameters.fullHeight ? MockFullPageLayout : MockAppLayout;
+  return {
+    Component: component,
+    slot: story,
+  };
+};
+export const MockAppLayoutDecorator: DecoratorFunction<SvelteRenderer> =
+  mockAppLayoutFn as unknown as DecoratorFunction<SvelteRenderer>;
+
+```
+
+For example, we now edit `src-svelte/src/lib/InfoBox.stories.ts`
+
+```ts
+import {
+  MockAppLayoutDecorator,
+  MockPageTransitionsDecorator,
+} from "./__mocks__/decorators";
+
+...
+
+export const Regular: StoryObj = Template.bind({}) as any;
+...
+Regular.decorators = [MockAppLayoutDecorator];
+
+export const FullPage: StoryObj = Template.bind({}) as any;
+...
+FullPage.parameters = {
+  preferences: {
+    animationSpeed: 1,
+  },
+};
+FullPage.decorators = [SvelteStoresDecorator, MockPageTransitionsDecorator];
+
+export const SlowMotion: StoryObj = Template.bind({}) as any;
+...
+SlowMotion.parameters = {
+  preferences: {
+    animationSpeed: 0.1,
+  },
+};
+SlowMotion.decorators = [SvelteStoresDecorator, MockPageTransitionsDecorator];
+
+```
+
+to have a regular InfoBox with no animations (or else the screenshot tests fail) and a full-page InfoBox with animations at varying speeds. We no longer need to create these decorators on the fly either.
+
+We edit the following files in a similar manner:
+
+- `src-svelte/src/lib/Switch.stories.ts`
+- `src-svelte/src/routes/components/Metadata.stories.ts`, though for this one we also need to edit `src-svelte/src/routes/components/Metadata.svelte`:
+
+```css
+  .container {
+    ...
+    width: fit-content;
+  }
+```
+- `src-svelte/src/routes/BackgroundUI.stories.ts`, though for this one we also set `Dynamic.parameters.preferences.animationSpeed` to 1
+- `src-svelte/src/routes/chat/Chat.stories.ts`, though for this one we also set `fullHeight` to be true using our new `MockAppLayoutDecorator` setting:
+
+```ts
+export default {
+  ...,
+  decorators: [
+    ...,
+    MockAppLayoutDecorator,
+  ],
+  parameters: {
+    fullHeight: true,
+  },
+};
+```
+- `src-svelte/src/routes/database/api-calls/new/import/ApiCallImport.stories.ts`, although here we need to remove the default decorator and specify the other ones individually because otherwise it appears Storybook adds rather than overrides them. We find that we also need to edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` again to avoid clipping the InfoBox for the "Mount Transition" story:
+
+```css
+  #mock-transitions {
+    width: 100vw;
+    height: 100vh;
+    ...
+  }
+```
+- `src-svelte/src/routes/SidebarUI.stories.ts`, although here we also edit `src-svelte/src/routes/SidebarUI.svelte` to avoid scrollbars on the story by using `height: 100%` instead of `100vh`:
+
+```css
+  header {
+    ...
+    height: 100%;
+    ...
+  }
+```
+- `src-svelte/src/routes/components/api-keys/Display.stories.ts`, although for this one we need to also manually add the story
+
+```ts
+export const Fast: StoryObj = Template.bind({}) as any;
+Fast.parameters = {
+  sampleCallFiles: [unknownKeys, writeToFile, knownKeys],
+  stores: {
+    systemInfo: {
+      shell_init_file: ".bashrc",
+    },
+  },
+  preferences: {
+    animationSpeed: 1,
+  },
+  viewport: {
+    defaultViewport: "mobile2",
+  },
+};
+Fast.decorators = [MockPageTransitionsDecorator];
+```
+
+to function the same as the `Unknown` story, except that it's animated (so that we can check with Playwright that the animations don't interfere with proper functioning) and fast (so that the Playwright tests can finish quickly). We also edit `src-svelte/src/routes/components/api-keys/Display.playwright.test.ts` to use this `Fast` story instead of the previous ones, and for the test suite to be called `API keys display (animated)` instead of `Snackbar`, where it was copied from.
+- `src-svelte/src/routes/credits/Credits.stories.ts`, where here we edit the `Tablet` story to use `MockAppLayoutDecorator` and also to have a viewport of `smallTablet` instead of the regular `tablet`
+- `src-svelte/src/routes/database/api-calls/new/ApiCallEditor.stories.ts`
+- `src-svelte/src/routes/settings/Settings.stories.ts`
+
+Now `src-svelte/src/routes/chat/PersistentChatView.stories.ts` and `src-svelte/src/routes/database/api-calls/new/PersistentApiCallEditor.stories.ts` are no longer needed either because the regular page transition story is remountable by default with transitions, so we delete them.
+
+We initially encounter an animation bug in `src-svelte/src/routes/BackgroundUI.svelte`, where the background moves at infinite speed. We fix this by making the above changes to `MockPageTransitions` and whatnot to set animation speed, but we also edit `src-svelte/src/routes/BackgroundUI.svelte` to not do the annoying infinite animation speed thing again when standard duration is zero because animations are disabled:
+
+```ts
+  const animateIntervalMs = derived(standardDuration, ($sd) => $sd === 0 ? 1_000_000 : $sd / 2);
+```
+
+We clean up files like `src-svelte/src/routes/BackgroundUIView.svelte` from doing inline imports and a redundant `children_render` variable, like this:
+
+```svelte
+<script lang="ts">
+  import MockAppLayout from "$lib/__mocks__/MockAppLayout.svelte";
+  interface Props {
+    children?: import("svelte").Snippet;
+  }
+
+  let { children }: Props = $props();
+
+  const children_render = $derived(children);
+</script>
+
+<MockAppLayout>
+  <div class="background-container">
+    {@render children_render?.()}
+  </div>
+</MockAppLayout>
+```
+
+to a simplified version, like this:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from "svelte";
+  import AnimationControl from "./AnimationControl.svelte";
+
+  interface Props {
+    children?: Snippet;
+  }
+
+  let { children }: Props = $props();
+</script>
+
+<AnimationControl>
+  <div class="background-container">
+    {@render children?.()}
+  </div>
+</AnimationControl>
+```
+
+We edit `src-svelte/src/routes/PageTransitionView.svelte`:
+
+```svelte
+<script lang="ts">
+  ...
+
+  interface Props {
+    ...
+    animated?: boolean;
+    ...
+  }
+
+  let { ..., animated = true, ... }: Props = $props();
+
+  ...
+</script>
+
+<MockAppLayout {animated}>
+  ...
+</MockAppLayout>
+```
+
+and then `src-svelte/src/routes/PageTransition.stories.ts` to
+
+```ts
+Motionless.args = {
+  animated: false,
+};
+```
+
+to disable animation for that one story.
+
+While looking at the "Full Message Width" story for the Chat/Conversation component, we realize that it is off because `src-svelte/src/routes/chat/MessageUI.svelte` calculates the maximum text component size by subtracting the padding and arrow size from the parent container size, but the parent container in `src-svelte/src/routes/chat/Chat.svelte` returns the size of the parent container without taking into account how the scrollbars affect things. We see from [this answer](https://stackoverflow.com/a/21064102) that the right call appears to be using `clientWidth` instead. As such, we edit `src-svelte/src/lib/FixedScrollable.svelte`:
+
+```ts
+  export function getDimensions() {
+    if (scrollContents) {
+      // we need dimensions after taking scrollbar into account
+      return {
+        width: scrollContents.clientWidth,
+        height: scrollContents.clientHeight,
+      };
+    }
+
+    ...
+  }
+```
+
+We edit `src-svelte/src/lib/Scrollable.svelte` as well to fix typing by having `ResizedEvent` be of type `ClientDimensions` rather than `DOMRect`:
+
+```ts
+  export type ClientDimensions = {
+    width: number;
+    height: number;
+  };
+  export type ResizedEvent = CustomEvent<ClientDimensions>;
+```
+
+We don't need to edit `src-svelte/src/routes/chat/MessageUI.svelte` at all, but we do so anyways to remove a stray `await new Promise((r) => setTimeout(r, 0));` that had made it in at some point as a debugging statement.
+
+While checking the terminal session story, we find that the following error happens:
+
+```
+Svelte error: lifecycle_outside_component
+`getContext(...)` can only be used during component initialisation
+    lifecycle_outside_component errors.js:28
+    get_or_init_context_map runtime.js:952
+    getContext runtime.js:880
+    subscribe stores.ts:7
+    unsub utils.js:26
+    untrack runtime.js:854
+    subscribe_to_store utils.js:25
+    store_get store.js:43
+    $page TerminalSession.svelte:32
+    sendCommand TerminalSession.svelte:44
+    ...
+```
+
+Seeing no other resources on this error, we work around this in `src-svelte/src/routes/database/terminal-sessions/TerminalSession.svelte` by adding a try-catch for that specific line:
+
+```ts
+  async function sendCommand(newInput: string) {
+    try {
+      ...
+      if (session === undefined) {
+        ...
+        try {
+          replaceState(newUrl, $page.state);
+        } catch (error) {
+          console.error("Failed to update URL, are we on Storybook?", error);
+        }
+        ...
+      } ...
+    } ...
+  }
+```

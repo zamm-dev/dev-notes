@@ -689,3 +689,85 @@ We find that we want the hero image to be at most 500px tall, while preserving t
 				...
 			}
 ```
+
+## Adding a table of contents to each blog post
+
+We follow [this guide](https://noahflk.com/blog/astro-table-of-contents) on adding table of contents. Our code is reflected in [commit `6d7695a`](https://github.com/zamm-dev/website/commit/6d7695ac6d1e89ef132136c9c5515df66138668a).
+
+We go further and allow for nested headings. We edit `src/components/ReleaseLinks.astro` as such:
+
+```astro
+---
+...
+
+type NestedHeading = {
+  slug: string;
+  text: string;
+  children: NestedHeading[];
+};
+
+...
+
+const nestedHeadings = headings?.reduce((acc, heading) => {
+  if (heading.depth === 2) {
+    acc.push({
+      slug: heading.slug,
+      text: heading.text,
+      children: [],
+    });
+  } else if (heading.depth === 3) {
+    const parent = acc[acc.length - 1];
+    parent.children.push({
+      slug: heading.slug,
+      text: heading.text,
+      children: [],
+    });
+  }
+  return acc;
+}, [] as NestedHeading[]);
+---
+
+<div class="release-container">
+  {nestedHeadings &&
+    <nav>
+      This is a blog post about the release of ZAMM version {releaseVersion}, as well as other topics of interest to me. Feel free to jump directly to a given topic:
+      <ul>
+        {
+          nestedHeadings.map((h2Headings) => (
+            <li>
+              <a href={`#${h2Headings.slug}`}>{h2Headings.text}</a>
+              {h2Headings.children.length > 0 &&
+                <ul class="h3-headings">
+                  {
+                    h2Headings.children.map((h3Heading) => (
+                      <li>
+                        <a href={`#${h3Heading.slug}`}>{h3Heading.text}</a>
+                      </li>
+                    ))
+                  }
+                </ul>
+              }
+            </li>
+          ))
+        }
+      </ul>
+    </nav>
+    <hr />
+  }
+
+	...
+</div>
+
+<style>
+	...
+
+	nav ul.h3-headings {
+    list-style-type: '-';
+    margin-top: 0;
+  }
+
+  nav ul.h3-headings li {
+    padding-left: 0.5rem;
+  }
+</style>
+```
