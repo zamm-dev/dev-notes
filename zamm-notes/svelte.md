@@ -4073,3 +4073,190 @@ Seeing no other resources on this error, we work around this in `src-svelte/src/
     } ...
   }
 ```
+
+### Fixing Storybook screenshot tests (continued)
+
+Now that we have simplified the mock layout decorators across the app, we can more easily fix the screenshot tests.
+
+It turns out Storybook now has different behavior for the bottom addons panel. We have to click three times to actually get rid of it. We see if there's a Storybook setting to hide this by default, and we find [this comment](https://github.com/storybookjs/storybook/discussions/26058#discussioncomment-11280073) that mentions a workaround. So, we create `src-svelte/.storybook/manager.ts` as such:
+
+```ts
+import { addons } from '@storybook/manager-api';
+
+// https://github.com/storybookjs/storybook/discussions/26058
+addons.register('custom-panel', (api) => {
+  api.togglePanel(false);
+});
+
+```
+
+We try writing a function to check for the removal of the panel:
+
+```ts
+async function addOnPanelRemoved(page: Page): Promise<boolean> {
+  const panel = page.locator("div[id='storybook-panel-root']");
+  const boundingBox = await panel.boundingBox();
+  return boundingBox?.height === 0;
+}
+```
+
+But it turns out this is not accurate, because even when the panel has height zero, the `sb-bar` element might still be visible on the page. In fact, the `sb-bar` element never has height zero. As such, we just edit `src-svelte/src/lib/test-helpers.ts` to always click twice, with a short timeout to ensure the click gets registered before the next one:
+
+```ts
+export async function getStorybookFrame(page: Page, url: string) {
+  ...
+  const hideAddonsButton = page.locator("button[title^='Hide addons ']");
+  // first click minimizes it, second click restores it, third click gets rid of it
+  // for good. We no longer have to do the first click because manager.ts minimizes
+  // it by default already
+  for (let i = 0; i < 2; i++) {
+    await hideAddonsButton.dispatchEvent("click");
+    await page.waitForTimeout(100);
+  }
+  ...
+}
+```
+
+Finally, we edit `src-svelte/src/routes/storybook.test.ts` to make use of the new layouts, in the process using [this comment](https://github.com/microsoft/playwright/issues/28394#issuecomment-2329352801) as a way to preserve the margins around the screenshots:
+
+```ts
+  const getScreenshotElement = async (frame: Frame, selector?: string) => {
+    if (selector) {
+      // override has been specified
+      return frame.locator(selector);
+    }
+
+    const firstChild = frame.locator("#storybook-root > :first-child");
+    if (await firstChild.getAttribute("id") === "mock-app-layout") {
+      // we're wrapping the story with the MockAppLayoutDecorator
+      return frame.locator("#mock-app-layout > #animation-control > :first-child");
+    }
+
+    return firstChild;
+  };
+
+  const takeScreenshot = async (
+    frame: Frame,
+    page: Page,
+    tallWindow: boolean,
+    selector?: string,
+  ) => {
+    const screenshotMargin = 18;
+    const elementLocator = await getScreenshotElement(frame, selector);
+    await elementLocator.waitFor(...);
+
+    if (tallWindow) {
+      ...
+      // height taken up by Storybook elements, plus a little extra to make sure the
+      // screenshot margin is included in the screenshot
+      const storybookHeight = 60 + screenshotMargin;
+      ...
+    }
+
+    // https://github.com/microsoft/playwright/issues/28394#issuecomment-2329352801
+    const boundingBox = await elementLocator.boundingBox();
+    if (!boundingBox) {
+        throw new Error(`No bounding box found for element ${selector}`);
+    }
+
+    const documentWidth = await page.evaluate(() => document.body.clientWidth);
+    const documentHeight = await page.evaluate(() => document.body.clientHeight);
+
+    const scrollX = await page.evaluate(() => window.scrollX);
+    const scrollY = await page.evaluate(() => window.scrollY);
+
+    const x = Math.max(scrollX + boundingBox.x - screenshotMargin, 0);
+    const y = Math.max(scrollY + boundingBox.y - screenshotMargin, 0);
+    const width = Math.min(boundingBox.width + 2 * screenshotMargin, documentWidth - x);
+    const height = Math.min(boundingBox.height + 2 * screenshotMargin, documentHeight - y);
+
+    return await page.screenshot({
+        clip: { x, y, width, height },
+        fullPage: true,
+    });
+  };
+```
+
+We remove `screenshotEntireBody` from the calls to `takeScreenshot`, as well as the test configs. But then we realize that we don't actually want to add margins to everything, so instead we restore that and edit the function again:
+
+```ts
+  const takeScreenshot = async (
+    frame: Frame,
+    page: Page,
+    tallWindow: boolean,
+    selector?: string,
+    addMargins?: boolean,
+  ) => {
+    const screenshotMarginPx = addMargins ? 18 : 0;
+    ...
+
+    if (tallWindow) {
+      ...
+      const storybookHeight = 60 + screenshotMarginPx;
+      ...
+    }
+
+    ...
+    const x = Math.max(scrollX + boundingBox.x - screenshotMarginPx, 0);
+    const y = Math.max(scrollY + boundingBox.y - screenshotMarginPx, 0);
+    const width = Math.min(boundingBox.width + 2 * screenshotMarginPx, documentWidth - x);
+    const height = Math.min(boundingBox.height + 2 * screenshotMarginPx, documentHeight - y);
+    ...
+  };
+```
+
+We realize that we have one more file to fix. We edit `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.stories.ts` to use `MockAppLayoutDecorator` as well.
+
+The `InfoBox` screenshot test is failing because it includes some elements of the Storybook UI. It turns out this is because `src-svelte/src/lib/InfoBoxView.svelte` adds its own `.screenshot-container` wrapper around the InfoBox. We strip everything else out of the file so that it looks like this:
+
+```svelte
+<script lang="ts">
+  import InfoBox from "./InfoBox.svelte";
+  interface Props {
+    [key: string]: any;
+  }
+
+  let { ...rest }: Props = $props();
+</script>
+
+<InfoBox {...rest}>
+  <p class="atomic-reveal">
+    How do we know that even the realest of realities wouldn't be subjective,
+    in the final analysis? Nobody can prove his existence, can he? &mdash; <em
+      >Simulacron 3</em
+    >
+  </p>
+</InfoBox>
+```
+
+The API keys display "Editing Pre Filled" test is failing because the pre-filled file save location is not showing up. We take this chance to further simplify the code in `src-svelte/src/routes/components/api-keys/Service.svelte`:
+
+```ts
+  ...
+  let formInitialized = false;
+
+  function toggleEditing() {
+    ...
+    if (editing && !formInitialized) {
+      initializeFormFields();
+    }
+  }
+
+  ...
+
+  function initializeFormFields() {
+    formFields.apiKey = apiKey ?? "";
+    formFields.saveKeyLocation = $systemInfo?.shell_init_file ?? "";
+    formInitialized = true;
+  }
+```
+
+We finally realize that the problem is that form initialization never happens if the component is rendered with the form open on Storybook. We fix this:
+
+```ts
+  onMount(() => {
+    if (editing) {
+      initializeFormFields();
+    }
+  });
+```

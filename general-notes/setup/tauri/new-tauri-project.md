@@ -1245,6 +1245,12 @@ Successfully received submission history.
 
 We see that the fault does indeed lie with Apple and not Tauri, and that the problem can last for [a day](https://forums.developer.apple.com/forums/thread/739751) or [more](https://forums.developer.apple.com/forums/thread/736977). For us, the problem resolves within the week, but then we run into the same problem with `bundle_dmg.sh` as before. We try again with the `--verbose` flag turned on, just to find that it works this time. The build process on the Mac appears to be finicky.
 
+Eventually, we run into the problem
+
+```
+    Error failed to bundle project: Error: HTTP status code: 403. A required agreement is missing or has expired. This request requires an in-effect agreement that has not been signed or has expired. Ensure your team has signed the necessary legal agreements and that they are not expired.
+```
+
 #### App Store distribution
 
 Although certainly [doable](https://jeannot.hashnode.dev/publishing-a-tauri-app-to-mac-app-store), there are [known](https://github.com/tauri-apps/tauri/issues/4415) [difficulties](https://github.com/tauri-apps/tauri/issues/3716) with [publishing](https://github.com/tauri-apps/tauri-docs/issues/691) Tauri apps to the Mac app store. Seeing as app store apps don't seem to be [allowed](https://developer.apple.com/forums/thread/681647) to execute [arbitrary](https://developer.apple.com/forums/thread/685544) terminal commands, which we'll eventually want, we will skip this part. After all, even VS Code is not available on the Mac app store, presumably for this reason.
@@ -1440,6 +1446,66 @@ jobs:
           releaseDraft: true
           prerelease: false
 ```
+
+#### Build errors on GitHub
+
+We eventually run into the error
+
+```
+E: Unable to locate package libsoup-3.0-dev
+E: Couldn't find any package by glob 'libsoup-3.0-dev'
+E: Unable to locate package libjavascriptcoregtk-4.1-dev
+E: Couldn't find any package by glob 'libjavascriptcoregtk-4.1-dev'
+E: Unable to locate package libwebkit2gtk-4.1-dev
+E: Couldn't find any package by glob 'libwebkit2gtk-4.1-dev'
+```
+
+This appears to be because `libsoup3` is somehow [not available](https://packages.ubuntu.com/search?suite=default&section=all&arch=any&keywords=libsoup&searchon=sourcenames) anymore for buntu Focal (20.04). We try updating `.github/workflows/publish.yaml` to specify Ubuntu Jammy (22.04) instead:
+
+```yaml
+jobs:
+  linux:
+    name: Create build for Linux
+    runs-on: ubuntu-22.04
+    ...
+```
+
+We get
+
+```
+E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/g/gst-plugins-base1.0/libgstreamer-plugins-base1.0-0_1.20.1-1ubuntu0.2_amd64.deb  404  Not Found [IP: 40.81.13.82 80]
+E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/g/gst-plugins-base1.0/gstreamer1.0-plugins-base_1.20.1-1ubuntu0.2_amd64.deb  404  Not Found [IP: 40.81.13.82 80]
+E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/g/gst-plugins-good1.0/libgstreamer-plugins-good1.0-0_1.20.3-0ubuntu1.1_amd64.deb  404  Not Found [IP: 40.81.13.82 80]
+E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/g/gst-plugins-good1.0/gstreamer1.0-plugins-good_1.20.3-0ubuntu1.1_amd64.deb  404  Not Found [IP: 40.81.13.82 80]
+E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/g/gst-plugins-base1.0/libgstreamer-gl1.0-0_1.20.1-1ubuntu0.2_amd64.deb  404  Not Found [IP: 40.81.13.82 80]
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+```
+
+We try:
+
+```yaml
+jobs:
+  linux:
+    name: Create build for Linux
+    ...
+    steps:
+      - uses: actions/checkout@v3
+        ...
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y ...
+```
+
+This doesn't change anything. We try using Ubuntu 24.04 instead, but now we get the error
+
+
+```
+E: Unable to locate package libwebkit2gtk-4.0-dev
+E: Couldn't find any package by glob 'libwebkit2gtk-4.0-dev'
+```
+
+We see from [this issue](https://github.com/tauri-apps/tauri/issues/9662) that there are problems with installing this on the latest Ubuntu -- except that apparently Tauri v2 uses a different version of libwebkit2gtk. We remove `libwebkit2gtk-4.0-dev` from the install list because it turns out `libwebkit2gtk-4.1-dev` is already there. We learn from this issue that Tauri v2 dependencies aren't supported for Ubuntu 20.04, so we'll have to change our Ubuntu version anyways.
 
 ### Building on Windows
 
