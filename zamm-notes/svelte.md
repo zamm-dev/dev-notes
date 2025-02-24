@@ -4260,3 +4260,366 @@ We finally realize that the problem is that form initialization never happens if
     }
   });
 ```
+
+We realize that we got rid of the custom story that lets us take a screenshot of the InfoBox's transparency effects, which is a story that needs transparency and a background but no animation. The new setup makes it too hard to do this because it overrides the Svelte store decorator. We restore that by editing `src-svelte/src/lib/__mocks__/stores.ts` to default animations and transparency to off if unspecified:
+
+```ts
+...
+import {
+  ...,
+  transparencyOn,
+  ...
+} from "$lib/preferences";
+
+...
+
+interface Preferences {
+  ...
+  transparencyOn?: boolean;
+  ...
+}
+
+const SvelteStoresDecorator: Decorator = (
+  ...
+) => {
+  ...
+
+  if (preferences?.animationsOn === undefined) {
+    animationsOn.set(false);
+  } ...
+
+  if (preferences?.transparencyOn === undefined) {
+    transparencyOn.set(false);
+  } else {
+    transparencyOn.set(preferences.transparencyOn);
+  }
+
+  ...
+}
+```
+
+Now, any stories that want to feature static InfoBox's will have to explicitly use this decorator. This sort of explicitness seems like a reaonsable tradeoff. For example, one file that needs to be more explicit now is `src-svelte/src/routes/PageTransition.stories.ts`:
+
+```ts
+...
+Default.parameters = {
+  preferences: {
+    animationsOn: true,
+  },
+};
+
+...
+SlowMotion.parameters = {
+  preferences: {
+    animationsOn: true,
+    ...
+  },
+};
+
+...
+Subpath.parameters = {
+  preferences: {
+    animationsOn: true,
+  },
+};
+
+...
+Motionless.parameters = {
+  preferences: {
+    animationsOn: false,
+  },
+};
+```
+
+Then, we move the background from the page transition decorator to `src-svelte/src/lib/__mocks__/MockAppLayout.svelte`, in the process also removing the `animated` option because that should now be handled by the store:
+
+```svelte
+<script lang="ts">
+  ...
+  import Background from "../../routes/Background.svelte";
+
+  interface Props {
+    // ... remove `animated` ...
+    showBackground?: boolean;
+    ...
+  }
+  ...
+
+  onMount(() => {
+    // ... remove `animated` ...
+    ...
+  });
+</script>
+
+
+<div
+  id="mock-app-layout"
+  ...
+>
+  {#if showBackground}
+    <div class="bg">
+      <Background />
+    </div>
+  {/if}
+
+  <AnimationControl>
+    ...
+  </AnimationControl>
+</div>
+
+<style>
+  ...
+
+  .bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -1;
+  }
+</style>
+```
+
+We edit `src-svelte/src/lib/__mocks__/MockPageTransitions.svelte` to use the background in the regular mock layout. It is okay to keep overriding the other preferences on load here because these stories are more uniform:
+
+```svelte
+<script lang="ts">
+  ...
+  import {
+    animationSpeed,
+    transparencyOn,
+    animationsOn,
+  } from "$lib/preferences";
+
+  ...
+
+  onMount(() => {
+    ...
+    animationsOn.set(true);
+    ...
+  });
+</script>
+
+<div id="mock-transitions">
+  <MockAppLayout ... showBackground>
+    ...
+  </MockAppLayout>
+</div>
+```
+
+Then, we can edit `src-svelte/src/lib/InfoBox.stories.ts` to include the stores decorator as a default one:
+
+```ts
+export default {
+  ...
+  decorators: [SvelteStoresDecorator],
+};
+
+...
+FullPage.decorators = [MockPageTransitionsDecorator];
+
+...
+SlowMotion.decorators = [MockPageTransitionsDecorator];
+```
+
+and create a `src-svelte/src/lib/InfoBox.transparent.stories.ts`:
+
+```ts
+import type { StoryObj } from "@storybook/svelte";
+import SvelteStoresDecorator from "$lib/__mocks__/stores";
+import TransparentInfoBoxView from "./TransparentInfoBoxView.svelte";
+
+export default {
+  component: TransparentInfoBoxView,
+  title: "Reusable/InfoBox",
+  argTypes: {},
+  decorators: [SvelteStoresDecorator],
+};
+
+const Template = ({ ...args }) => ({
+  Component: TransparentInfoBoxView,
+  props: args,
+});
+
+export const Transparent: StoryObj = Template.bind({}) as any;
+Transparent.args = {
+  title: "Simulation",
+  maxWidth: "50rem",
+};
+Transparent.parameters = {
+  showBackground: true,
+  preferences: {
+    animationsOn: false,
+    backgroundAnimation: false,
+    transparencyOn: true,
+  },
+};
+
+```
+
+that uses a corresponding `src-svelte/src/lib/TransparentInfoBoxView.svelte`:
+
+```svelte
+<script lang="ts">
+  import MockAppLayout from "$lib/__mocks__/MockAppLayout.svelte";
+  import InfoBoxView from "./InfoBoxView.svelte";
+
+  let props = $props();
+</script>
+
+<MockAppLayout showBackground>
+  <InfoBoxView {...props} />
+</MockAppLayout>
+
+```
+
+We remove the `{animated}` option from the props and HTML of `src-svelte/src/routes/PageTransitionView.svelte`.
+
+We can now edit `src-svelte/src/routes/storybook.test.ts` to remove the `.screenshot-container` selector from the `transparent` InfoBox story screenshot test.
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["reusable", "infobox"],
+    variants: [
+      ...
+      {
+        name: "transparent",
+        ...,
+        selector: ".screenshot-container",
+        ...
+      },
+      ...
+  },
+  ...
+];
+```
+
+Other files we need to explicitly specify animation-disabled stories are:
+
+- `src-svelte/src/lib/snackbar/Snackbar.stories.ts`
+- `src-svelte/src/routes/AppLayout.stories.ts`
+- `src-svelte/src/routes/BackgroundUI.stories.ts`
+- `src-svelte/src/routes/chat/Chat.stories.ts` (in particular, for the typing indicator story)
+- `src-svelte/src/routes/components/Metadata.stories.ts`
+- `src-svelte/src/routes/credits/Credits.stories.ts`
+- `src-svelte/src/routes/database/DatabaseView.stories.ts` (involves also doing the migration to `MockAppLayoutDecorator` and setting `fullHeight`)
+- `src-svelte/src/routes/database/api-calls/[slug]/Actions.stories.ts`
+- `src-svelte/src/routes/database/api-calls/[slug]/ApiCall.stories.ts`
+- `src-svelte/src/routes/database/api-calls/[slug]/UnloadedApiCall.stories.ts` (involves adding a new `FullPage` story)
+- `src-svelte/src/routes/settings/Settings.stories.ts`
+
+Most of these are fixed by simply adding the `SvelteStoresDecorator` as a default, because that will turn animations off by default.
+
+While making the FullPage version of `UnloadedApiCall` happen, we realize that the loading animation slowly hides the prompt messages instead of immediately doing so during the InfoBox reveal. After some debugging, we edit `src-svelte/src/routes/database/api-calls/[slug]/Prompt.svelte` to put `transition-property` into one line instead, along with `transition`, like this:
+
+```css
+  .message {
+    transition: background-color var(--standard-duration) ease-out;
+    ...
+  }
+```
+
+#### Sidebar height
+
+Next, we notice that the sidebar somehow does not cover the height of the entire window when the screenshots are taken. We try adding a quick way to get the screenshots to wait a few more seconds by editing `src-svelte/src/routes/storybook.test.ts` to wait based on an optional new setting. We update both calls to `takeScreenshot`:
+
+```ts
+interface VariantConfig {
+  ...
+  extraTimeout?: number;
+  ...
+}
+
+...
+
+  const takeScreenshot = async (
+    ...
+    extraTimeout?: number,
+    ...
+  ) => {
+    ...
+
+    if (extraTimeout) {
+      await page.waitForTimeout(extraTimeout);
+    }
+
+    // https://github.com/microsoft/playwright/issues/28394#issuecomment-2329352801
+    const boundingBox = ...;
+    ...
+  }
+
+  ...
+
+          const screenshot = await takeScreenshot(
+            ...
+            variantConfig.extraTimeout,
+            ...
+          );
+
+          ...
+
+          if (variantConfig.assertDynamic !== undefined) {
+            ...
+            const newScreenshot = await takeScreenshot(
+              ...,
+              variantConfig.extraTimeout,
+              ...
+            );
+            ...
+          }
+```
+
+However, this is still flaky, as expected. We fix this more properly by doing a proper wait:
+
+```ts
+const waitForSidebarHeight = async (frame: Frame) => {
+  await frame.waitForFunction(() => {
+    // note: we can't seem to make use of local variables outside of the
+    // function, possibly because it's executed in the browser
+    const header = document.querySelector("header");
+    const headerDimensions = header?.getBoundingClientRect();
+    return headerDimensions?.height && headerDimensions.height > 300;
+  });
+};
+
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["layout", "sidebar"],
+    variants: [
+      {
+        name: "dashboard-selected",
+        additionalAction: waitForSidebarHeight,
+      },
+      {
+        name: "settings-selected",
+        additionalAction: waitForSidebarHeight,
+      },
+      {
+        name: "credits-selected",
+        additionalAction: waitForSidebarHeight,
+      },
+    ],
+  },
+  ...
+];
+```
+
+From further testing, we find that the `layout/app/static.png` screenshot also needs to be updated in this manner:
+
+```ts
+const components: ComponentTestConfig[] = [
+  ...,
+  {
+    path: ["layout", "app"],
+    variants: [{
+      name: "static",
+      additionalAction: waitForSidebarHeight,
+    }],
+  },
+  ...
+];
+```

@@ -26,6 +26,18 @@ Once you try to do that, you get the additional message
 
 You'll have to restart twice: once to allow kernel extensions, then another time to actually enable that specific kernel extension. Once you do so, the external volume will no longer be mounted under `/Volumes/`, but instead under your home directory at (for example) `/Users/amos/.mounty/external`.
 
+## Importing photos
+
+You can download photos from your iPhone using the Photos app on your Mac. But for some reason, sometimes photos will show up in the Photos app of the iPhone but not the Photos app on your Mac. If that is the case, you can try buying a subscription from [iMazing](https://imazing.com/).
+
+If iMazing complains about some photos being locked by iOS, potentially due to pending iCloud uploads, then disable iCloud Photos on the iPhone before trying again.
+
+If you use Apple's own Photos app but get stuck on "Preparing to Import," then from [this thread](https://discussions.apple.com/thread/253637223?sortBy=rank), you can try toggling airplane mode on and off on the iPhone.
+
+To deduplicate photos after you import them, you can use [czkawka](https://github.com/qarmin/czkawka/tree/master).
+
+To delete all the photos on the phone afterwards, you can use [this trick](https://www.reddit.com/r/ios/comments/15poj5x/comment/lidypl1/) to quickly select all of the photos in the Photos app.
+
 ## Mouse behavior
 
 ### Decoupling mouse versus trackpad scrolling
