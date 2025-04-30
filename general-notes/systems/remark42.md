@@ -84,6 +84,78 @@ We now edit the `docker-compose.yml` file to include the following:
 
 ```
 
+#### Renewal
+
+To renew the certificate, we can run the following command:
+
+```bash
+$ sudo 
+sudo certbot renew --force-renewal          
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/comments.zamm.dev.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Renewing an existing certificate for comments.zamm.dev
+Failed to renew certificate comments.zamm.dev with error: Could not bind TCP port 80 because it is already in use by another process on this system (such as a web server). Please stop the program in question and then try again.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+All renewals failed. The following certificates could not be renewed:
+  /etc/letsencrypt/live/comments.zamm.dev/fullchain.pem (failure)
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+1 renew failure(s), 0 parse failure(s)
+Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+```
+
+We try
+
+```
+$ sudo systemctl stop docker-remark42.service
+$ sudo certbot renew --force-renewal         
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/comments.zamm.dev.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Renewing an existing certificate for comments.zamm.dev
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Congratulations, all renewals succeeded: 
+  /etc/letsencrypt/live/comments.zamm.dev/fullchain.pem (success)
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+```
+
+Note that the directory `/etc/letsencrypt/live/comments.zamm.dev/` now contains symlinks to the new keys:
+
+```
+$ ls -lh /etc/letsencrypt/live/comments.zamm.dev/    
+total 4.0K
+-rw-r--r-- 1 1001 1001 692 Feb 17 23:18 README
+lrwxrwxrwx 1 root root  41 Apr 30 13:10 cert.pem -> ../../archive/comments.zamm.dev/cert2.pem
+lrwxrwxrwx 1 root root  42 Apr 30 13:10 chain.pem -> ../../archive/comments.zamm.dev/chain2.pem
+lrwxrwxrwx 1 root root  46 Apr 30 13:10 fullchain.pem -> ../../archive/comments.zamm.dev/fullchain2.pem
+lrwxrwxrwx 1 root root  44 Apr 30 13:10 privkey.pem -> ../../archive/comments.zamm.dev/privkey2.pem
+$ ls -lh /etc/letsencrypt/archive/comments.zamm.dev/
+total 32K
+-rw-r--r-- 1 root root 1.3K Feb 17 23:18 cert1.pem
+-rw-r--r-- 1 root root 1.4K Apr 30 13:10 cert2.pem
+-rw-r--r-- 1 root root 1.6K Feb 17 23:18 chain1.pem
+-rw-r--r-- 1 root root 1.6K Apr 30 13:10 chain2.pem
+-rw-r--r-- 1 root root 2.8K Feb 17 23:18 fullchain1.pem
+-rw-r--r-- 1 root root 2.9K Apr 30 13:10 fullchain2.pem
+-rw------- 1 root root  241 Feb 17 23:18 privkey1.pem
+-rw------- 1 root root  241 Apr 30 13:10 privkey2.pem
+```
+
+As such, we must copy the symlinked files, and make `privkey.pem` readable by the user inside the Docker container:
+
+```
+$ rm -rf ssl
+$ cp -Lr /etc/letsencrypt/live/comments.zamm.dev ./ssl
+$ chmod a+r ssl/privkey.pem
+$ sudo systemctl start docker-remark42.service
+```
+
 ### Telegram Auth and notification
 
 We try following the Telegram instructions [here](https://remark42.com/docs/configuration/telegram/), and then edit `docker-compose.yml` to include the following:
