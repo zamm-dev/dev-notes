@@ -89,8 +89,7 @@ We now edit the `docker-compose.yml` file to include the following:
 To renew the certificate, we can run the following command:
 
 ```bash
-$ sudo 
-sudo certbot renew --force-renewal          
+$ sudo certbot renew --force-renewal          
 Saving debug log to /var/log/letsencrypt/letsencrypt.log
 
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -154,6 +153,35 @@ $ rm -rf ssl
 $ cp -Lr /etc/letsencrypt/live/comments.zamm.dev ./ssl
 $ chmod a+r ssl/privkey.pem
 $ sudo systemctl start docker-remark42.service
+```
+
+#### Upgrading `certbot`
+
+If you get the error
+
+```
+$ sudo certbot renew --force-renewal
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/comments.zamm.dev.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Renewing an existing certificate for comments.zamm.dev
+Failed to renew certificate comments.zamm.dev with error: urn:ietf:params:acme:error:malformed :: The request message was malformed :: No such authorization
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+All renewals failed. The following certificates could not be renewed:
+  /etc/letsencrypt/live/comments.zamm.dev/fullchain.pem (failure)
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+1 renew failure(s), 0 parse failure(s)
+Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+```
+
+then this may be because your [cerbot version is too old](https://community.letsencrypt.org/t/problem-with-renew-certificates-the-request-message-was-malformed-method-not-allowed/107889/2). Update it:
+
+```bash
+$ sudo snap install --classic certbot
+certbot 4.1.1 from Certbot Project (certbot-eff✓) installed
 ```
 
 ### Telegram Auth and notification
